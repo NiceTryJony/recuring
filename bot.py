@@ -15,7 +15,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 import db
 
-API_TOKEN = os.environ["8638243599:AAG1uyHWy0T1Nw1QG69guol52W5UN7DnRs4"]
+API_TOKEN = os.environ["BOT_TOKEN"]
 TZ = ZoneInfo("Europe/Warsaw")
 PAGE_SIZE = 5
 
