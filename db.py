@@ -1,5 +1,7 @@
 import os
 from datetime import datetime, timezone
+import re
+from urllib.parse import quote
 
 import asyncpg
 
@@ -8,7 +10,46 @@ import asyncpg
 # которые использует asyncpg, а наш бот — persistent-процесс, а не serverless-функция.
 # Прямое подключение (db.*.supabase.co) тоже не берём — требует IPv6, на Render free его может не быть.
 # Взять строку: Supabase Dashboard → Project Settings → Database → Connection string → Session pooler
-DATABASE_URL = os.environ["DATABASE_URL"]
+
+
+def _normalize_db_url(raw_url: str) -> str:
+    """Перекодирует пароль в connection string на случай, если в нём есть спецсимволы
+    (@ : / # % и т.д.), которые иначе ломают парсинг URL и дают 'Invalid format for user or db_name'.
+
+    Важно: режем СЫРУЮ строку вручную по последнему '@' до вызова urlsplit — сам urlsplit
+    режет netloc по первому '@', и если пароль содержит '@', host/port уезжают не туда."""
+    scheme_sep = "://"
+    if scheme_sep not in raw_url:
+        return raw_url
+    scheme, rest = raw_url.split(scheme_sep, 1)
+
+    if "@" not in rest:
+        return raw_url  # нет userinfo — нечего перекодировать
+
+    # Пароль может содержать '@' и '/', поэтому нельзя искать границу host/path
+    # по первому '/' — она может оказаться внутри пароля. Вместо этого ищем
+    # host:port с конца: это единственная часть строки вида "словоcифры[/путь]",
+    # где после хоста идёт ':' + только цифры порта, а дальше либо конец, либо '/'.
+    m = re.search(r"@([A-Za-z0-9.\-]+:\d+)(/.*)?$", rest)
+    if not m:
+        return raw_url  # не смогли надёжно распознать структуру — не трогаем строку
+    hostinfo = m.group(1)
+    tail = m.group(2) or ""
+    userinfo = rest[: m.start()]
+
+    if ":" in userinfo:
+        user, _, password = userinfo.partition(":")
+    else:
+        user, password = userinfo, ""
+
+    safe_user = quote(user, safe="")
+    safe_password = quote(password, safe="")
+    new_userinfo = f"{safe_user}:{safe_password}" if password else safe_user
+
+    return f"{scheme}{scheme_sep}{new_userinfo}@{hostinfo}{tail}"
+
+
+DATABASE_URL = _normalize_db_url(os.environ["DATABASE_URL"])
 
 _pool: asyncpg.Pool | None = None
 
