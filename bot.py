@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from aiohttp import web as aioweb
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -413,12 +414,35 @@ async def restore_jobs():
             schedule_task(t["id"], t["user_id"], t["due_at"], t["repeat"], t["remind"])
 
 
+# ---------- health-check веб-сервер (нужен Render Web Service, чтобы видеть открытый порт) ----------
+# Render требует, чтобы процесс слушал $PORT — иначе деплой считается "упавшим".
+# Сам по себе этот эндпоинт ничего не делает, кроме как отвечает 200 OK.
+# Чтобы сервис не "засыпал" на free tier — настрой внешний пинг (UptimeRobot и т.п.)
+# на URL твоего сервиса раз в 5-10 минут.
+
+async def health(request):
+    return aioweb.Response(text="ok")
+
+
+async def run_health_server():
+    app = aioweb.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+    runner = aioweb.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = aioweb.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
+    logging.info(f"Health server listening on port {port}")
+
+
 # ---------- запуск ----------
 
 async def main():
     await db.init_db()
     scheduler.start()
     await restore_jobs()
+    await run_health_server()
     try:
         await dp.start_polling(bot)
     finally:
