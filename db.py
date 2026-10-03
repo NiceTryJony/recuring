@@ -51,6 +51,24 @@ def _normalize_db_url(raw_url: str) -> str:
 
 DATABASE_URL = _normalize_db_url(os.environ["DATABASE_URL"])
 
+# ВРЕМЕННАЯ ДИАГНОСТИКА — удалить после того как подключение заработает.
+# Пароль НЕ логируется, только структура, чтобы понять что реально передаётся в asyncpg.
+def _debug_log_url_structure():
+    import logging
+    from urllib.parse import urlsplit
+    try:
+        p = urlsplit(DATABASE_URL)
+        logging.warning(
+            "DEBUG DATABASE_URL structure: scheme=%r host=%r port=%r username=%r "
+            "password_len=%r path=%r",
+            p.scheme, p.hostname, p.port, p.username,
+            len(p.password) if p.password else 0, p.path
+        )
+    except Exception as e:
+        logging.warning("DEBUG failed to parse DATABASE_URL structure: %r", e)
+
+_debug_log_url_structure()
+
 _pool: asyncpg.Pool | None = None
 
 
