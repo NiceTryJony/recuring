@@ -13,3 +13,5 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: DASHBOARD_BASE_URL
+        sync: false
