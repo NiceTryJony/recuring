@@ -81,7 +81,8 @@ async def init_db():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
+                owner_id BIGINT NOT NULL,
+                owner_type TEXT NOT NULL DEFAULT 'user',
                 title TEXT NOT NULL,
                 due_at TIMESTAMPTZ NOT NULL,
                 repeat TEXT NOT NULL DEFAULT 'none',
@@ -93,6 +94,22 @@ async def init_db():
                 last_notified_at TIMESTAMPTZ
             )
         """)
+
+        # Миграция для баз, созданных до группового режима: раньше у tasks была
+        # колонка user_id, теперь — owner_id + owner_type ('user' | 'chat').
+        # Переименовываем колонку (если она ещё старая) и бэкафиллим owner_type,
+        # чтобы все существующие личные задачи остались личными.
+        cols = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'tasks'"
+        )
+        colnames = {r["column_name"] for r in cols}
+        if "owner_id" not in colnames and "user_id" in colnames:
+            await conn.execute("ALTER TABLE tasks RENAME COLUMN user_id TO owner_id")
+        await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS owner_type TEXT")
+        await conn.execute("UPDATE tasks SET owner_type = 'user' WHERE owner_type IS NULL")
+        await conn.execute("ALTER TABLE tasks ALTER COLUMN owner_type SET DEFAULT 'user'")
+        await conn.execute("ALTER TABLE tasks ALTER COLUMN owner_type SET NOT NULL")
+
         # Миграция для существующих баз (добавление колонок, если их ещё нет)
         await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tag TEXT")
         await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ")
@@ -118,6 +135,31 @@ async def init_db():
             )
         """)
 
+        # Настройки группового чата — отдельная таблица, а не записи в
+        # user_settings с chat_id вместо user_id: у группы нет одного
+        # "хозяина" настроек, так что отдельный неймспейс честнее и проще
+        # для ON CONFLICT-апсертов.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_settings (
+                chat_id BIGINT PRIMARY KEY,
+                timezone TEXT NOT NULL DEFAULT 'Europe/Warsaw',
+                language TEXT NOT NULL DEFAULT 'ru',
+                dashboard_token TEXT UNIQUE,
+                dashboard_password_hash TEXT
+            )
+        """)
+
+        # Участники групповых чатов — заполняется по мере активности (Telegram
+        # не отдаёт список участников группы без прав администратора боту), чтобы
+        # бот знал, кому из участников слать личные уведомления по общим задачам.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_members (
+                chat_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                PRIMARY KEY (chat_id, user_id)
+            )
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS task_history (
                 id SERIAL PRIMARY KEY,
@@ -129,9 +171,10 @@ async def init_db():
             )
         """)
 
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id, owner_type)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_subtasks_task_id ON subtasks(task_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_history_user_id ON task_history(user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_members_chat_id ON chat_members(chat_id)")
 
 
 async def close_db():
@@ -140,30 +183,55 @@ async def close_db():
 
 
 # ---------- задачи ----------
+# owner_type: 'user' (личная задача, owner_id = user_id) | 'chat' (общая задача
+# группы, owner_id = chat_id). Одна и та же таблица обслуживает оба случая без
+# дублирования схемы.
 
-async def add_task(user_id: int, title: str, due_at: datetime, repeat: str, remind: str, tag: str | None = None) -> int:
+async def add_task(
+    owner_id: int, owner_type: str, title: str, due_at: datetime, repeat: str, remind: str,
+    tag: str | None = None,
+) -> int:
     async def _run():
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(
-                """INSERT INTO tasks (user_id, title, due_at, repeat, remind, tag)
-                   VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
-                user_id, title, due_at, repeat, remind, tag
+                """INSERT INTO tasks (owner_id, owner_type, title, due_at, repeat, remind, tag)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id""",
+                owner_id, owner_type, title, due_at, repeat, remind, tag
             )
             return row["id"]
     return await _with_retry(_run)
 
 
-async def get_tasks(user_id: int, include_done: bool = False, tag: str | None = None) -> list[dict]:
+async def get_tasks(
+    owner_id: int,
+    owner_type: str = "user",
+    include_done: bool = False,
+    tag: str | None = None,
+    filter_mode: str = "all",
+    sort_by: str = "date",
+) -> list[dict]:
+    """filter_mode: 'all' | 'overdue' | 'this_week'. sort_by: 'date' | 'tag' | 'title'."""
     async def _run():
         async with _pool.acquire() as conn:
-            query = "SELECT * FROM tasks WHERE user_id = $1"
-            params = [user_id]
+            query = "SELECT * FROM tasks WHERE owner_id = $1 AND owner_type = $2"
+            params = [owner_id, owner_type]
             if not include_done:
                 query += " AND done = FALSE"
             if tag:
                 params.append(tag)
                 query += f" AND tag = ${len(params)}"
-            query += " ORDER BY done, due_at"
+            if filter_mode == "overdue":
+                query += " AND due_at < now()"
+            elif filter_mode == "this_week":
+                query += " AND due_at BETWEEN now() AND now() + interval '7 days'"
+
+            order_map = {
+                "date": "done, due_at",
+                "tag": "done, tag NULLS LAST, due_at",
+                "title": "done, title",
+            }
+            query += f" ORDER BY {order_map.get(sort_by, order_map['date'])}"
+
             rows = await conn.fetch(query, *params)
             return [dict(r) for r in rows]
     return await _with_retry(_run)
@@ -178,6 +246,8 @@ async def get_task(task_id: int) -> dict | None:
 
 
 async def get_all_active_tasks() -> list[dict]:
+    """Все активные задачи системы вне зависимости от владельца — для восстановления
+    джоб планировщика при рестарте процесса (restore_jobs сам разберёт owner_id/owner_type)."""
     async def _run():
         async with _pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM tasks WHERE done = FALSE")
@@ -185,14 +255,28 @@ async def get_all_active_tasks() -> list[dict]:
     return await _with_retry(_run)
 
 
-async def get_user_tags(user_id: int) -> list[str]:
+async def get_owner_tags(owner_id: int, owner_type: str = "user") -> list[str]:
     async def _run():
         async with _pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT DISTINCT tag FROM tasks WHERE user_id = $1 AND tag IS NOT NULL ORDER BY tag",
-                user_id
+                "SELECT DISTINCT tag FROM tasks WHERE owner_id = $1 AND owner_type = $2 AND tag IS NOT NULL ORDER BY tag",
+                owner_id, owner_type
             )
             return [r["tag"] for r in rows]
+    return await _with_retry(_run)
+
+
+async def search_tasks(owner_id: int, owner_type: str, query_text: str, include_done: bool = False) -> list[dict]:
+    """Регистронезависимый поиск по названию задачи (ILIKE %query%), в рамках одного владельца."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            sql = "SELECT * FROM tasks WHERE owner_id = $1 AND owner_type = $2 AND title ILIKE $3"
+            params = [owner_id, owner_type, f"%{query_text}%"]
+            if not include_done:
+                sql += " AND done = FALSE"
+            sql += " ORDER BY done, due_at"
+            rows = await conn.fetch(sql, *params)
+            return [dict(r) for r in rows]
     return await _with_retry(_run)
 
 
@@ -299,7 +383,9 @@ async def get_subtask(subtask_id: int) -> dict | None:
 # ---------- история ----------
 
 async def log_history(task_id: int, user_id: int, title: str, event: str):
-    """event: 'created' | 'done' | 'undone' | 'deleted' | 'rescheduled'"""
+    """event: 'created' | 'done' | 'undone' | 'deleted' | 'rescheduled'.
+    user_id — тот, кто реально выполнил действие (для общих задач чата это
+    конкретный участник, а не chat_id), отдельно от владельца самой задачи."""
     async def _run():
         async with _pool.acquire() as conn:
             await conn.execute(
@@ -320,65 +406,153 @@ async def get_history(user_id: int, limit: int = 20) -> list[dict]:
     return await _with_retry(_run)
 
 
-# ---------- настройки пользователя (часовой пояс, язык, доступ к дашборду) ----------
+# ---------- участники групповых чатов ----------
 
-async def get_user_settings(user_id: int) -> dict:
+async def add_chat_member(chat_id: int, user_id: int):
     async def _run():
         async with _pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM user_settings WHERE user_id = $1", user_id)
-            if row:
-                return dict(row)
             await conn.execute(
-                "INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id
+                "INSERT INTO chat_members (chat_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                chat_id, user_id
             )
-            row = await conn.fetchrow("SELECT * FROM user_settings WHERE user_id = $1", user_id)
-            return dict(row)
+    await _with_retry(_run)
+
+
+async def get_chat_members(chat_id: int) -> list[int]:
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("SELECT user_id FROM chat_members WHERE chat_id = $1", chat_id)
+            return [r["user_id"] for r in rows]
     return await _with_retry(_run)
 
 
-async def set_user_timezone(user_id: int, tz_name: str):
+# ---------- настройки владельца (личные user_settings или групповые chat_settings) ----------
+# Единый интерфейс поверх двух таблиц: owner_type выбирает, с какой из них работать.
+# Возвращаемый/ожидаемый owner_id — это user_id для 'user' и chat_id для 'chat'.
+
+def _owner_table(owner_type: str) -> tuple[str, str]:
+    if owner_type == "chat":
+        return "chat_settings", "chat_id"
+    return "user_settings", "user_id"
+
+
+async def get_owner_settings(owner_id: int, owner_type: str = "user") -> dict:
+    table, id_col = _owner_table(owner_type)
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(f"SELECT * FROM {table} WHERE {id_col} = $1", owner_id)
+            if not row:
+                await conn.execute(
+                    f"INSERT INTO {table} ({id_col}) VALUES ($1) ON CONFLICT DO NOTHING", owner_id
+                )
+                row = await conn.fetchrow(f"SELECT * FROM {table} WHERE {id_col} = $1", owner_id)
+            result = dict(row)
+            result["owner_id"] = owner_id
+            result["owner_type"] = owner_type
+            return result
+    return await _with_retry(_run)
+
+
+async def set_owner_timezone(owner_id: int, owner_type: str, tz_name: str):
+    table, id_col = _owner_table(owner_type)
+
     async def _run():
         async with _pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO user_settings (user_id, timezone) VALUES ($1, $2)
-                   ON CONFLICT (user_id) DO UPDATE SET timezone = $2""",
-                user_id, tz_name
+                f"""INSERT INTO {table} ({id_col}, timezone) VALUES ($1, $2)
+                    ON CONFLICT ({id_col}) DO UPDATE SET timezone = $2""",
+                owner_id, tz_name
             )
     await _with_retry(_run)
 
 
-async def set_user_language(user_id: int, lang: str):
+async def set_owner_language(owner_id: int, owner_type: str, lang: str):
+    table, id_col = _owner_table(owner_type)
+
     async def _run():
         async with _pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO user_settings (user_id, language) VALUES ($1, $2)
-                   ON CONFLICT (user_id) DO UPDATE SET language = $2""",
-                user_id, lang
+                f"""INSERT INTO {table} ({id_col}, language) VALUES ($1, $2)
+                    ON CONFLICT ({id_col}) DO UPDATE SET language = $2""",
+                owner_id, lang
             )
     await _with_retry(_run)
 
 
-async def set_dashboard_credentials(user_id: int, password_hash: str) -> str:
+async def set_owner_dashboard_credentials(owner_id: int, owner_type: str, password_hash: str) -> str:
     """Генерирует уникальный токен (часть URL) и сохраняет хеш пароля. Возвращает токен."""
+    table, id_col = _owner_table(owner_type)
     token = secrets.token_urlsafe(16)
 
     async def _run():
         async with _pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO user_settings (user_id, dashboard_token, dashboard_password_hash)
-                   VALUES ($1, $2, $3)
-                   ON CONFLICT (user_id) DO UPDATE SET dashboard_token = $2, dashboard_password_hash = $3""",
-                user_id, token, password_hash
+                f"""INSERT INTO {table} ({id_col}, dashboard_token, dashboard_password_hash)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT ({id_col}) DO UPDATE SET dashboard_token = $2, dashboard_password_hash = $3""",
+                owner_id, token, password_hash
             )
     await _with_retry(_run)
     return token
 
 
-async def get_user_by_dashboard_token(token: str) -> dict | None:
+async def get_owner_by_dashboard_token(token: str) -> dict | None:
+    """Ищет токен сначала среди личных дашбордов, потом среди групповых."""
     async def _run():
         async with _pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM user_settings WHERE dashboard_token = $1", token
+            row = await conn.fetchrow("SELECT * FROM user_settings WHERE dashboard_token = $1", token)
+            if row:
+                result = dict(row)
+                result["owner_id"] = result["user_id"]
+                result["owner_type"] = "user"
+                return result
+            row = await conn.fetchrow("SELECT * FROM chat_settings WHERE dashboard_token = $1", token)
+            if row:
+                result = dict(row)
+                result["owner_id"] = result["chat_id"]
+                result["owner_type"] = "chat"
+                return result
+            return None
+    return await _with_retry(_run)
+
+
+async def get_all_known_owners() -> list[dict]:
+    """Все владельцы (личные пользователи и групповые чаты), которые когда-либо
+    пользовались ботом — используется для рассылки ежедневной сводки (self-check)."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            user_rows = await conn.fetch("""
+                SELECT user_id FROM user_settings
+                UNION
+                SELECT DISTINCT owner_id FROM tasks WHERE owner_type = 'user'
+            """)
+            chat_rows = await conn.fetch("""
+                SELECT chat_id FROM chat_settings
+                UNION
+                SELECT DISTINCT owner_id FROM tasks WHERE owner_type = 'chat'
+            """)
+            owners = [{"owner_id": r["user_id"], "owner_type": "user"} for r in user_rows]
+            owners += [{"owner_id": r["chat_id"], "owner_type": "chat"} for r in chat_rows]
+            return owners
+    return await _with_retry(_run)
+
+
+async def get_daily_summary_counts(owner_id: int, owner_type: str = "user") -> dict:
+    """Сколько активных задач и сколько выполнено за последние 24 часа — для self-check."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            active = await conn.fetchval(
+                "SELECT COUNT(*) FROM tasks WHERE owner_id = $1 AND owner_type = $2 AND done = FALSE",
+                owner_id, owner_type
             )
-            return dict(row) if row else None
+            done_today = await conn.fetchval(
+                "SELECT COUNT(*) FROM tasks WHERE owner_id = $1 AND owner_type = $2 AND done = TRUE AND done_at > now() - interval '24 hours'",
+                owner_id, owner_type
+            )
+            overdue = await conn.fetchval(
+                "SELECT COUNT(*) FROM tasks WHERE owner_id = $1 AND owner_type = $2 AND done = FALSE AND due_at < now() AND repeat = 'none'",
+                owner_id, owner_type
+            )
+            return {"active": active, "done_today": done_today, "overdue": overdue}
     return await _with_retry(_run)

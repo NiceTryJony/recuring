@@ -1,7 +1,16 @@
-"""Веб-дашборд: простая HTML-страница со списком задач пользователя.
-Доступ по уникальному токену в URL (/dashboard/<token>) + пароль в форме логина.
-Сессия хранится в подписанной cookie (без внешних зависимостей для сессий —
-просто HMAC поверх user_id + expiry, валидируется на каждый запрос)."""
+"""Веб-дашборд: простая HTML-страница со списком задач. Доступ по уникальному
+токену в URL (/dashboard/<token>) + пароль в форме логина. Токен может
+принадлежать как личному пользователю, так и групповому чату (общие задачи
+чата) — db.get_owner_by_dashboard_token() ищет среди обоих и возвращает
+owner_id/owner_type, дальше вся логика страницы работает с ними одинаково.
+
+Сессия хранится в подписанной cookie (без внешних зависимостей — просто HMAC
+поверх owner_type:owner_id + expiry, валидируется на каждый запрос).
+
+Язык страницы берётся из настроек владельца (user_settings.language для
+личного дашборда или chat_settings.language для группового — то, что задано
+в боте через /lang). Переводы не завязаны на i18n.py бота, чтобы не тащить
+aiogram-зависимости в веб-слой — здесь свой маленький словарь DASHBOARD_TEXTS."""
 
 import hashlib
 import hmac
@@ -17,30 +26,106 @@ SESSION_SECRET = os.environ.get("BOT_TOKEN", "fallback-secret")  # исполь�
 SESSION_MAX_AGE = 60 * 60 * 24 * 7  # неделя
 
 
-def _sign_session(user_id: int, token: str) -> str:
-    payload = f"{user_id}:{int(time.time()) + SESSION_MAX_AGE}"
+def _sign_session(owner_id: int, owner_type: str, token: str) -> str:
+    payload = f"{owner_type}:{owner_id}:{int(time.time()) + SESSION_MAX_AGE}"
     sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{sig}"
 
 
-def _verify_session(cookie_value: str, expected_token: str) -> int | None:
+def _verify_session(cookie_value: str) -> tuple[int, str] | None:
     try:
-        user_id_str, expiry_str, sig = cookie_value.split(":")
-        payload = f"{user_id_str}:{expiry_str}"
+        owner_type, owner_id_str, expiry_str, sig = cookie_value.split(":")
+        payload = f"{owner_type}:{owner_id_str}:{expiry_str}"
         expected_sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expected_sig):
             return None
         if int(expiry_str) < time.time():
             return None
-        return int(user_id_str)
+        return int(owner_id_str), owner_type
     except (ValueError, AttributeError):
         return None
 
 
+# ---------- переводы ----------
+
+DASHBOARD_TEXTS = {
+    "ru": {
+        "html_lang": "ru",
+        "login_title": "Вход — Task Reminder",
+        "login_heading": "🔐 Вход",
+        "password_placeholder": "Пароль",
+        "btn_login": "Войти",
+        "error_wrong_password": "Неверный пароль",
+        "page_title": "Мои задачи",
+        "heading": "📋 Мои задачи",
+        "heading_chat": "📋 Общие задачи чата",
+        "empty": "Задач пока нет.",
+        "not_found": "Дашборд не найден. Проверь ссылку.",
+        "repeat": {
+            "none": "",
+            "daily": "Каждый день",
+            "weekly": "Каждую неделю",
+            "monthly": "Каждый месяц",
+            "yearly": "Каждый год",
+            "weekdays": "По будням",
+            "monthly_nth_weekday": "N-й день недели месяца",
+        },
+    },
+    "en": {
+        "html_lang": "en",
+        "login_title": "Login — Task Reminder",
+        "login_heading": "🔐 Login",
+        "password_placeholder": "Password",
+        "btn_login": "Log in",
+        "error_wrong_password": "Wrong password",
+        "page_title": "My Tasks",
+        "heading": "📋 My Tasks",
+        "heading_chat": "📋 Shared Chat Tasks",
+        "empty": "No tasks yet.",
+        "not_found": "Dashboard not found. Check the link.",
+        "repeat": {
+            "none": "",
+            "daily": "Every day",
+            "weekly": "Every week",
+            "monthly": "Every month",
+            "yearly": "Every year",
+            "weekdays": "Weekdays",
+            "monthly_nth_weekday": "Nth weekday of month",
+        },
+    },
+    "pl": {
+        "html_lang": "pl",
+        "login_title": "Logowanie — Task Reminder",
+        "login_heading": "🔐 Logowanie",
+        "password_placeholder": "Hasło",
+        "btn_login": "Zaloguj się",
+        "error_wrong_password": "Nieprawidłowe hasło",
+        "page_title": "Moje zadania",
+        "heading": "📋 Moje zadania",
+        "heading_chat": "📋 Wspólne zadania czatu",
+        "empty": "Brak zadań.",
+        "not_found": "Nie znaleziono panelu. Sprawdź link.",
+        "repeat": {
+            "none": "",
+            "daily": "Codziennie",
+            "weekly": "Co tydzień",
+            "monthly": "Co miesiąc",
+            "yearly": "Co rok",
+            "weekdays": "W dni robocze",
+            "monthly_nth_weekday": "N-ty dzień tygodnia miesiąca",
+        },
+    },
+}
+
+
+def _dt(lang: str) -> dict:
+    return DASHBOARD_TEXTS.get(lang, DASHBOARD_TEXTS["ru"])
+
+
 LOGIN_PAGE = """<!DOCTYPE html>
-<html lang="ru"><head><meta charset="utf-8">
+<html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Вход — Task Reminder</title>
+<title>{login_title}</title>
 <style>
 body {{ font-family: -apple-system, sans-serif; background: #0f0f0f; color: #eee;
        display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
@@ -54,18 +139,18 @@ h2 {{ margin-top: 0; }}
 </style></head>
 <body>
 <form method="post">
-<h2>🔐 Вход</h2>
-<input type="password" name="password" placeholder="Пароль" autofocus>
-<button type="submit">Войти</button>
+<h2>{login_heading}</h2>
+<input type="password" name="password" placeholder="{password_placeholder}" autofocus>
+<button type="submit">{btn_login}</button>
 {error}
 </form>
 </body></html>"""
 
 
 TASKS_PAGE = """<!DOCTYPE html>
-<html lang="ru"><head><meta charset="utf-8">
+<html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Мои задачи</title>
+<title>{page_title}</title>
 <style>
 body {{ font-family: -apple-system, sans-serif; background: #0f0f0f; color: #eee;
        margin: 0; padding: 1.5rem; max-width: 640px; margin: 0 auto; }}
@@ -81,13 +166,14 @@ h1 {{ font-size: 1.4rem; }}
 .empty {{ color: #777; text-align: center; padding: 3rem 1rem; }}
 </style></head>
 <body>
-<h1>📋 Мои задачи</h1>
+<h1>{heading}</h1>
 {tasks_html}
 </body></html>"""
 
 
-def _render_task(task: dict, tz) -> str:
+def _render_task(task: dict, tz, lang: str) -> str:
     import datetime as dt
+    texts = _dt(lang)
     local_due = task["due_at"].astimezone(tz)
     now = dt.datetime.now(tz)
     css_class = "task"
@@ -97,7 +183,8 @@ def _render_task(task: dict, tz) -> str:
         css_class += " overdue"
 
     tag_html = f'<div class="tag">🏷 {escape(task["tag"])}</div>' if task.get("tag") else ""
-    repeat_html = f' · 🔁 {escape(task["repeat"])}' if task["repeat"] != "none" else ""
+    repeat_label = texts["repeat"].get(task["repeat"], task["repeat"])
+    repeat_html = f" · 🔁 {escape(repeat_label)}" if task["repeat"] != "none" and repeat_label else ""
 
     return f"""<div class="{css_class}">
 <div class="title">{"✅ " if task["done"] else ""}{escape(task["title"])}</div>
@@ -108,27 +195,37 @@ def _render_task(task: dict, tz) -> str:
 
 async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     token = request.match_info["token"]
-    settings = await db.get_user_by_dashboard_token(token)
+    settings = await db.get_owner_by_dashboard_token(token)
     if not settings:
-        return aioweb.Response(text="Дашборд не найден. Проверь ссылку.", status=404)
+        # До того, как мы знаем настройки конкретного владельца, язык
+        # страницы с ошибкой определить нечем — используем дефолт (ru).
+        return aioweb.Response(text=_dt("ru")["not_found"], status=404)
+
+    owner_id = settings["owner_id"]
+    owner_type = settings["owner_type"]
+    lang = settings.get("language", "ru")
+    texts = _dt(lang)
 
     cookie = request.cookies.get(f"session_{token}")
-    user_id = _verify_session(cookie, token) if cookie else None
+    session = _verify_session(cookie) if cookie else None
 
     if request.method == "POST":
         data = await request.post()
         password = data.get("password", "")
         password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
         if hmac.compare_digest(password_hash, settings["dashboard_password_hash"] or ""):
-            session_value = _sign_session(settings["user_id"], token)
+            session_value = _sign_session(owner_id, owner_type, token)
             resp = aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
             resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True, samesite="Strict")
             return resp
-        return aioweb.Response(text=LOGIN_PAGE.format(error='<div class="error">Неверный пароль</div>'),
-                                content_type="text/html", status=401)
+        error_html = f'<div class="error">{escape(texts["error_wrong_password"])}</div>'
+        return aioweb.Response(
+            text=LOGIN_PAGE.format(error=error_html, **texts),
+            content_type="text/html", status=401,
+        )
 
-    if user_id != settings["user_id"]:
-        return aioweb.Response(text=LOGIN_PAGE.format(error=""), content_type="text/html")
+    if session != (owner_id, owner_type):
+        return aioweb.Response(text=LOGIN_PAGE.format(error="", **texts), content_type="text/html")
 
     from zoneinfo import ZoneInfo
     try:
@@ -136,13 +233,15 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     except Exception:
         tz = ZoneInfo("UTC")
 
-    tasks = await db.get_tasks(user_id, include_done=True)
+    tasks = await db.get_tasks(owner_id, owner_type, include_done=True)
     if not tasks:
-        tasks_html = '<div class="empty">Задач пока нет.</div>'
+        tasks_html = f'<div class="empty">{escape(texts["empty"])}</div>'
     else:
-        tasks_html = "\n".join(_render_task(t, tz) for t in tasks)
+        tasks_html = "\n".join(_render_task(t, tz, lang) for t in tasks)
 
-    return aioweb.Response(text=TASKS_PAGE.format(tasks_html=tasks_html), content_type="text/html")
+    heading = texts["heading_chat"] if owner_type == "chat" else texts["heading"]
+    page = TASKS_PAGE.format(tasks_html=tasks_html, heading=heading, **{k: v for k, v in texts.items() if k not in ("heading",)})
+    return aioweb.Response(text=page, content_type="text/html")
 
 
 def register_dashboard_routes(app: aioweb.Application):
