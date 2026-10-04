@@ -1,9 +1,9 @@
 import asyncio
-import hashlib
+import html
 import logging
 import os
 import signal
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import web as aioweb
@@ -16,17 +16,26 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Chat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.base import JobLookupError
 
 import dashboard
 import db
-from date_parser import parse_human_date
+from date_parser import parse_human_date, parse_quiet_hours, is_quiet_time, next_quiet_end
 from i18n import t
+from stats import compute_streak, daily_series, totals
 
 API_TOKEN = os.environ["BOT_TOKEN"]
 DASHBOARD_BASE_URL = os.environ.get("DASHBOARD_BASE_URL", "")  # напр. https://task-reminder-bot-xxxx.onrender.com
 DEFAULT_TZ = ZoneInfo("Europe/Warsaw")
 PAGE_SIZE = 5
+
+# «Повторять напоминание, пока не выполню»: дефолты, чтобы не спамить бесконечно.
+NAG_INTERVAL_MINUTES = 30   # не чаще раза в 30 минут
+NAG_MAX_HOURS = 24          # полностью останавливаемся через 24 ч после срока
+
+# Пресеты тихого часа для кнопок /quiet (можно ввести и свой)
+QUIET_PRESETS = ["22:00-07:00", "23:00-08:00", "00:00-09:00"]
 
 # Короткий список популярных поясов для кнопок; пользователь может ввести свой вручную
 TZ_CHOICES = ["Europe/Warsaw", "Europe/Moscow", "Europe/Kyiv", "Asia/Almaty", "UTC"]
@@ -38,7 +47,9 @@ logger = logging.getLogger("bot")
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-scheduler = AsyncIOScheduler(timezone=DEFAULT_TZ)
+# misfire_grace_time по умолчанию = 1 сек: джоба, опоздавшая на секунду (например, после
+# "засыпания" free-инстанса), молча пропускается. Даём 5 минут запаса.
+scheduler = AsyncIOScheduler(timezone=DEFAULT_TZ, job_defaults={"coalesce": True, "misfire_grace_time": 300})
 
 REPEAT_OPTIONS = {
     "none": {"ru": "Без повтора", "en": "No repeat", "pl": "Bez powtarzania"},
@@ -66,6 +77,7 @@ class AddTask(StatesGroup):
     date = State()
     repeat = State()
     remind = State()
+    nag = State()
     tag = State()
 
 
@@ -87,6 +99,10 @@ class SetDashboardPassword(StatesGroup):
 
 class FindTask(StatesGroup):
     query = State()
+
+
+class SetQuiet(StatesGroup):
+    value = State()
 
 
 # ---------- владелец задач: личный пользователь или групповой чат ----------
@@ -132,6 +148,14 @@ async def owner_lang(owner_id: int, owner_type: str) -> str:
     return s.get("language", "ru")
 
 
+async def owner_quiet(owner_id: int, owner_type: str) -> tuple[dtime, dtime] | None:
+    s = await get_settings(owner_id, owner_type)
+    start, end = s.get("quiet_hours_start"), s.get("quiet_hours_end")
+    if start is None or end is None or start == end:
+        return None
+    return start, end
+
+
 def to_utc(local_dt: datetime, tz: ZoneInfo) -> datetime:
     return local_dt.replace(tzinfo=tz).astimezone(ZoneInfo("UTC"))
 
@@ -155,7 +179,20 @@ def remind_kb(lang: str, prefix="rem", selected: set[str] | None = None):
         if k in selected:
             label = f"✅ {label}"
         kb.append([InlineKeyboardButton(text=label, callback_data=f"{prefix}_{k}")])
-    kb.append([InlineKeyboardButton(text="✅ " + t(lang, "btn_done"), callback_data=f"{prefix}done")])
+    kb.append([InlineKeyboardButton(text="✅ " + t(lang, "btn_done"), callback_data=f"{prefix}_done")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def nag_kb(lang: str):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t(lang, "btn_nag_yes"), callback_data="nag_1"),
+        InlineKeyboardButton(text=t(lang, "btn_nag_no"), callback_data="nag_0"),
+    ]])
+
+
+def quiet_kb(lang: str):
+    kb = [[InlineKeyboardButton(text=p.replace("-", "–"), callback_data=f"quiet_set_{p}")] for p in QUIET_PRESETS]
+    kb.append([InlineKeyboardButton(text=t(lang, "btn_quiet_off"), callback_data="quiet_off")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -301,13 +338,16 @@ async def fmt_task(t_row: dict) -> str:
     tz = await owner_tz(t_row["owner_id"], t_row["owner_type"])
     local_dt = to_local(t_row["due_at"], tz)
     status = "✅" if t_row["done"] else "⏳"
-    text = f"{status} <b>{t_row['title']}</b>\n📅 {local_dt.strftime('%d.%m.%Y %H:%M')}"
+    # parse_mode=HTML: без экранирования заголовок вида "a < b" ломает отправку (TelegramBadRequest)
+    text = f"{status} <b>{html.escape(t_row['title'])}</b>\n📅 {local_dt.strftime('%d.%m.%Y %H:%M')}"
     if t_row["repeat"] != "none":
         text += f"\n🔁 {fmt_repeat(t_row['repeat'], lang)}"
     if t_row["remind"] and t_row["remind"] != "0":
         text += f"\n🔔 {fmt_remind(t_row['remind'], lang)}"
+    if t_row.get("remind_until_done"):
+        text += f"\n{t(lang, 'nag_line')}"
     if t_row.get("tag"):
-        text += f"\n🏷 {t_row['tag']}"
+        text += f"\n🏷 {html.escape(t_row['tag'])}"
     text += f"\n<code>#{t_row['id']}</code>"
     return text
 
@@ -374,7 +414,13 @@ async def _apply_timezone(owner_id: int, owner_type: str, tz_name: str, target_m
         return
     await db.set_owner_timezone(owner_id, owner_type, tz_name)
     invalidate_settings(owner_id, owner_type)
-    schedule_daily_summary(owner_id, owner_type, ZoneInfo(tz_name))
+    new_tz = ZoneInfo(tz_name)
+    schedule_daily_summary(owner_id, owner_type, new_tz)
+    # cron-джобы повторяющихся задач привязаны к поясу на момент создания — без
+    # перепланирования после /timezone они продолжали бы срабатывать по старому времени.
+    for task in await db.get_tasks(owner_id, owner_type):
+        schedule_task(task["id"], owner_id, owner_type, task["due_at"], task["repeat"], task["remind"], new_tz,
+                      remind_until_done=bool(task.get("remind_until_done")))
     await target_message.answer(t(lang, "timezone_set", tz=tz_name))
 
 
@@ -395,6 +441,80 @@ async def lang_pick(call: CallbackQuery):
     invalidate_settings(owner_id, owner_type)
     await call.message.edit_text(t(new_lang, "lang_set"))
     await call.answer()
+
+
+# ---------- /quiet — тихий час ----------
+
+def _fmt_quiet(q: tuple[dtime, dtime]) -> tuple[str, str]:
+    return q[0].strftime("%H:%M"), q[1].strftime("%H:%M")
+
+
+async def _apply_quiet(owner_id: int, owner_type: str, quiet: tuple[dtime, dtime] | None, target_message: Message):
+    lang = await owner_lang(owner_id, owner_type)
+    if quiet is None:
+        await db.set_owner_quiet_hours(owner_id, owner_type, None, None)
+        invalidate_settings(owner_id, owner_type)
+        await target_message.answer(t(lang, "quiet_off_done"))
+        return
+    await db.set_owner_quiet_hours(owner_id, owner_type, quiet[0], quiet[1])
+    invalidate_settings(owner_id, owner_type)
+    start, end = _fmt_quiet(quiet)
+    await target_message.answer(t(lang, "quiet_set", start=start, end=end))
+
+
+@dp.message(Command("quiet"))
+async def quiet_start(message: Message, state: FSMContext):
+    owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    q = await owner_quiet(owner_id, owner_type)
+    if q:
+        start, end = _fmt_quiet(q)
+        head = t(lang, "quiet_current", start=start, end=end)
+    else:
+        head = t(lang, "quiet_none")
+    await state.set_state(SetQuiet.value)
+    await state.update_data(owner_id=owner_id, owner_type=owner_type)
+    await message.answer(f"{head}\n\n{t(lang, 'quiet_prompt')}", reply_markup=quiet_kb(lang))
+
+
+@dp.callback_query(F.data.startswith("quiet_"))
+async def quiet_pick(call: CallbackQuery, state: FSMContext):
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    arg = call.data[len("quiet_"):]
+    if arg == "off":
+        await _apply_quiet(owner_id, owner_type, None, call.message)
+    else:
+        quiet = parse_quiet_hours(arg.removeprefix("set_"))
+        if quiet is None:
+            await call.answer()
+            return
+        await _apply_quiet(owner_id, owner_type, quiet, call.message)
+    await state.clear()
+    await call.answer()
+
+
+@dp.message(SetQuiet.value)
+async def quiet_custom(message: Message, state: FSMContext):
+    data = await state.get_data()
+    owner_id, owner_type = data["owner_id"], data["owner_type"]
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        # любая другая команда выводит из режима ввода (иначе "/add" считался бы кривым временем)
+        lang = await owner_lang(owner_id, owner_type)
+        await state.clear()
+        await message.answer(t(lang, "cancelled"))
+        return
+    if text.lower() in {"off", "выкл", "выключить", "wyłącz", "wylacz"}:
+        await _apply_quiet(owner_id, owner_type, None, message)
+        await state.clear()
+        return
+    quiet = parse_quiet_hours(text)
+    if quiet is None:
+        lang = await owner_lang(owner_id, owner_type)
+        await message.answer(t(lang, "quiet_invalid"))
+        return  # остаёмся в состоянии — можно повторить ввод
+    await _apply_quiet(owner_id, owner_type, quiet, message)
+    await state.clear()
 
 
 # ---------- добавление задачи ----------
@@ -455,8 +575,17 @@ async def add_remind_toggle(call: CallbackQuery, state: FSMContext):
         selected = data.get("remind_selected", [])
         remind_value = ",".join(selected) if selected else "0"
         await state.update_data(remind=remind_value)
-        await state.set_state(AddTask.tag)
-        await call.message.edit_text(t(lang, "ask_tag"))
+        # «Повторять, пока не выполню» — только для разовых задач: у повторяющихся
+        # (daily/weekly/...) каждое срабатывание и так приходит по расписанию.
+        if data.get("repeat") == "none":
+            await state.set_state(AddTask.nag)
+            await call.message.edit_text(
+                t(lang, "ask_nag", interval=NAG_INTERVAL_MINUTES, hours=NAG_MAX_HOURS), reply_markup=nag_kb(lang)
+            )
+        else:
+            await state.update_data(remind_until_done=False)
+            await state.set_state(AddTask.tag)
+            await call.message.edit_text(t(lang, "ask_tag"))
         await call.answer()
         return
 
@@ -471,6 +600,16 @@ async def add_remind_toggle(call: CallbackQuery, state: FSMContext):
             selected.add(code)
     await state.update_data(remind_selected=list(selected))
     await call.message.edit_reply_markup(reply_markup=remind_kb(lang, selected=selected))
+    await call.answer()
+
+
+@dp.callback_query(AddTask.nag, F.data.startswith("nag_"))
+async def add_nag_pick(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    lang = await owner_lang(data["owner_id"], data["owner_type"])
+    await state.update_data(remind_until_done=call.data == "nag_1")
+    await state.set_state(AddTask.tag)
+    await call.message.edit_text(t(lang, "ask_tag"))
     await call.answer()
 
 
@@ -492,6 +631,7 @@ async def _finalize_add_task(state: FSMContext, tag: str | None, target_message:
     lang = await owner_lang(owner_id, owner_type)
     tz = await owner_tz(owner_id, owner_type)
     due_at = datetime.fromisoformat(data["due_at"])
+    nag = bool(data.get("remind_until_done", False))
 
     task_id = await db.add_task(
         owner_id=owner_id,
@@ -501,9 +641,10 @@ async def _finalize_add_task(state: FSMContext, tag: str | None, target_message:
         repeat=data["repeat"],
         remind=data["remind"],
         tag=tag,
+        remind_until_done=nag,
     )
     await db.log_history(task_id, actor_id, data["title"], "created")
-    schedule_task(task_id, owner_id, owner_type, due_at, data["repeat"], data["remind"], tz)
+    schedule_task(task_id, owner_id, owner_type, due_at, data["repeat"], data["remind"], tz, remind_until_done=nag)
     if f"dailysummary_{owner_type}_{owner_id}" not in {j.id for j in scheduler.get_jobs()}:
         schedule_daily_summary(owner_id, owner_type, tz)
 
@@ -655,30 +796,88 @@ async def tags_filter(call: CallbackQuery):
 
 # ---------- /history ----------
 # История остаётся личной (кто что сделал), даже для общих задач чата — поэтому
-# ключом остаётся message.from_user.id, а не owner_id.
+# ключом остаётся message.from_user.id, а не owner_id. Три режима (inline-кнопки):
+# последние события / статистика за 7 дней / статистика за 30 дней.
+
+HISTORY_MODES = {"recent", "7", "30"}
+
+
+def history_kb(lang: str, active: str = "recent"):
+    def label(key: str, mode: str) -> str:
+        text = t(lang, key)
+        return f"✅ {text}" if mode == active else text
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label("btn_hist_recent", "recent"), callback_data="hist_recent")],
+        [InlineKeyboardButton(text=label("btn_hist_week", "7"), callback_data="hist_7")],
+        [InlineKeyboardButton(text=label("btn_hist_month", "30"), callback_data="hist_30")],
+    ])
+
+
+async def _current_streak(user_id: int, tz: ZoneInfo) -> int:
+    """Серия: сколько дней подряд была хотя бы одна выполненная задача (см. stats.compute_streak)."""
+    days = await db.get_done_days(user_id, tz.key)
+    return compute_streak(days, datetime.now(tz).date())
+
+
+async def _render_history_text(user_id: int, owner_id: int, owner_type: str, lang: str, mode: str) -> str:
+    tz = await owner_tz(owner_id, owner_type)
+    if mode == "recent":
+        events = await db.get_history(user_id)
+        if not events:
+            return t(lang, "no_history")
+        event_labels = {
+            "created": t(lang, "history_created"),
+            "done": "✅",
+            "undone": "↩️",
+            "deleted": "🗑",
+            "rescheduled": "📅",
+        }
+        lines = [t(lang, "history_title")]
+        for e in events:
+            local_dt = to_local(e["event_at"], tz)
+            icon = event_labels.get(e["event"], "•")
+            lines.append(f"{icon} {e['title']} — {local_dt.strftime('%d.%m %H:%M')}")
+        return "\n".join(lines)
+
+    days = int(mode)
+    rows = await db.get_history_stats(user_id, days, tz.key)
+    tot = totals(rows)
+    lines = [t(lang, "stats_title", days=days), "", t(lang, "stats_totals", **tot)]
+    if days <= 7:
+        weekdays = t(lang, "weekdays_short").split(",")
+        lines.append("")
+        for d, cnt in daily_series(rows, "done", days, datetime.now(tz).date()):
+            bar = "▇" * min(cnt, 10) if cnt else "·"
+            lines.append(f"{weekdays[d.weekday()]} {d.strftime('%d.%m')}  {bar} {cnt}")
+    streak = await _current_streak(user_id, tz)
+    if streak > 0:
+        lines += ["", t(lang, "streak_line", n=streak).strip()]
+    return "\n".join(lines)
+
 
 @dp.message(Command("history"))
 async def history_cmd(message: Message):
     owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
-    events = await db.get_history(message.from_user.id)
-    if not events:
-        await message.answer(t(lang, "no_history"))
+    text = await _render_history_text(message.from_user.id, owner_id, owner_type, lang, "recent")
+    await message.answer(text, reply_markup=history_kb(lang, "recent"))
+
+
+@dp.callback_query(F.data.startswith("hist_"))
+async def history_mode_pick(call: CallbackQuery):
+    mode = call.data.split("_", 1)[1]
+    if mode not in HISTORY_MODES:
+        await call.answer()
         return
-    tz = await owner_tz(owner_id, owner_type)
-    event_labels = {
-        "created": t(lang, "history_created"),
-        "done": "✅",
-        "undone": "↩️",
-        "deleted": "🗑",
-        "rescheduled": "📅",
-    }
-    lines = [t(lang, "history_title")]
-    for e in events:
-        local_dt = to_local(e["event_at"], tz)
-        icon = event_labels.get(e["event"], "•")
-        lines.append(f"{icon} {e['title']} — {local_dt.strftime('%d.%m %H:%M')}")
-    await message.answer("\n".join(lines))
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    text = await _render_history_text(call.from_user.id, owner_id, owner_type, lang, mode)
+    try:
+        await call.message.edit_text(text, reply_markup=history_kb(lang, mode))
+    except TelegramBadRequest:
+        pass  # "message is not modified" — нажали уже активную кнопку
+    await call.answer()
 
 
 # ---------- /export ----------
@@ -733,7 +932,8 @@ async def dashboard_set_password(message: Message, state: FSMContext):
         await message.answer(t(lang, "dashboard_password_short"))
         return
 
-    password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    # PBKDF2 с солью (см. dashboard.hash_password); в потоке, чтобы не блокировать event loop
+    password_hash = await asyncio.to_thread(dashboard.hash_password, password)
     token = await db.set_owner_dashboard_credentials(owner_id, owner_type, password_hash)
     invalidate_settings(owner_id, owner_type)
     await state.clear()
@@ -767,11 +967,13 @@ async def mark_done(call: CallbackQuery):
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     await db.mark_done(task_id)
     await db.log_history(task_id, call.from_user.id, task["title"], "done")
-    _safe_remove_job(f"due_{task_id}")
-    _safe_remove_job(f"remind_{task_id}")
+    _remove_task_jobs(task_id)
+    updated = await db.get_task(task_id)
+    text = await fmt_task(updated)
     await call.message.edit_text(
-        call.message.text + f"\n\n{t(lang, 'task_done')}",
+        text + f"\n\n{t(lang, 'task_done')}",
         reply_markup=task_kb(task_id, lang, done=True),
+        parse_mode="HTML",
     )
     await call.answer()
 
@@ -790,7 +992,8 @@ async def mark_undone(call: CallbackQuery):
     # Задача снова активна — нужно заново запланировать уведомления,
     # которые были сняты при отметке "выполнено".
     tz = await owner_tz(task["owner_id"], task["owner_type"])
-    schedule_task(task_id, task["owner_id"], task["owner_type"], task["due_at"], task["repeat"], task["remind"], tz)
+    schedule_task(task_id, task["owner_id"], task["owner_type"], task["due_at"], task["repeat"], task["remind"], tz,
+                  remind_until_done=bool(task.get("remind_until_done")))
 
     updated = await db.get_task(task_id)
     text = await fmt_task(updated)
@@ -819,8 +1022,7 @@ async def delete_task(call: CallbackQuery):
     await db.delete_task(task_id)
     if task:
         await db.log_history(task_id, call.from_user.id, task["title"], "deleted")
-    _safe_remove_job(f"due_{task_id}")
-    _safe_remove_job(f"remind_{task_id}")
+    _remove_task_jobs(task_id)
     await call.message.edit_text(t(lang, "task_deleted"))
     await call.answer()
 
@@ -845,10 +1047,19 @@ async def snooze_task(call: CallbackQuery):
         return
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     new_due = datetime.now(ZoneInfo("UTC")) + timedelta(hours=1)
-    await db.update_task(task_id, due_at=new_due)
-    _safe_remove_job(f"due_{task_id}")
-    tz = await owner_tz(task["owner_id"], task["owner_type"])
-    schedule_task(task_id, task["owner_id"], task["owner_type"], new_due, "none", "0", tz)
+    if task["repeat"] == "none":
+        await db.update_task(task_id, due_at=new_due)
+        _remove_task_jobs(task_id)
+        tz = await owner_tz(task["owner_id"], task["owner_type"])
+        schedule_task(task_id, task["owner_id"], task["owner_type"], new_due, "none", "0", tz,
+                      remind_until_done=bool(task.get("remind_until_done")))
+    else:
+        # Повторяющуюся задачу не трогаем (раньше snooze затирал cron одноразовой джобой
+        # и сдвигал due_at навсегда) — просто разовое напоминание через час.
+        scheduler.add_job(
+            send_due, "date", run_date=new_due,
+            args=[task["owner_id"], task["owner_type"], task_id], id=f"snooze_{task_id}", replace_existing=True
+        )
     await call.answer(t(lang, "snooze_1h"))
 
 
@@ -886,14 +1097,15 @@ async def edit_field_selected(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("editrep_"))
 async def edit_repeat_apply(call: CallbackQuery):
-    _, task_id, new_repeat = call.data.split("_")
+    _, task_id, new_repeat = call.data.split("_", 2)  # в коде повтора бывают "_" (monthly_nth_weekday)
     task_id = int(task_id)
     await db.update_task(task_id, repeat=new_repeat)
     task = await db.get_task(task_id)
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     tz = await owner_tz(task["owner_id"], task["owner_type"])
-    _safe_remove_job(f"due_{task_id}")
-    schedule_task(task_id, task["owner_id"], task["owner_type"], task["due_at"], new_repeat, task["remind"], tz)
+    _remove_task_jobs(task_id)
+    schedule_task(task_id, task["owner_id"], task["owner_type"], task["due_at"], new_repeat, task["remind"], tz,
+                  remind_until_done=bool(task.get("remind_until_done")))
     text = await fmt_task(task)
     await call.message.edit_text(text + f"\n\n{t(lang, 'repeat_updated')}", reply_markup=task_kb(task_id, lang, done=task["done"]), parse_mode="HTML")
     await call.answer()
@@ -921,9 +1133,9 @@ async def edit_value_apply(message: Message, state: FSMContext):
         due_at = to_utc(local_dt, tz)
         await db.update_task(task_id, due_at=due_at)
         await db.log_history(task_id, message.from_user.id, task["title"], "rescheduled")
-        _safe_remove_job(f"due_{task_id}")
-        _safe_remove_job(f"remind_{task_id}")
-        schedule_task(task_id, task["owner_id"], task["owner_type"], due_at, task["repeat"], task["remind"], tz)
+        _remove_task_jobs(task_id)
+        schedule_task(task_id, task["owner_id"], task["owner_type"], due_at, task["repeat"], task["remind"], tz,
+                      remind_until_done=bool(task.get("remind_until_done")))
 
     await state.clear()
     updated = await db.get_task(task_id)
@@ -1060,6 +1272,16 @@ def _safe_remove_job(job_id: str):
         pass
 
 
+def _remove_task_jobs(task_id: int):
+    """Снимает ВСЕ джобы задачи: due, remind_<id>_<код>, отложенные тихим часом и snooze.
+    (Раньше удалялся несуществующий id 'remind_<id>' — напоминания переживали done/редактирование.)"""
+    exact = {f"due_{task_id}", f"quiet_due_{task_id}", f"quiet_remind_{task_id}", f"snooze_{task_id}"}
+    remind_prefix = f"remind_{task_id}_"
+    for job in scheduler.get_jobs():
+        if job.id in exact or job.id.startswith(remind_prefix):
+            _safe_remove_job(job.id)
+
+
 def _nth_weekday_cron(local_due: datetime, tz: ZoneInfo) -> CronTrigger:
     """N-й день недели месяца, например 'второе воскресенье' — APScheduler поддерживает
     day='2nd sun' нативно в CronTrigger."""
@@ -1070,7 +1292,8 @@ def _nth_weekday_cron(local_due: datetime, tz: ZoneInfo) -> CronTrigger:
     return CronTrigger(day=day_expr, hour=local_due.hour, minute=local_due.minute, timezone=tz)
 
 
-def schedule_task(task_id: int, owner_id: int, owner_type: str, due_at_utc: datetime, repeat: str, remind: str, tz: ZoneInfo):
+def schedule_task(task_id: int, owner_id: int, owner_type: str, due_at_utc: datetime, repeat: str, remind: str,
+                  tz: ZoneInfo, remind_until_done: bool = False):
     now_utc = datetime.now(ZoneInfo("UTC"))
 
     remind_codes = [c for c in (remind or "").split(",") if c in REMIND_DELTAS]
@@ -1083,7 +1306,17 @@ def schedule_task(task_id: int, owner_id: int, owner_type: str, due_at_utc: date
             )
 
     local_due = to_local(due_at_utc, tz)
-    if repeat == "none":
+    if repeat == "none" and remind_until_done:
+        # Периодическая джоба: срабатывает в due_at и далее каждые NAG_INTERVAL_MINUTES минут,
+        # пока задача не выполнена, и полностью останавливается через NAG_MAX_HOURS после срока.
+        # Выполнение/удаление снимает джобу (_remove_task_jobs), плюс send_due сам проверяет done.
+        end_utc = due_at_utc + timedelta(hours=NAG_MAX_HOURS)
+        if end_utc > now_utc:  # иначе окно уже закрыто — не создаём «мёртвую» джобу
+            scheduler.add_job(
+                send_due, IntervalTrigger(minutes=NAG_INTERVAL_MINUTES, start_date=due_at_utc, end_date=end_utc),
+                args=[owner_id, owner_type, task_id], id=f"due_{task_id}", replace_existing=True
+            )
+    elif repeat == "none":
         if due_at_utc > now_utc:
             scheduler.add_job(
                 send_due, "date", run_date=due_at_utc,
@@ -1119,9 +1352,42 @@ async def _recipients(owner_id: int, owner_type: str) -> list[int]:
     return [owner_id]
 
 
+async def _quiet_end_utc(owner_id: int, owner_type: str) -> datetime | None:
+    """Если у владельца СЕЙЧАС тихий час — момент его окончания (UTC), иначе None."""
+    quiet = await owner_quiet(owner_id, owner_type)
+    if not quiet:
+        return None
+    tz = await owner_tz(owner_id, owner_type)
+    now_local = datetime.now(tz).replace(tzinfo=None)
+    if not is_quiet_time(now_local.time(), *quiet):
+        return None
+    return to_utc(next_quiet_end(now_local, *quiet), tz)
+
+
+async def _defer_if_quiet(owner_id: int, owner_type: str, task_id: int, kind: str) -> bool:
+    """kind: 'due' | 'remind'. В тихий час не шлём, а ставим date-джобу на конец тихого часа.
+    id джобы фиксирован (quiet_<kind>_<task_id>) + replace_existing: сколько бы раз за ночь ни
+    сработал периодический nag, утром придёт ОДНО сообщение."""
+    run_at = await _quiet_end_utc(owner_id, owner_type)
+    if run_at is None:
+        return False
+    func = send_reminder if kind == "remind" else send_due
+    scheduler.add_job(
+        func, "date", run_date=run_at, args=[owner_id, owner_type, task_id],
+        id=f"quiet_{kind}_{task_id}", replace_existing=True
+    )
+    logger.info("Тихий час: %s по задаче %s отложено до %s", kind, task_id, run_at.isoformat())
+    return True
+
+
 async def send_reminder(owner_id: int, owner_type: str, task_id: int):
     task = await db.get_task(task_id)
     if not task or task["done"]:
+        return
+    # Напоминание «скоро наступит» после срока (например, отложенное тихим часом) — уже ложь
+    if task["due_at"] <= datetime.now(ZoneInfo("UTC")):
+        return
+    if await _defer_if_quiet(owner_id, owner_type, task_id, "remind"):
         return
     lang = await owner_lang(owner_id, owner_type)
     for recipient_id in await _recipients(owner_id, owner_type):
@@ -1138,23 +1404,37 @@ async def send_due(owner_id: int, owner_type: str, task_id: int):
     if not task or task["done"]:
         return
 
+    now = datetime.now(ZoneInfo("UTC"))
+    nag = bool(task.get("remind_until_done")) and task["repeat"] == "none"
+
+    # Окно «повторять, пока не выполню» закрыто (на случай отложенной тихим часом джобы)
+    if nag and now > task["due_at"] + timedelta(hours=NAG_MAX_HOURS):
+        return
+
+    if await _defer_if_quiet(owner_id, owner_type, task_id, "due"):
+        return
+
     # Защита от дублей: если уведомление по этой задаче уже уходило недавно
     # (например, рестарт процесса вызвал повторный catch-up) — не шлём снова.
-    now = datetime.now(ZoneInfo("UTC"))
+    # Для повторяющихся напоминаний («nag») окно = интервал, чтобы не слать чаще раза в 30 минут.
+    is_followup = False
     if task.get("last_notified_at"):
         last = task["last_notified_at"]
         if last.tzinfo is None:
             last = last.replace(tzinfo=ZoneInfo("UTC"))
-        if (now - last) < timedelta(minutes=5):
+        is_followup = nag and last >= task["due_at"]
+        min_gap = timedelta(minutes=NAG_INTERVAL_MINUTES - 1) if is_followup else timedelta(minutes=5)
+        if (now - last) < min_gap:
             logger.info("Пропускаю дублирующее уведомление task_id=%s (последнее было %s назад)", task_id, now - last)
             return
 
     lang = await owner_lang(owner_id, owner_type)
+    text_key = "nag_text" if is_followup else "due_text"
     sent_any = False
     for recipient_id in await _recipients(owner_id, owner_type):
         try:
             await bot.send_message(
-                recipient_id, t(lang, "due_text", title=task["title"]),
+                recipient_id, t(lang, text_key, title=task["title"]),
                 reply_markup=task_kb(task_id, lang, done=False)
             )
             sent_any = True
@@ -1184,13 +1464,24 @@ async def send_daily_summary(owner_id: int, owner_type: str):
     if counts["overdue"] > 0:
         overdue_line = t(lang, "daily_summary_overdue", overdue=counts["overdue"])
 
-    text = t(
-        lang, "daily_summary",
-        active=counts["active"], done_today=counts["done_today"], overdue_line=overdue_line
-    )
+    tz = await owner_tz(owner_id, owner_type)
+    # Сводка — self-check, откладывать её нельзя; в тихий час шлём беззвучно
+    silent = await _quiet_end_utc(owner_id, owner_type) is not None
     for recipient_id in await _recipients(owner_id, owner_type):
         try:
-            await bot.send_message(recipient_id, text, parse_mode="Markdown")
+            # Серия считается персонально по каждому получателю (история привязана к тому, кто выполнил)
+            streak_line = ""
+            try:
+                n = await _current_streak(recipient_id, tz)
+                if n > 0:
+                    streak_line = t(lang, "streak_line", n=n)
+            except Exception:
+                logger.exception("Не удалось посчитать серию user_id=%s", recipient_id)
+            text = t(
+                lang, "daily_summary", active=counts["active"], done_today=counts["done_today"],
+                overdue_line=overdue_line, streak_line=streak_line,
+            )
+            await bot.send_message(recipient_id, text, parse_mode="Markdown", disable_notification=silent)
         except TelegramForbiddenError:
             logger.info("Юзер %s заблокировал бота, пропускаю daily_summary", recipient_id)
         except Exception:
@@ -1227,8 +1518,13 @@ async def restore_jobs():
         )
         if missed_today:
             await send_due(owner_id, owner_type, task["id"])
+            if task.get("remind_until_done"):
+                # дальше продолжаем «nag»-расписание (окно 24 ч ещё может быть открыто)
+                schedule_task(task["id"], owner_id, owner_type, task["due_at"], task["repeat"], task["remind"], tz,
+                              remind_until_done=True)
         else:
-            schedule_task(task["id"], owner_id, owner_type, task["due_at"], task["repeat"], task["remind"], tz)
+            schedule_task(task["id"], owner_id, owner_type, task["due_at"], task["repeat"], task["remind"], tz,
+                          remind_until_done=bool(task.get("remind_until_done")))
 
     # Планируем ежедневную сводку (self-check) для всех, кто когда-либо пользовался ботом
     known_owners = await db.get_all_known_owners()

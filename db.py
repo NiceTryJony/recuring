@@ -2,7 +2,7 @@ import logging
 import os
 import re
 import secrets
-from datetime import datetime
+from datetime import date, datetime, time
 from urllib.parse import quote
 
 import asyncpg
@@ -160,6 +160,17 @@ async def init_db():
             )
         """)
 
+        # Тихий час (локальное время владельца) — у user_settings и chat_settings,
+        # т.к. get_owner_settings/_owner_table обслуживают обе таблицы единообразно.
+        for tbl in ("user_settings", "chat_settings"):
+            await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS quiet_hours_start TIME")
+            await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS quiet_hours_end TIME")
+
+        # «Повторять напоминание, пока не выполню»
+        await conn.execute(
+            "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remind_until_done BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS task_history (
                 id SERIAL PRIMARY KEY,
@@ -174,6 +185,7 @@ async def init_db():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id, owner_type)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_subtasks_task_id ON subtasks(task_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_history_user_id ON task_history(user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_history_user_event_at ON task_history(user_id, event_at)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_members_chat_id ON chat_members(chat_id)")
 
 
@@ -190,13 +202,14 @@ async def close_db():
 async def add_task(
     owner_id: int, owner_type: str, title: str, due_at: datetime, repeat: str, remind: str,
     tag: str | None = None,
+    remind_until_done: bool = False,
 ) -> int:
     async def _run():
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(
-                """INSERT INTO tasks (owner_id, owner_type, title, due_at, repeat, remind, tag)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id""",
-                owner_id, owner_type, title, due_at, repeat, remind, tag
+                """INSERT INTO tasks (owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id""",
+                owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done
             )
             return row["id"]
     return await _with_retry(_run)
@@ -270,8 +283,10 @@ async def search_tasks(owner_id: int, owner_type: str, query_text: str, include_
     """Регистронезависимый поиск по названию задачи (ILIKE %query%), в рамках одного владельца."""
     async def _run():
         async with _pool.acquire() as conn:
-            sql = "SELECT * FROM tasks WHERE owner_id = $1 AND owner_type = $2 AND title ILIKE $3"
-            params = [owner_id, owner_type, f"%{query_text}%"]
+            # экранируем \\, % и _, чтобы поиск "50%" или "a_b" не превращался в wildcard
+            escaped = query_text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            sql = "SELECT * FROM tasks WHERE owner_id = $1 AND owner_type = $2 AND title ILIKE $3 ESCAPE '\\'"
+            params = [owner_id, owner_type, f"%{escaped}%"]
             if not include_done:
                 sql += " AND done = FALSE"
             sql += " ORDER BY done, due_at"
@@ -406,6 +421,52 @@ async def get_history(user_id: int, limit: int = 20) -> list[dict]:
     return await _with_retry(_run)
 
 
+def _history_scope(user_id: int | None, chat_id: int | None, idx: int) -> tuple[str, int]:
+    """Чьи события считаем. user_id — личная история (кто что сделал). chat_id — события по
+    ОБЩИМ задачам этого чата (для группового дашборда: личные задачи участников туда не попадают)."""
+    if chat_id is not None:
+        return f"task_id IN (SELECT id FROM tasks WHERE owner_id = ${idx} AND owner_type = 'chat')", chat_id
+    return f"user_id = ${idx}", user_id
+
+
+async def get_history_stats(user_id: int | None, days: int, tz_name: str, chat_id: int | None = None) -> list[dict]:
+    """События (created/done/deleted/...) по дням за последние `days` календарных дней
+    В ЛОКАЛЬНОМ часовом поясе (включая сегодняшний). [{'day': date, 'event': str, 'cnt': int}]."""
+    scope, scope_val = _history_scope(user_id, chat_id, 3)
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT date_trunc('day', event_at AT TIME ZONE $1::text)::date AS day, event, COUNT(*) AS cnt
+                    FROM task_history
+                    WHERE {scope}
+                      AND event_at >= (date_trunc('day', now() AT TIME ZONE $1::text)
+                                       - ($2::int - 1) * interval '1 day') AT TIME ZONE $1::text
+                    GROUP BY 1, 2
+                    ORDER BY 1""",
+                tz_name, days, scope_val
+            )
+            return [dict(r) for r in rows]
+    return await _with_retry(_run)
+
+
+async def get_done_days(user_id: int | None, tz_name: str, chat_id: int | None = None, limit: int = 400) -> list[date]:
+    """Различные локальные дни, в которые было хотя бы одно выполнение (для стрика), новые -> старые."""
+    scope, scope_val = _history_scope(user_id, chat_id, 2)
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT DISTINCT date_trunc('day', event_at AT TIME ZONE $1::text)::date AS day
+                    FROM task_history
+                    WHERE event = 'done' AND {scope}
+                    ORDER BY day DESC LIMIT $3""",
+                tz_name, scope_val, limit
+            )
+            return [r["day"] for r in rows]
+    return await _with_retry(_run)
+
+
 # ---------- участники групповых чатов ----------
 
 async def add_chat_member(chat_id: int, user_id: int):
@@ -476,6 +537,20 @@ async def set_owner_language(owner_id: int, owner_type: str, lang: str):
                 f"""INSERT INTO {table} ({id_col}, language) VALUES ($1, $2)
                     ON CONFLICT ({id_col}) DO UPDATE SET language = $2""",
                 owner_id, lang
+            )
+    await _with_retry(_run)
+
+
+async def set_owner_quiet_hours(owner_id: int, owner_type: str, start: time | None, end: time | None):
+    """start/end = None выключают тихий час."""
+    table, id_col = _owner_table(owner_type)
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                f"""INSERT INTO {table} ({id_col}, quiet_hours_start, quiet_hours_end) VALUES ($1, $2, $3)
+                    ON CONFLICT ({id_col}) DO UPDATE SET quiet_hours_start = $2, quiet_hours_end = $3""",
+                owner_id, start, end
             )
     await _with_retry(_run)
 

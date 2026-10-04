@@ -9,6 +9,7 @@ TEXTS = {
                    "/tags — задачи по тегу\n"
                    "/history — история выполненных\n"
                    "/timezone — сменить часовой пояс\n"
+                   "/quiet — тихий час (без уведомлений)\n"
                    "/lang — сменить язык\n"
                    "/dashboard — веб-страница со списком задач\n"
                    "/help — помощь",
@@ -51,7 +52,7 @@ TEXTS = {
         "daily_summary": "🌙 Вечерняя сводка\n\n"
                           "Активных задач: {active}\n"
                           "Выполнено сегодня: {done_today}\n"
-                          "{overdue_line}"
+                          "{overdue_line}{streak_line}"
                           "\n_Бот работает нормально._",
         "daily_summary_overdue": "⚠️ Просрочено: {overdue}\n",
         "btn_done": "Готово",
@@ -82,6 +83,25 @@ TEXTS = {
         "btn_sort_date": "По дате",
         "btn_sort_tag": "По тегу",
         "btn_sort_title": "По алфавиту",
+        "ask_nag": "🔁 Повторять напоминание, пока не выполню?\n(каждые {interval} мин, максимум {hours} ч после срока)",
+        "btn_nag_yes": "🔁 Да, повторять",
+        "btn_nag_no": "Нет, один раз",
+        "nag_line": "🔁 Напоминать, пока не выполнено",
+        "nag_text": "🔔 Всё ещё не выполнено: «{title}»",
+        "quiet_current": "🌙 Тихий час: {start}–{end}\nВ это время уведомления откладываются до его окончания.",
+        "quiet_none": "🌙 Тихий час выключен.",
+        "quiet_prompt": "Выбери вариант или введи свой в формате ЧЧ:ММ-ЧЧ:ММ, например 23:00-08:00 (/cancel — отменить):",
+        "quiet_set": "✅ Тихий час: {start}–{end}",
+        "quiet_off_done": "✅ Тихий час выключен",
+        "quiet_invalid": "Не понял. Формат: 23:00-08:00 (начало и конец должны отличаться). Или напиши «выкл».",
+        "btn_quiet_off": "Выключить",
+        "btn_hist_recent": "📜 Последние события",
+        "btn_hist_week": "📊 Статистика за неделю",
+        "btn_hist_month": "📊 Статистика за месяц",
+        "stats_title": "📊 Статистика за {days} дн.",
+        "stats_totals": "➕ Создано: {created}\n✅ Выполнено: {done}\n🗑 Удалено: {deleted}",
+        "streak_line": "🔥 Серия: {n} дн.\n",
+        "weekdays_short": "Пн,Вт,Ср,Чт,Пт,Сб,Вс",
     },
     "en": {
         "welcome": "Hi! I track your tasks and deadlines.\n\n"
@@ -91,6 +111,7 @@ TEXTS = {
                    "/tags — tasks by tag\n"
                    "/history — completed history\n"
                    "/timezone — change timezone\n"
+                   "/quiet — quiet hours (no notifications)\n"
                    "/lang — change language\n"
                    "/dashboard — web page with your tasks\n"
                    "/help — help",
@@ -133,7 +154,7 @@ TEXTS = {
         "daily_summary": "🌙 Evening summary\n\n"
                           "Active tasks: {active}\n"
                           "Completed today: {done_today}\n"
-                          "{overdue_line}"
+                          "{overdue_line}{streak_line}"
                           "\n_Bot is running normally._",
         "daily_summary_overdue": "⚠️ Overdue: {overdue}\n",
         "btn_done": "Done",
@@ -164,6 +185,25 @@ TEXTS = {
         "btn_sort_date": "By date",
         "btn_sort_tag": "By tag",
         "btn_sort_title": "Alphabetically",
+        "ask_nag": "🔁 Keep reminding me until it's done?\n(every {interval} min, up to {hours} h after the due time)",
+        "btn_nag_yes": "🔁 Yes, keep reminding",
+        "btn_nag_no": "No, just once",
+        "nag_line": "🔁 Reminds until done",
+        "nag_text": "🔔 Still not done: «{title}»",
+        "quiet_current": "🌙 Quiet hours: {start}–{end}\nNotifications are postponed until they end.",
+        "quiet_none": "🌙 Quiet hours are off.",
+        "quiet_prompt": "Pick an option or type your own as HH:MM-HH:MM, e.g. 23:00-08:00 (/cancel — cancel):",
+        "quiet_set": "✅ Quiet hours: {start}–{end}",
+        "quiet_off_done": "✅ Quiet hours turned off",
+        "quiet_invalid": "Didn't get that. Format: 23:00-08:00 (start and end must differ). Or type “off”.",
+        "btn_quiet_off": "Turn off",
+        "btn_hist_recent": "📜 Recent events",
+        "btn_hist_week": "📊 Last 7 days",
+        "btn_hist_month": "📊 Last 30 days",
+        "stats_title": "📊 Stats for {days} days",
+        "stats_totals": "➕ Created: {created}\n✅ Done: {done}\n🗑 Deleted: {deleted}",
+        "streak_line": "🔥 Streak: {n} days\n",
+        "weekdays_short": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
     },
     "pl": {
         "welcome": "Cześć! Pilnuję Twoich zadań i terminów.\n\n"
@@ -173,6 +213,7 @@ TEXTS = {
                    "/tags — zadania wg tagu\n"
                    "/history — historia wykonanych\n"
                    "/timezone — zmień strefę czasową\n"
+                   "/quiet — cisza nocna (bez powiadomień)\n"
                    "/lang — zmień język\n"
                    "/dashboard — strona internetowa z listą zadań\n"
                    "/help — pomoc",
@@ -215,7 +256,7 @@ TEXTS = {
         "daily_summary": "🌙 Wieczorne podsumowanie\n\n"
                           "Aktywne zadania: {active}\n"
                           "Wykonane dzisiaj: {done_today}\n"
-                          "{overdue_line}"
+                          "{overdue_line}{streak_line}"
                           "\n_Bot działa poprawnie._",
         "daily_summary_overdue": "⚠️ Zaległe: {overdue}\n",
         "btn_done": "Gotowe",
@@ -246,6 +287,25 @@ TEXTS = {
         "btn_sort_date": "Wg daty",
         "btn_sort_tag": "Wg tagu",
         "btn_sort_title": "Alfabetycznie",
+        "ask_nag": "🔁 Przypominać, dopóki nie wykonam?\n(co {interval} min, maksymalnie {hours} h po terminie)",
+        "btn_nag_yes": "🔁 Tak, powtarzaj",
+        "btn_nag_no": "Nie, jednorazowo",
+        "nag_line": "🔁 Przypomina do skutku",
+        "nag_text": "🔔 Wciąż niewykonane: «{title}»",
+        "quiet_current": "🌙 Cisza nocna: {start}–{end}\nPowiadomienia są odkładane do jej zakończenia.",
+        "quiet_none": "🌙 Cisza nocna jest wyłączona.",
+        "quiet_prompt": "Wybierz opcję lub wpisz własną w formacie GG:MM-GG:MM, np. 23:00-08:00 (/cancel — anuluj):",
+        "quiet_set": "✅ Cisza nocna: {start}–{end}",
+        "quiet_off_done": "✅ Cisza nocna wyłączona",
+        "quiet_invalid": "Nie rozumiem. Format: 23:00-08:00 (początek i koniec muszą się różnić). Lub napisz „wyłącz”.",
+        "btn_quiet_off": "Wyłącz",
+        "btn_hist_recent": "📜 Ostatnie zdarzenia",
+        "btn_hist_week": "📊 Statystyki z tygodnia",
+        "btn_hist_month": "📊 Statystyki z miesiąca",
+        "stats_title": "📊 Statystyki z {days} dni",
+        "stats_totals": "➕ Utworzone: {created}\n✅ Wykonane: {done}\n🗑 Usunięte: {deleted}",
+        "streak_line": "🔥 Seria: {n} dni\n",
+        "weekdays_short": "Pn,Wt,Śr,Cz,Pt,Sb,Nd",
     },
 }
 

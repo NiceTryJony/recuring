@@ -12,18 +12,52 @@ owner_id/owner_type, дальше вся логика страницы рабо�
 в боте через /lang). Переводы не завязаны на i18n.py бота, чтобы не тащить
 aiogram-зависимости в веб-слой — здесь свой маленький словарь DASHBOARD_TEXTS."""
 
+import asyncio
 import hashlib
 import hmac
+import logging
 import os
 import time
+from datetime import datetime
 from html import escape
 
 from aiohttp import web as aioweb
 
 import db
+from stats import compute_streak, daily_series
 
+logger = logging.getLogger(__name__)
+
+CHART_DAYS = 14
 SESSION_SECRET = os.environ.get("BOT_TOKEN", "fallback-secret")  # используем токен бота как секрет для HMAC
 SESSION_MAX_AGE = 60 * 60 * 24 * 7  # неделя
+
+
+# ---------- пароли ----------
+# Раньше пароль хранился как незасоленный SHA-256 (подбирается по радужным таблицам за секунды
+# при утечке БД). Теперь — PBKDF2-HMAC-SHA256 с солью; старые хеши (64 hex-символа) продолжают
+# проверяться, так что уже созданные дашборды не ломаются.
+_PBKDF2_ITERATIONS = 200_000
+
+
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
+    return f"pbkdf2${_PBKDF2_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    if not stored:
+        return False
+    if stored.startswith("pbkdf2$"):
+        try:
+            _, iters, salt_hex, hash_hex = stored.split("$")
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iters))
+        except ValueError:
+            return False
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    legacy = hashlib.sha256(password.encode("utf-8")).hexdigest()  # старый формат
+    return hmac.compare_digest(legacy, stored)
 
 
 def _sign_session(owner_id: int, owner_type: str, token: str) -> str:
@@ -61,6 +95,8 @@ DASHBOARD_TEXTS = {
         "heading_chat": "📋 Общие задачи чата",
         "empty": "Задач пока нет.",
         "not_found": "Дашборд не найден. Проверь ссылку.",
+        "chart_title": "Выполнено за {days} дн.",
+        "streak": "🔥 Серия: {n} дн.",
         "repeat": {
             "none": "",
             "daily": "Каждый день",
@@ -83,6 +119,8 @@ DASHBOARD_TEXTS = {
         "heading_chat": "📋 Shared Chat Tasks",
         "empty": "No tasks yet.",
         "not_found": "Dashboard not found. Check the link.",
+        "chart_title": "Completed in the last {days} days",
+        "streak": "🔥 Streak: {n} days",
         "repeat": {
             "none": "",
             "daily": "Every day",
@@ -105,6 +143,8 @@ DASHBOARD_TEXTS = {
         "heading_chat": "📋 Wspólne zadania czatu",
         "empty": "Brak zadań.",
         "not_found": "Nie znaleziono panelu. Sprawdź link.",
+        "chart_title": "Wykonane w ostatnich {days} dniach",
+        "streak": "🔥 Seria: {n} dni",
         "repeat": {
             "none": "",
             "daily": "Codziennie",
@@ -164,10 +204,22 @@ h1 {{ font-size: 1.4rem; }}
 .tag {{ display: inline-block; background: #333; padding: 2px 8px; border-radius: 4px;
         font-size: 0.75rem; margin-top: 6px; }}
 .empty {{ color: #777; text-align: center; padding: 3rem 1rem; }}
+.chart-block {{ background: #1a1a1a; border-radius: 10px; padding: 1rem; margin-top: 1.5rem; }}
+.chart-head {{ display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px; }}
+.chart-title {{ font-weight: 600; }}
+.streak {{ color: #e07a3f; font-size: 0.9rem; }}
+.bars {{ display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 12px; }}
+.col {{ flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; }}
+.num {{ font-size: 0.7rem; color: #bbb; height: 14px; line-height: 14px; }}
+.bar {{ width: 100%; background: #e07a3f; border-radius: 3px 3px 0 0; }}
+.bar.zero {{ background: #333; }}
+.labels {{ display: flex; gap: 4px; margin-top: 4px; }}
+.labels span {{ flex: 1; text-align: center; font-size: 0.65rem; color: #777; }}
 </style></head>
 <body>
 <h1>{heading}</h1>
 {tasks_html}
+{chart_html}
 </body></html>"""
 
 
@@ -179,7 +231,7 @@ def _render_task(task: dict, tz, lang: str) -> str:
     css_class = "task"
     if task["done"]:
         css_class += " done"
-    elif local_due < now:
+    elif local_due < now and task["repeat"] == "none":
         css_class += " overdue"
 
     tag_html = f'<div class="tag">🏷 {escape(task["tag"])}</div>' if task.get("tag") else ""
@@ -191,6 +243,37 @@ def _render_task(task: dict, tz, lang: str) -> str:
 <div class="meta">📅 {local_due.strftime('%d.%m.%Y %H:%M')}{repeat_html}</div>
 {tag_html}
 </div>"""
+
+
+def _render_chart(series: list, streak: int, texts: dict) -> str:
+    """Столбчатый график на чистом HTML/CSS: высота столбца в px, без JS."""
+    max_px = 90
+    peak = max((c for _, c in series), default=0)
+    cols, labels = [], []
+    for d, c in series:
+        px = round(c / peak * max_px) if peak else 0
+        zero = " zero" if c == 0 else ""
+        cols.append(
+            f'<div class="col" title="{d.strftime("%d.%m")}: {c}">'
+            f'<div class="num">{c if c else ""}</div><div class="bar{zero}" style="height:{max(px, 2)}px"></div></div>'
+        )
+        labels.append(f"<span>{d.day}</span>")
+    streak_html = f'<div class="streak">{escape(texts["streak"].format(n=streak))}</div>' if streak > 0 else ""
+    title = escape(texts["chart_title"].format(days=len(series)))
+    return (
+        f'<div class="chart-block"><div class="chart-head"><div class="chart-title">{title}</div>{streak_html}</div>'
+        f'<div class="bars">{"".join(cols)}</div><div class="labels">{"".join(labels)}</div></div>'
+    )
+
+
+async def _build_chart(owner_id: int, owner_type: str, tz, texts: dict) -> str:
+    # личный дашборд — история самого пользователя; групповой — события по общим задачам чата
+    user_id, chat_id = (owner_id, None) if owner_type == "user" else (None, owner_id)
+    rows = await db.get_history_stats(user_id, CHART_DAYS, tz.key, chat_id=chat_id)
+    done_days = await db.get_done_days(user_id, tz.key, chat_id=chat_id)
+    today = datetime.now(tz).date()
+    series = daily_series(rows, "done", CHART_DAYS, today)
+    return _render_chart(series, compute_streak(done_days, today), texts)
 
 
 async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
@@ -212,11 +295,13 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     if request.method == "POST":
         data = await request.post()
         password = data.get("password", "")
-        password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-        if hmac.compare_digest(password_hash, settings["dashboard_password_hash"] or ""):
+        if await asyncio.to_thread(verify_password, password, settings["dashboard_password_hash"] or ""):
             session_value = _sign_session(owner_id, owner_type, token)
             resp = aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
-            resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True, samesite="Strict")
+            # Render терминирует TLS на прокси — схему берём из X-Forwarded-Proto
+            is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
+            resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
+                            samesite="Strict", secure=is_https)
             return resp
         error_html = f'<div class="error">{escape(texts["error_wrong_password"])}</div>'
         return aioweb.Response(
@@ -239,9 +324,19 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     else:
         tasks_html = "\n".join(_render_task(t, tz, lang) for t in tasks)
 
+    try:
+        chart_html = await _build_chart(owner_id, owner_type, tz, texts)
+    except Exception:
+        # график — второстепенный блок: сбой БД/статистики не должен ронять весь дашборд
+        logger.exception("Не удалось построить график активности owner=%s/%s", owner_type, owner_id)
+        chart_html = ""
+
     heading = texts["heading_chat"] if owner_type == "chat" else texts["heading"]
-    page = TASKS_PAGE.format(tasks_html=tasks_html, heading=heading, **{k: v for k, v in texts.items() if k not in ("heading",)})
-    return aioweb.Response(text=page, content_type="text/html")
+    page = TASKS_PAGE.format(
+        tasks_html=tasks_html, chart_html=chart_html, heading=heading,
+        **{k: v for k, v in texts.items() if k not in ("heading",)},
+    )
+    return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 def register_dashboard_routes(app: aioweb.Application):
