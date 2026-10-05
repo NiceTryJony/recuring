@@ -113,6 +113,7 @@ async def init_db():
         await conn.execute("ALTER TABLE tasks ALTER COLUMN owner_type SET NOT NULL")
 
         # Миграция для существующих баз (добавление колонок, если их ещё нет)
+        await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by BIGINT")
         await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tag TEXT")
         await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ")
         await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_notified_at TIMESTAMPTZ")
@@ -202,6 +203,11 @@ async def init_db():
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
+        # photo_file_id — Telegram file_id самой крупной версии фото профиля на
+        # момент последнего входа через Login Widget. Сам file_id не истекает,
+        # но ссылка на файл (getFile) живёт ~1ч — поэтому дашборд резолвит её
+        # заново при каждом показе аватарки, а не хранит готовый URL.
+        await conn.execute("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS photo_file_id TEXT")
 
 
 async def close_db():
@@ -218,13 +224,14 @@ async def add_task(
     owner_id: int, owner_type: str, title: str, due_at: datetime, repeat: str, remind: str,
     tag: str | None = None,
     remind_until_done: bool = False,
+    created_by: int | None = None,
 ) -> int:
     async def _run():
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(
-                """INSERT INTO tasks (owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id""",
-                owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done
+                """INSERT INTO tasks (owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done, created_by)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
+                owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done, created_by
             )
             return row["id"]
     return await _with_retry(_run)
@@ -465,6 +472,24 @@ async def get_history_stats(user_id: int | None, days: int, tz_name: str, chat_i
     return await _with_retry(_run)
 
 
+async def get_event_feed(
+    user_id: int | None, chat_id: int | None, limit: int = 30, offset: int = 0,
+) -> list[dict]:
+    """Постраничная лента событий (created/done/undone/deleted/rescheduled) для
+    дашборда — в отличие от get_history (которая отдаёт только последние 20 без
+    пагинации и только для личного user_id), эта поддерживает offset и chat_id."""
+    scope, scope_val = _history_scope(user_id, chat_id, 3)
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT * FROM task_history WHERE {scope} ORDER BY event_at DESC LIMIT $1 OFFSET $2",
+                limit, offset, scope_val
+            )
+            return [dict(r) for r in rows]
+    return await _with_retry(_run)
+
+
 async def get_done_days(user_id: int | None, tz_name: str, chat_id: int | None = None, limit: int = 400) -> list[date]:
     """Различные локальные дни, в которые было хотя бы одно выполнение (для стрика), новые -> старые."""
     scope, scope_val = _history_scope(user_id, chat_id, 2)
@@ -504,25 +529,31 @@ async def get_chat_members(chat_id: int) -> list[int]:
 
 # ---------- telegram_users: имена для отображения ----------
 
-async def upsert_telegram_user(user_id: int, username: str | None, first_name: str | None):
+async def upsert_telegram_user(
+    user_id: int, username: str | None, first_name: str | None, photo_file_id: str | None = None,
+):
     """Вызывается при каждом успешном входе через Telegram Login Widget на
-    дашборде — данные могут устареть (смена имени/username), поэтому просто
-    перезаписываем при каждом логине, а не только при первом появлении."""
+    дашборде — данные могут устареть (смена имени/username/фото), поэтому просто
+    перезаписываем при каждом логине, а не только при первом появлении.
+    photo_file_id: передавай None только если фото не получилось узнать в этот
+    раз (сетевой сбой и т.п.) — COALESCE сохранит прежнее значение, а не сотрёт его."""
     async def _run():
         async with _pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO telegram_users (user_id, username, first_name, updated_at)
-                   VALUES ($1, $2, $3, now())
+                """INSERT INTO telegram_users (user_id, username, first_name, photo_file_id, updated_at)
+                   VALUES ($1, $2, $3, $4, now())
                    ON CONFLICT (user_id) DO UPDATE
-                   SET username = $2, first_name = $3, updated_at = now()""",
-                user_id, username, first_name
+                   SET username = $2, first_name = $3,
+                       photo_file_id = COALESCE($4, telegram_users.photo_file_id),
+                       updated_at = now()""",
+                user_id, username, first_name, photo_file_id
             )
     await _with_retry(_run)
 
 
 async def get_telegram_users(user_ids: list[int]) -> dict[int, dict]:
-    """Батч-подгрузка имён по списку id — для рендера истории/дашборда без
-    N+1 запросов. Возвращает {user_id: {"username":..., "first_name":...}};
+    """Батч-подгрузка имён/фото по списку id — для рендера истории/дашборда без
+    N+1 запросов. Возвращает {user_id: {"username":..., "first_name":..., "photo_file_id":...}};
     id без записи в таблице (человек ещё не логинился через виджет) просто
     отсутствуют в результате — вызывающий код сам решает, что показать (например,
     сырой id)."""
@@ -531,10 +562,13 @@ async def get_telegram_users(user_ids: list[int]) -> dict[int, dict]:
     async def _run():
         async with _pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT user_id, username, first_name FROM telegram_users WHERE user_id = ANY($1::bigint[])",
+                "SELECT user_id, username, first_name, photo_file_id FROM telegram_users WHERE user_id = ANY($1::bigint[])",
                 user_ids
             )
-            return {r["user_id"]: {"username": r["username"], "first_name": r["first_name"]} for r in rows}
+            return {
+                r["user_id"]: {"username": r["username"], "first_name": r["first_name"], "photo_file_id": r["photo_file_id"]}
+                for r in rows
+            }
     return await _with_retry(_run)
 
 

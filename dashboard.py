@@ -29,8 +29,10 @@ from stats import compute_streak, daily_series
 logger = logging.getLogger(__name__)
 
 CHART_DAYS = 14
-SESSION_SECRET = os.environ.get("BOT_TOKEN", "fallback-secret")  # используем токен бота как секрет для HMAC
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+SESSION_SECRET = BOT_TOKEN or "fallback-secret"  # используем токен бота как секрет для HMAC
 SESSION_MAX_AGE = 60 * 60 * 24 * 7  # неделя
+AVATAR_CACHE_SECONDS = 3600  # getFile-ссылка живёт ~1ч, чтобы не дёргать Bot API на каждый показ
 # Имя бота без @ — нужно виджету Telegram Login (data-telegram-login=...).
 # Домен, на котором крутится дашборд, должен быть прописан боту через
 # /setdomain в BotFather, иначе виджет откажется логинить.
@@ -165,6 +167,85 @@ def verify_telegram_login(data: dict) -> bool:
     return True
 
 
+# ---------- аватарки профиля (Telegram Bot API) ----------
+# Telegram не присылает фото профиля сам по себе — ни в Login Widget, ни в
+# обычных апдейтах бота. Нужно отдельно спросить getUserProfilePhotos (даёт
+# file_id, не истекает) и на показ — getFile (даёт file_path, истекает через
+# ~час, поэтому резолвим заново при каждом открытии дашборда, а не храним URL).
+# Токен бота никогда не уходит на фронтенд: картинка всегда отдаётся через
+# наш же прокси-роут /dashboard/{token}/avatar/{user_id}.
+
+async def _fetch_profile_photo_file_id(tg_user_id: int) -> str | None:
+    if not BOT_TOKEN:
+        return None
+    import aiohttp
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params={"user_id": tg_user_id, "limit": 1}, timeout=10) as resp:
+                data = await resp.json()
+    except Exception:
+        logger.exception("Не удалось получить фото профиля для user_id=%s", tg_user_id)
+        return None
+    if not data.get("ok") or not data["result"]["photos"]:
+        return None
+    sizes = data["result"]["photos"][0]
+    return sizes[-1]["file_id"]  # последний размер — самый крупный
+
+
+async def _resolve_file_path(file_id: str) -> str | None:
+    import aiohttp
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params={"file_id": file_id}, timeout=10) as resp:
+            data = await resp.json()
+    if not data.get("ok"):
+        return None
+    return data["result"]["file_path"]
+
+
+async def handle_avatar(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/avatar/{user_id} — отдаёт картинку аватарки,
+    проксируя её с серверов Telegram, чтобы не светить BOT_TOKEN на фронтенде.
+    Доступ не завязан на сессию (как и сами изображения в <img>), но токен
+    дашборда должен быть валиден, иначе id участников чата можно перебирать."""
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings or not BOT_TOKEN:
+        return aioweb.Response(status=404)
+    try:
+        user_id = int(request.match_info["user_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    users = await db.get_telegram_users([user_id])
+    photo_file_id = users.get(user_id, {}).get("photo_file_id")
+    if not photo_file_id:
+        return aioweb.Response(status=404)
+
+    file_path = await _resolve_file_path(photo_file_id)
+    if not file_path:
+        return aioweb.Response(status=404)
+
+    import aiohttp
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file_url, timeout=10) as resp:
+                if resp.status != 200:
+                    return aioweb.Response(status=404)
+                body = await resp.read()
+                content_type = resp.headers.get("Content-Type", "image/jpeg")
+    except Exception:
+        logger.exception("Не удалось скачать аватарку file_id=%s", photo_file_id)
+        return aioweb.Response(status=404)
+
+    return aioweb.Response(
+        body=body, content_type=content_type,
+        headers={"Cache-Control": f"private, max-age={AVATAR_CACHE_SECONDS}"},
+    )
+
+
 # ---------- переводы ----------
 
 DASHBOARD_TEXTS = {
@@ -198,6 +279,17 @@ DASHBOARD_TEXTS = {
         "btn_add": "Добавить",
         "error_empty_title": "Введите название задачи",
         "tg_widget_note": "Войдите через Telegram, чтобы действия записывались под вашим именем",
+        "nav_history": "📜 История",
+        "nav_back": "⬅️ К задачам",
+        "history_page_title": "История — Task Reminder",
+        "history_heading": "📜 История событий",
+        "history_empty": "Событий пока нет.",
+        "event_created": "➕ создал(а) задачу",
+        "event_done": "✅ выполнил(а)",
+        "event_undone": "↩️ отменил(а) выполнение",
+        "event_deleted": "🗑 удалил(а)",
+        "event_rescheduled": "📅 перенёс(ла)",
+        "btn_load_more": "Показать ещё",
     },
     "en": {
         "html_lang": "en",
@@ -229,6 +321,17 @@ DASHBOARD_TEXTS = {
         "btn_add": "Add",
         "error_empty_title": "Enter a task title",
         "tg_widget_note": "Sign in with Telegram so actions are recorded under your name",
+        "nav_history": "📜 History",
+        "nav_back": "⬅️ Back to tasks",
+        "history_page_title": "History — Task Reminder",
+        "history_heading": "📜 Event history",
+        "history_empty": "No events yet.",
+        "event_created": "➕ created the task",
+        "event_done": "✅ completed",
+        "event_undone": "↩️ unmarked",
+        "event_deleted": "🗑 deleted",
+        "event_rescheduled": "📅 rescheduled",
+        "btn_load_more": "Load more",
     },
     "pl": {
         "html_lang": "pl",
@@ -260,6 +363,17 @@ DASHBOARD_TEXTS = {
         "btn_add": "Dodaj",
         "error_empty_title": "Wpisz nazwę zadania",
         "tg_widget_note": "Zaloguj się przez Telegram, aby działania zapisywały się pod twoim imieniem",
+        "nav_history": "📜 Historia",
+        "nav_back": "⬅️ Do zadań",
+        "history_page_title": "Historia — Task Reminder",
+        "history_heading": "📜 Historia zdarzeń",
+        "history_empty": "Brak zdarzeń.",
+        "event_created": "➕ utworzył(a) zadanie",
+        "event_done": "✅ wykonał(a)",
+        "event_undone": "↩️ cofnął(ęła) wykonanie",
+        "event_deleted": "🗑 usunął(ęła)",
+        "event_rescheduled": "📅 przełożył(a)",
+        "btn_load_more": "Pokaż więcej",
     },
 }
 
@@ -340,6 +454,12 @@ h1 {{ font-size: 1.4rem; }}
 .task-actions .del-btn:hover {{ color: #e05f5f; }}
 .tag {{ display: inline-block; background: #333; padding: 2px 8px; border-radius: 4px;
         font-size: 0.75rem; margin-top: 6px; }}
+.task-author {{ display: flex; align-items: center; gap: 6px; margin-top: 6px;
+                 font-size: 0.8rem; color: #aaa; }}
+.avatar {{ width: 20px; height: 20px; border-radius: 50%; object-fit: cover;
+           background: #333; flex-shrink: 0; }}
+.avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center;
+                        font-size: 0.7rem; }}
 .empty {{ color: #777; text-align: center; padding: 3rem 1rem; }}
 .chart-block {{ background: #1a1a1a; border-radius: 10px; padding: 1rem; margin-top: 1.5rem; }}
 .chart-head {{ display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px; }}
@@ -363,10 +483,22 @@ h1 {{ font-size: 1.4rem; }}
 .tg-widget-banner {{ background: #1a1a1a; border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1rem;
     display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }}
 .tg-widget-banner span {{ font-size: 0.85rem; color: #aaa; }}
+.nav-link {{ display: inline-block; color: #e07a3f; text-decoration: none; font-size: 0.85rem; margin-bottom: 1rem; }}
+.nav-link:hover {{ text-decoration: underline; }}
+.event {{ background: #1a1a1a; border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 0.6rem;
+          display: flex; gap: 0.65rem; align-items: center; }}
+.event-body {{ flex: 1; min-width: 0; }}
+.event-line {{ font-size: 0.92rem; }}
+.event-line .ev-title {{ font-weight: 600; }}
+.event-time {{ color: #777; font-size: 0.78rem; margin-top: 2px; }}
+.load-more {{ display: block; width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333;
+    background: #1a1a1a; color: #ccc; text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box; }}
+.load-more:hover {{ border-color: #e07a3f; color: #e07a3f; }}
 @media (max-width: 480px) {{ .new-task-form {{ flex-wrap: wrap; }} .new-task-form button {{ width: 100%; }} }}
 </style></head>
 <body>
 <h1>{heading}</h1>
+{nav_html}
 {tg_widget_html}
 {new_task_error}
 <form class="new-task-form" method="post" action="/dashboard/{token}/tasks/new">
@@ -380,7 +512,142 @@ h1 {{ font-size: 1.4rem; }}
 </body></html>"""
 
 
-def _render_task(task: dict, tz, lang: str, token: str, csrf: str) -> str:
+HISTORY_PAGE = """<!DOCTYPE html>
+<html lang="{html_lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{history_page_title}</title>
+<style>
+body {{ font-family: -apple-system, sans-serif; background: #0f0f0f; color: #eee;
+       margin: 0; padding: 1.5rem; max-width: 640px; margin: 0 auto; }}
+h1 {{ font-size: 1.4rem; }}
+.nav-link {{ display: inline-block; color: #e07a3f; text-decoration: none; font-size: 0.85rem; margin-bottom: 1rem; }}
+.nav-link:hover {{ text-decoration: underline; }}
+.event {{ background: #1a1a1a; border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 0.6rem;
+          display: flex; gap: 0.65rem; align-items: center; }}
+.event-body {{ flex: 1; min-width: 0; }}
+.event-line {{ font-size: 0.92rem; }}
+.event-line .ev-title {{ font-weight: 600; }}
+.event-time {{ color: #777; font-size: 0.78rem; margin-top: 2px; }}
+.avatar {{ width: 28px; height: 28px; border-radius: 50%; object-fit: cover;
+           background: #333; flex-shrink: 0; }}
+.avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem; }}
+.empty {{ color: #777; text-align: center; padding: 3rem 1rem; }}
+.load-more {{ display: block; width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333;
+    background: #1a1a1a; color: #ccc; text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box; }}
+.load-more:hover {{ border-color: #e07a3f; color: #e07a3f; }}
+</style></head>
+<body>
+<a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
+<h1>{history_heading}</h1>
+{events_html}
+{load_more_html}
+</body></html>"""
+
+
+def _render_event(ev: dict, tz, lang: str, token: str, creator: dict | None) -> str:
+    texts = _dt(lang)
+    local_dt = ev["event_at"].astimezone(tz)
+    label = texts.get(f"event_{ev['event']}", ev["event"])
+    actor_id = ev["user_id"]
+    if creator and (creator.get("first_name") or creator.get("username")):
+        name = creator.get("first_name") or f"@{creator['username']}"
+    else:
+        name = f"id{actor_id}"
+    if creator and creator.get("photo_file_id"):
+        avatar_html = f'<img class="avatar" src="/dashboard/{token}/avatar/{actor_id}" alt="">'
+    else:
+        avatar_html = '<span class="avatar avatar-placeholder">👤</span>'
+    return f"""<div class="event">
+{avatar_html}
+<div class="event-body">
+<div class="event-line">{escape(name)} {escape(label)} «<span class="ev-title">{escape(ev["title"])}</span>»</div>
+<div class="event-time">{local_dt.strftime('%d.%m.%Y %H:%M')}</div>
+</div>
+</div>"""
+
+
+HISTORY_PAGE_SIZE = 30
+
+
+async def handle_history(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/history — пока только для группового дашборда:
+    для личного автор события всегда один и тот же человек, лента не нужна."""
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        return aioweb.Response(text=_dt("ru")["not_found"], status=404)
+
+    owner_id = settings["owner_id"]
+    owner_type = settings["owner_type"]
+    lang = settings.get("language", "ru")
+    texts = _dt(lang)
+
+    if owner_type != "chat":
+        return aioweb.Response(status=404)
+
+    cookie = request.cookies.get(f"session_{token}")
+    session = _verify_session(cookie) if cookie else None
+    if session is None or (session[0], session[1]) != (owner_id, owner_type):
+        # Как и на главной странице — незалогиненный видит форму пароля.
+        return aioweb.Response(text=LOGIN_PAGE.format(error="", **texts), content_type="text/html")
+
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(settings["timezone"])
+    except Exception:
+        tz = ZoneInfo("UTC")
+
+    try:
+        offset = max(0, int(request.query.get("offset", "0")))
+    except ValueError:
+        offset = 0
+
+    # Берём на одну запись больше лимита — если она есть, значит дальше ещё
+    # что-то осталось и нужно показать "Показать ещё".
+    events = await db.get_event_feed(None, owner_id, limit=HISTORY_PAGE_SIZE + 1, offset=offset)
+    has_more = len(events) > HISTORY_PAGE_SIZE
+    events = events[:HISTORY_PAGE_SIZE]
+
+    if not events:
+        events_html = f'<div class="empty">{escape(texts["history_empty"])}</div>'
+    else:
+        actor_ids = {e["user_id"] for e in events}
+        creators = await db.get_telegram_users(list(actor_ids))
+        events_html = "\n".join(_render_event(e, tz, lang, token, creators.get(e["user_id"])) for e in events)
+
+    load_more_html = ""
+    if has_more:
+        next_offset = offset + HISTORY_PAGE_SIZE
+        load_more_html = f'<a class="load-more" href="/dashboard/{token}/history?offset={next_offset}">{escape(texts["btn_load_more"])}</a>'
+
+    page = HISTORY_PAGE.format(
+        token=token, events_html=events_html, load_more_html=load_more_html,
+        **{k: v for k, v in texts.items() if k != "repeat"},
+    )
+    return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+def _render_author(created_by: int | None, creator: dict | None, token: str) -> str:
+    """Бейдж автора (аватар + имя) для группового дашборда. creator — запись из
+    db.get_telegram_users (есть только у тех, кто хоть раз логинился через
+    Telegram Login Widget); для остальных просто показываем raw id."""
+    if not created_by:
+        return ""
+    if creator and (creator.get("first_name") or creator.get("username")):
+        name = creator.get("first_name") or f"@{creator['username']}"
+    else:
+        name = f"id{created_by}"
+    if creator and creator.get("photo_file_id"):
+        avatar_html = f'<img class="avatar" src="/dashboard/{token}/avatar/{created_by}" alt="">'
+    else:
+        avatar_html = '<span class="avatar avatar-placeholder">👤</span>'
+    return f'<div class="task-author">{avatar_html}<span>{escape(name)}</span></div>'
+
+
+def _render_task(
+    task: dict, tz, lang: str, token: str, csrf: str,
+    creator: dict | None = None, owner_type: str = "user",
+) -> str:
     import datetime as dt
     texts = _dt(lang)
     local_due = task["due_at"].astimezone(tz)
@@ -395,6 +662,9 @@ def _render_task(task: dict, tz, lang: str, token: str, csrf: str) -> str:
     repeat_label = texts["repeat"].get(task["repeat"], task["repeat"])
     repeat_html = f" · 🔁 {escape(repeat_label)}" if task["repeat"] != "none" and repeat_label else ""
     toggle_action = "undone" if task["done"] else "done"
+    # Автора показываем только в групповом дашборде — в личном он и так всегда
+    # один и тот же человек, бейдж был бы бесполезным шумом.
+    author_html = _render_author(task.get("created_by"), creator, token) if owner_type == "chat" else ""
 
     extra_actions = ""
     if not task["done"]:
@@ -417,6 +687,7 @@ def _render_task(task: dict, tz, lang: str, token: str, csrf: str) -> str:
 <div class="task-body">
 <div class="title">{escape(task["title"])}</div>
 <div class="meta">📅 {local_due.strftime('%d.%m.%Y %H:%M')}{repeat_html}</div>
+{author_html}
 {tag_html}
 {extra_actions}
 </div>
@@ -507,7 +778,14 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     if not tasks:
         tasks_html = f'<div class="empty">{escape(texts["empty"])}</div>'
     else:
-        tasks_html = "\n".join(_render_task(t, tz, lang, token, csrf) for t in tasks)
+        creators: dict[int, dict] = {}
+        if owner_type == "chat":
+            creator_ids = {t["created_by"] for t in tasks if t.get("created_by")}
+            creators = await db.get_telegram_users(list(creator_ids))
+        tasks_html = "\n".join(
+            _render_task(t, tz, lang, token, csrf, creator=creators.get(t.get("created_by")), owner_type=owner_type)
+            for t in tasks
+        )
 
     try:
         chart_html = await _build_chart(owner_id, owner_type, tz, texts)
@@ -517,6 +795,10 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         chart_html = ""
 
     heading = texts["heading_chat"] if owner_type == "chat" else texts["heading"]
+    nav_html = (
+        f'<a class="nav-link" href="/dashboard/{token}/history">{escape(texts["nav_history"])}</a>'
+        if owner_type == "chat" else ""
+    )
     new_task_error_html = ""
     if request.query.get("error") == "empty_title":
         new_task_error_html = f'<div class="new-task-error">{escape(texts["error_empty_title"])}</div>'
@@ -532,7 +814,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         )
 
     page = TASKS_PAGE.format(
-        tasks_html=tasks_html, chart_html=chart_html, heading=heading,
+        tasks_html=tasks_html, chart_html=chart_html, heading=heading, nav_html=nav_html,
         token=token, csrf=csrf, new_task_error=new_task_error_html, tg_widget_html=tg_widget_html,
         **{k: v for k, v in texts.items() if k not in ("heading",)},
     )
@@ -564,7 +846,8 @@ async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=403)
 
     tg_user_id = int(payload["id"])
-    await db.upsert_telegram_user(tg_user_id, payload.get("username"), payload.get("first_name"))
+    photo_file_id = await _fetch_profile_photo_file_id(tg_user_id)
+    await db.upsert_telegram_user(tg_user_id, payload.get("username"), payload.get("first_name"), photo_file_id)
 
     session_value = _sign_session(owner_id, owner_type, token, tg_user_id=tg_user_id)
     resp = aioweb.Response(status=200)
@@ -611,7 +894,7 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
 
     # repeat/remind — обязательные позиционные параметры add_task; с дашборда задача
     # создаётся без повтора и с дефолтным напоминанием (то же, что ожидает остальной код).
-    task_id = await db.add_task(owner_id, owner_type, title, due_at, "none", "on_time")
+    task_id = await db.add_task(owner_id, owner_type, title, due_at, "none", "on_time", created_by=acting_user_id)
     await db.log_history(task_id, acting_user_id, title, "created")
 
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
@@ -669,3 +952,5 @@ def register_dashboard_routes(app: aioweb.Application):
     app.router.add_post("/dashboard/{token}/telegram-auth", handle_telegram_auth)
     app.router.add_post("/dashboard/{token}/tasks/new", handle_task_create)
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)
+    app.router.add_get("/dashboard/{token}/avatar/{user_id}", handle_avatar)
+    app.router.add_get("/dashboard/{token}/history", handle_history)
