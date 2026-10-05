@@ -6,6 +6,10 @@ import signal
 from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+
+from dotenv import load_dotenv
+load_dotenv()
+
 from aiohttp import web as aioweb
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
