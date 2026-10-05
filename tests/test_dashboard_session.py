@@ -118,7 +118,7 @@ def test_render_task_escapes_html_and_repeating_not_overdue():
     from datetime import datetime
     from zoneinfo import ZoneInfo
     utc = ZoneInfo("UTC")
-    task = {"title": "<script>x</script>", "tag": "a&b", "done": False, "repeat": "daily",
+    task = {"id": 1, "title": "<script>x</script>", "tag": "a&b", "done": False, "repeat": "daily",
             "due_at": datetime(2020, 1, 1, tzinfo=utc)}
     html = dashboard._render_task(task, utc, "ru", "tok", "csrf-value")
     assert "<script>" not in html and "&lt;script&gt;" in html and "a&amp;b" in html
