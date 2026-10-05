@@ -21,7 +21,7 @@ from apscheduler.jobstores.base import JobLookupError
 
 import dashboard
 import db
-from date_parser import parse_human_date, parse_quiet_hours, is_quiet_time, next_quiet_end
+from date_parser import parse_human_date, parse_quiet_hours, is_quiet_time, next_quiet_end, split_title_and_date
 from i18n import t
 from stats import compute_streak, daily_series, totals
 
@@ -358,12 +358,18 @@ async def fmt_task(t_row: dict) -> str:
 async def start(message: Message):
     owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
-    await message.answer(t(lang, "welcome"))
+    # В группе сразу объясняем, что задачи общие — иначе непонятно, почему
+    # задачу, которую добавил один, видят все. Короткий welcome (3 команды)
+    # вместо полного списка — развёрнутая версия теперь в /help.
+    key = "welcome_group" if owner_type == "chat" else "welcome"
+    await message.answer(t(lang, key))
 
 
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
-    await start(message)
+    owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    await message.answer(t(lang, "help_full"))
 
 
 @dp.message(Command("cancel"))
@@ -528,11 +534,34 @@ async def add_start(message: Message, state: FSMContext):
     await message.answer(t(lang, "ask_title"))
 
 
+async def _accept_date_and_ask_repeat(local_dt: datetime, state: FSMContext, tz: ZoneInfo, lang: str, target_message: Message):
+    """Общий хвост для двух путей: обычного пошагового (после AddTask.date)
+    и быстрого однострочного (когда дата уже найдена прямо в названии)."""
+    await state.update_data(due_at=to_utc(local_dt, tz).isoformat())
+    await state.set_state(AddTask.repeat)
+    await target_message.answer(t(lang, "ask_repeat"), reply_markup=repeat_kb(lang))
+
+
 @dp.message(AddTask.title)
 async def add_title(message: Message, state: FSMContext):
     data = await state.get_data()
     lang = await owner_lang(data["owner_id"], data["owner_type"])
-    await state.update_data(title=message.text.strip())
+    tz = await owner_tz(data["owner_id"], data["owner_type"])
+    now_local = datetime.now(tz).replace(tzinfo=None)
+
+    raw = message.text.strip()
+    # Быстрый путь: если в названии нашлась понятная дата ("Купить молоко
+    # завтра в 18:00"), сразу принимаем её и пропускаем отдельный шаг
+    # ask_date — для тех, кто не хочет проходить все шаги по отдельности.
+    # Если дата не найдена — ведём себя как раньше: весь текст - заголовок,
+    # дату спрашиваем следующим шагом.
+    title, local_dt = split_title_and_date(raw, now_local)
+    await state.update_data(title=title)
+
+    if local_dt is not None:
+        await _accept_date_and_ask_repeat(local_dt, state, tz, lang, message)
+        return
+
     await state.set_state(AddTask.date)
     await message.answer(t(lang, "ask_date"))
 
@@ -549,9 +578,7 @@ async def add_date(message: Message, state: FSMContext):
         await message.answer(t(lang, "bad_date"))
         return
 
-    await state.update_data(due_at=to_utc(local_dt, tz).isoformat())
-    await state.set_state(AddTask.repeat)
-    await message.answer(t(lang, "ask_repeat"), reply_markup=repeat_kb(lang))
+    await _accept_date_and_ask_repeat(local_dt, state, tz, lang, message)
 
 
 @dp.callback_query(AddTask.repeat, F.data.startswith("rep_"))

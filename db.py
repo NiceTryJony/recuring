@@ -190,6 +190,19 @@ async def init_db():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_history_user_event_at ON task_history(user_id, event_at)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_members_chat_id ON chat_members(chat_id)")
 
+        # Имена для отображения в истории/на дашборде — Telegram не хранится нигде
+        # больше в схеме (только user_id). Заполняется при входе через Telegram
+        # Login Widget на дашборде; данные могут устаревать (человек сменил имя) —
+        # ON CONFLICT обновляет их на каждый новый вход.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS telegram_users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
 
 async def close_db():
     if _pool:
@@ -486,6 +499,42 @@ async def get_chat_members(chat_id: int) -> list[int]:
         async with _pool.acquire() as conn:
             rows = await conn.fetch("SELECT user_id FROM chat_members WHERE chat_id = $1", chat_id)
             return [r["user_id"] for r in rows]
+    return await _with_retry(_run)
+
+
+# ---------- telegram_users: имена для отображения ----------
+
+async def upsert_telegram_user(user_id: int, username: str | None, first_name: str | None):
+    """Вызывается при каждом успешном входе через Telegram Login Widget на
+    дашборде — данные могут устареть (смена имени/username), поэтому просто
+    перезаписываем при каждом логине, а не только при первом появлении."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO telegram_users (user_id, username, first_name, updated_at)
+                   VALUES ($1, $2, $3, now())
+                   ON CONFLICT (user_id) DO UPDATE
+                   SET username = $2, first_name = $3, updated_at = now()""",
+                user_id, username, first_name
+            )
+    await _with_retry(_run)
+
+
+async def get_telegram_users(user_ids: list[int]) -> dict[int, dict]:
+    """Батч-подгрузка имён по списку id — для рендера истории/дашборда без
+    N+1 запросов. Возвращает {user_id: {"username":..., "first_name":...}};
+    id без записи в таблице (человек ещё не логинился через виджет) просто
+    отсутствуют в результате — вызывающий код сам решает, что показать (например,
+    сырой id)."""
+    if not user_ids:
+        return {}
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, username, first_name FROM telegram_users WHERE user_id = ANY($1::bigint[])",
+                user_ids
+            )
+            return {r["user_id"]: {"username": r["username"], "first_name": r["first_name"]} for r in rows}
     return await _with_retry(_run)
 
 

@@ -12,12 +12,49 @@ from datetime import datetime, time, timedelta
 _TODAY_WORDS = r"сегодня|today|dzisiaj|dziś|dzis"
 _TOMORROW_WORDS = r"завтра|tomorrow|jutro"
 
+# Необязательный предлог перед временем: "завтра В 18:00", "tomorrow AT 18:00",
+# "jutro O 18:00". Без него форма "завтра 18:00" тоже остаётся рабочей — предлог
+# просто разрешён, а не обязателен, чтобы не сломать то, что уже понималось.
+# Группа обёрнута целиком — "{_AT_PREP}?" ниже должен опционализировать весь
+# "предлог+пробел", а не только последний токен внутри него (частая ловушка
+# при склейке regex-фрагментов через f-string).
+_AT_PREP = r"(?:(?:в|at|o)\s+)"
+
 _UNIT_RE = (
     r"(д(?:ень|ня|ней)?|days?|dni|dzie[ńn]"
     r"|ч(?:ас|аса|асов)?|hours?|godz(?:inę|ine|iny|in|ina)?"
     r"|мин(?:ута|уты|уту|ут)?|min(?:ute|uty|utę|uta|ut)?s?"
     r"|недел[юие]|недель|weeks?|tydzie[ńn]|tygod(?:nie|ni|nia))"
 )
+
+
+_TRAILING_PREPS = {"на", "в", "к", "до", "at", "on", "by", "na", "do", "o"}
+
+
+def split_title_and_date(text: str, now: datetime) -> tuple[str, datetime | None]:
+    """Для быстрого /add в одну строку: 'Купить молоко завтра в 18:00' ->
+    ('Купить молоко', <дата>). Пробует хвосты строки с конца (по словам), от
+    самого длинного к самому короткому, и берёт первый, который parse_human_date
+    распознаёт как дату. Если дата нашлась, но заголовка не осталось (вся
+    строка была датой, например просто 'завтра' или 'через 2 часа') — не
+    считает это датой вообще: возвращает (text, None), чтобы вызывающий код
+    запросил дату отдельным шагом, как раньше, вместо задачи без названия."""
+    words = text.strip().split()
+    for i in range(len(words) - 1, -1, -1):
+        candidate = " ".join(words[i:])
+        parsed = parse_human_date(candidate, now)
+        if parsed is None:
+            continue
+        title_words = words[:i]
+        # Срезаем предлог, повисший на конце заголовка после вычитания даты:
+        # 'Купить подарок НА' + 'завтра' -> 'Купить подарок'.
+        while title_words and title_words[-1].lower().strip(",.") in _TRAILING_PREPS:
+            title_words = title_words[:-1]
+        title = " ".join(title_words).strip(" ,.-")
+        if title:
+            return title, parsed
+        return text.strip(), None
+    return text.strip(), None
 
 
 def parse_human_date(text: str, now: datetime) -> datetime | None:
@@ -45,24 +82,24 @@ def _parse(text: str, now: datetime) -> datetime | None:
     except ValueError:
         pass
 
-    # 3. "завтра [ЧЧ:ММ]" / "tomorrow [HH:MM]" / "jutro [GG:MM]"
-    m = re.match(rf"^(?:{_TOMORROW_WORDS})(?:\s+(\d{{1,2}})[:\.](\d{{2}}))?$", text)
+    # 3. "завтра [в] [ЧЧ:ММ]" / "tomorrow [at] [HH:MM]" / "jutro [o] [GG:MM]"
+    m = re.match(rf"^(?:{_TOMORROW_WORDS})(?:\s+{_AT_PREP}?(\d{{1,2}})[:\.](\d{{2}}))?$", text)
     if m:
         base = now + timedelta(days=1)
         hour = int(m.group(1)) if m.group(1) else 9
         minute = int(m.group(2)) if m.group(2) else 0
         return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    # 4. "сегодня [ЧЧ:ММ]" / "today [HH:MM]" / "dzisiaj [GG:MM]"
-    m = re.match(rf"^(?:{_TODAY_WORDS})(?:\s+(\d{{1,2}})[:\.](\d{{2}}))?$", text)
+    # 4. "сегодня [в] [ЧЧ:ММ]" / "today [at] [HH:MM]" / "dzisiaj [o] [GG:MM]"
+    m = re.match(rf"^(?:{_TODAY_WORDS})(?:\s+{_AT_PREP}?(\d{{1,2}})[:\.](\d{{2}}))?$", text)
     if m:
         hour = int(m.group(1)) if m.group(1) else now.hour
         minute = int(m.group(2)) if m.group(2) else now.minute
         return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    # 5. "через N <единица> [ЧЧ:ММ]" / "in N ..." / "za N ..."
+    # 5. "через N <единица> [в] [ЧЧ:ММ]" / "in N ... [at] ..." / "za N ... [o] ..."
     m = re.match(
-        rf"^(?:через|in|za)\s+(\d+)\s*{_UNIT_RE}(?:\s+(\d{{1,2}})[:\.](\d{{2}}))?$",
+        rf"^(?:через|in|za)\s+(\d+)\s*{_UNIT_RE}(?:\s+{_AT_PREP}?(\d{{1,2}})[:\.](\d{{2}}))?$",
         text,
     )
     if m:
