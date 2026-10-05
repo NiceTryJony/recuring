@@ -3,7 +3,7 @@ import os
 import re
 import secrets
 from datetime import date, datetime, time
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import asyncpg
 
@@ -39,8 +39,10 @@ def _normalize_db_url(raw_url: str) -> str:
     else:
         user, password = userinfo, ""
 
-    safe_user = quote(user, safe="")
-    safe_password = quote(password, safe="")
+    # unquote перед quote делает функцию идемпотентной: уже закодированный пароль ('p%40x')
+    # раньше кодировался второй раз ('p%2540x') и подключение падало с ошибкой аутентификации.
+    safe_user = quote(unquote(user), safe="")
+    safe_password = quote(unquote(password), safe="")
     new_userinfo = f"{safe_user}:{safe_password}" if password else safe_user
 
     return f"{scheme}{scheme_sep}{new_userinfo}@{hostinfo}{tail}"
