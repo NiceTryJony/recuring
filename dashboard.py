@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 CHART_DAYS = 14
 SESSION_SECRET = os.environ.get("BOT_TOKEN", "fallback-secret")  # используем токен бота как секрет для HMAC
 SESSION_MAX_AGE = 60 * 60 * 24 * 7  # неделя
+# Имя бота без @ — нужно виджету Telegram Login (data-telegram-login=...).
+# Домен, на котором крутится дашборд, должен быть прописан боту через
+# /setdomain в BotFather, иначе виджет откажется логинить.
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
 
 
 # ---------- пароли ----------
@@ -60,39 +64,57 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(legacy, stored)
 
 
-def _sign_session(owner_id: int, owner_type: str, token: str) -> str:
-    payload = f"{owner_type}:{owner_id}:{int(time.time()) + SESSION_MAX_AGE}"
+def _sign_session(owner_id: int, owner_type: str, token: str, tg_user_id: int = 0) -> str:
+    """tg_user_id — личность реального Telegram-пользователя, известная только
+    после входа через Telegram Login Widget (см. verify_telegram_login).
+    0 значит "неизвестно" — так входят по обычному паролю на групповом
+    дашборде, пока не прошли через виджет; для owner_type='user' сюда всегда
+    пишется owner_id, потому что там владелец дашборда и есть тот пользователь."""
+    payload = f"{owner_type}:{owner_id}:{tg_user_id}:{int(time.time()) + SESSION_MAX_AGE}"
     sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{sig}"
 
 
-def _verify_session(cookie_value: str) -> tuple[int, str] | None:
+def _verify_session(cookie_value: str) -> tuple[int, str, int] | None:
     try:
-        owner_type, owner_id_str, expiry_str, sig = cookie_value.split(":")
-        payload = f"{owner_type}:{owner_id_str}:{expiry_str}"
+        owner_type, owner_id_str, tg_user_id_str, expiry_str, sig = cookie_value.split(":")
+        payload = f"{owner_type}:{owner_id_str}:{tg_user_id_str}:{expiry_str}"
         expected_sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expected_sig):
             return None
         if int(expiry_str) < time.time():
             return None
-        return int(owner_id_str), owner_type
+        return int(owner_id_str), owner_type, int(tg_user_id_str)
     except (ValueError, AttributeError):
         return None
 
 
-async def _require_session(request: aioweb.Request, token: str) -> tuple[int, str] | None:
+async def _require_session(request: aioweb.Request, token: str) -> tuple[int, str, int] | None:
     """Общая проверка доступа для всех POST-действий (done/undone и т.д.): владелец
     дашборда должен существовать, а cookie — валидно расписываться именно на него.
-    Возвращает (owner_id, owner_type) или None, если доступ запрещён."""
+    Возвращает (owner_id, owner_type, tg_user_id) или None, если доступ запрещён."""
     settings = await db.get_owner_by_dashboard_token(token)
     if not settings:
         return None
     cookie = request.cookies.get(f"session_{token}")
     session = _verify_session(cookie) if cookie else None
-    expected = (settings["owner_id"], settings["owner_type"])
-    if session != expected:
+    if session is None:
         return None
-    return expected
+    owner_id, owner_type, tg_user_id = session
+    if (owner_id, owner_type) != (settings["owner_id"], settings["owner_type"]):
+        return None
+    return owner_id, owner_type, tg_user_id
+
+
+def _acting_user_id(owner_id: int, owner_type: str, tg_user_id: int) -> int:
+    """Кого писать в log_history как исполнителя действия. На личном дашборде
+    (owner_type='user') это всегда владелец — там только он и может залогиниться.
+    На групповом — реальный Telegram id, если известен (вход через виджет),
+    иначе деградируем на owner_id (chat_id) как и раньше: это семантически
+    неверно (в истории окажется id чата, а не человека), но не ломает запись."""
+    if owner_type == "user":
+        return owner_id
+    return tg_user_id or owner_id
 
 
 # ---------- CSRF ----------
@@ -108,6 +130,39 @@ def _verify_csrf(request_token: str, session_cookie_value: str) -> bool:
         return False
     expected = _csrf_token(session_cookie_value)
     return hmac.compare_digest(request_token, expected)
+
+
+# ---------- Telegram Login Widget ----------
+# Отдельный алгоритм проверки подписи — так требует сам Telegram, не путать с
+# _verify_session/csrf выше. Секрет для HMAC — не сам BOT_TOKEN, а SHA-256 от
+# него (см. https://core.telegram.org/widgets/login#checking-authorization).
+# BotFather должен знать домен дашборда (/setdomain), иначе виджет откажется
+# работать на странице.
+
+_TG_AUTH_MAX_AGE = 86400  # Telegram рекомендует отбрасывать auth_date старше суток
+
+
+def verify_telegram_login(data: dict) -> bool:
+    """data — то, что Login Widget прислал на фронтенд (id, first_name, username,
+    auth_date, hash, ...). Проверяем подпись и свежесть auth_date."""
+    received_hash = data.get("hash")
+    if not received_hash:
+        return False
+    check_fields = {k: v for k, v in data.items() if k != "hash"}
+    if "auth_date" not in check_fields or "id" not in check_fields:
+        return False
+    data_check_string = "\n".join(f"{k}={check_fields[k]}" for k in sorted(check_fields))
+    secret_key = hashlib.sha256(SESSION_SECRET.encode()).digest()
+    computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(computed_hash, received_hash):
+        return False
+    try:
+        auth_date = int(check_fields["auth_date"])
+    except ValueError:
+        return False
+    if time.time() - auth_date > _TG_AUTH_MAX_AGE:
+        return False
+    return True
 
 
 # ---------- переводы ----------
@@ -142,6 +197,7 @@ DASHBOARD_TEXTS = {
         "new_title_placeholder": "Новая задача…",
         "btn_add": "Добавить",
         "error_empty_title": "Введите название задачи",
+        "tg_widget_note": "Войдите через Telegram, чтобы действия записывались под вашим именем",
     },
     "en": {
         "html_lang": "en",
@@ -172,6 +228,7 @@ DASHBOARD_TEXTS = {
         "new_title_placeholder": "New task…",
         "btn_add": "Add",
         "error_empty_title": "Enter a task title",
+        "tg_widget_note": "Sign in with Telegram so actions are recorded under your name",
     },
     "pl": {
         "html_lang": "pl",
@@ -202,6 +259,7 @@ DASHBOARD_TEXTS = {
         "new_title_placeholder": "Nowe zadanie…",
         "btn_add": "Dodaj",
         "error_empty_title": "Wpisz nazwę zadania",
+        "tg_widget_note": "Zaloguj się przez Telegram, aby działania zapisywały się pod twoim imieniem",
     },
 }
 
@@ -233,6 +291,27 @@ h2 {{ margin-top: 0; }}
 {error}
 </form>
 </body></html>"""
+
+
+# Баннер с Telegram Login Widget: не блокирует доступ (все действия и так уже
+# разрешены по паролю), только предлагает уточнить identity для истории.
+# JS-колбэк onTelegramAuth шлёт полученные от Telegram данные на наш же
+# бэкенд (handle_telegram_auth), который сам перепроверяет подпись — сам
+# виджет на фронтенде доверять нельзя, это просто источник данных.
+TELEGRAM_WIDGET_BANNER = """<div class="tg-widget-banner">
+<span>{note}</span>
+<script async src="https://telegram.org/js/telegram-widget.js?22"
+    data-telegram-login="{bot_username}" data-size="medium" data-radius="8"
+    data-onauth="onTelegramAuth(user)" data-request-access="write"></script>
+<script>
+function onTelegramAuth(user) {{
+  fetch("/dashboard/{token}/telegram-auth", {{
+    method: "POST", headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify(user),
+  }}).then(function(r) {{ if (r.ok) location.reload(); }});
+}}
+</script>
+</div>"""
 
 
 TASKS_PAGE = """<!DOCTYPE html>
@@ -281,10 +360,14 @@ h1 {{ font-size: 1.4rem; }}
 .new-task-form button {{ padding: 10px 16px; border-radius: 6px; border: none; background: #e07a3f;
     color: #fff; font-weight: 600; cursor: pointer; flex-shrink: 0; }}
 .new-task-error {{ color: #e05f5f; font-size: 0.85rem; margin: -0.5rem 0 1rem; }}
+.tg-widget-banner {{ background: #1a1a1a; border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1rem;
+    display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }}
+.tg-widget-banner span {{ font-size: 0.85rem; color: #aaa; }}
 @media (max-width: 480px) {{ .new-task-form {{ flex-wrap: wrap; }} .new-task-form button {{ width: 100%; }} }}
 </style></head>
 <body>
 <h1>{heading}</h1>
+{tg_widget_html}
 {new_task_error}
 <form class="new-task-form" method="post" action="/dashboard/{token}/tasks/new">
 <input type="hidden" name="csrf" value="{csrf}">
@@ -391,6 +474,10 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         data = await request.post()
         password = data.get("password", "")
         if await asyncio.to_thread(verify_password, password, settings["dashboard_password_hash"] or ""):
+            # tg_user_id=0: кто именно ввёл общий пароль, нам неизвестно — для
+            # owner_type='chat' это уточнится позже через виджет на самой
+            # странице (см. handle_telegram_auth), без этого шага деградируем
+            # на owner_id (chat_id) в истории, как было раньше.
             session_value = _sign_session(owner_id, owner_type, token)
             resp = aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
             # Render терминирует TLS на прокси — схему берём из X-Forwarded-Proto
@@ -404,8 +491,9 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
             content_type="text/html", status=401,
         )
 
-    if session != (owner_id, owner_type):
+    if session is None or (session[0], session[1]) != (owner_id, owner_type):
         return aioweb.Response(text=LOGIN_PAGE.format(error="", **texts), content_type="text/html")
+    _, _, tg_user_id = session
 
     from zoneinfo import ZoneInfo
     try:
@@ -432,12 +520,58 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     new_task_error_html = ""
     if request.query.get("error") == "empty_title":
         new_task_error_html = f'<div class="new-task-error">{escape(texts["error_empty_title"])}</div>'
+
+    # Виджет показываем только на групповом дашборде и только пока не знаем,
+    # кто именно из участников сейчас смотрит страницу (вошли по общему паролю,
+    # через виджет ещё не проходили). На личном дашборде identity уже известна
+    # (owner_id сам и есть tg_user_id), виджет там не нужен.
+    tg_widget_html = ""
+    if owner_type == "chat" and tg_user_id == 0 and BOT_USERNAME:
+        tg_widget_html = TELEGRAM_WIDGET_BANNER.format(
+            bot_username=BOT_USERNAME, token=token, note=texts["tg_widget_note"],
+        )
+
     page = TASKS_PAGE.format(
         tasks_html=tasks_html, chart_html=chart_html, heading=heading,
-        token=token, csrf=csrf, new_task_error=new_task_error_html,
+        token=token, csrf=csrf, new_task_error=new_task_error_html, tg_widget_html=tg_widget_html,
         **{k: v for k, v in texts.items() if k not in ("heading",)},
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/telegram-auth — вызывается из onTelegramAuth()
+    после успешного входа через Login Widget. Не выдаёт новых прав (действия и
+    так разрешены паролем) — только уточняет, какой именно участник сейчас за
+    дашбордом, чтобы история велась под правильным tg_user_id, а не chat_id."""
+    token = request.match_info["token"]
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, _ = owner
+    if owner_type != "chat":
+        # На личном дашборде identity и так известна — виджет там не нужен,
+        # и подменять владельца чужим Telegram-логином нельзя.
+        return aioweb.Response(status=400)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return aioweb.Response(status=400)
+
+    if not verify_telegram_login(payload):
+        return aioweb.Response(status=403)
+
+    tg_user_id = int(payload["id"])
+    await db.upsert_telegram_user(tg_user_id, payload.get("username"), payload.get("first_name"))
+
+    session_value = _sign_session(owner_id, owner_type, token, tg_user_id=tg_user_id)
+    resp = aioweb.Response(status=200)
+    is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
+    resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
+                    samesite="Strict", secure=is_https)
+    return resp
 
 
 async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
@@ -448,7 +582,8 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
     owner = await _require_session(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type = owner
+    owner_id, owner_type, tg_user_id = owner
+    acting_user_id = _acting_user_id(owner_id, owner_type, tg_user_id)
 
     cookie = request.cookies.get(f"session_{token}", "")
     data = await request.post()
@@ -477,7 +612,7 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
     # repeat/remind — обязательные позиционные параметры add_task; с дашборда задача
     # создаётся без повтора и с дефолтным напоминанием (то же, что ожидает остальной код).
     task_id = await db.add_task(owner_id, owner_type, title, due_at, "none", "on_time")
-    await db.log_history(task_id, owner_id, title, "created")
+    await db.log_history(task_id, acting_user_id, title, "created")
 
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
@@ -497,7 +632,8 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
     owner = await _require_session(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type = owner
+    owner_id, owner_type, tg_user_id = owner
+    acting_user_id = _acting_user_id(owner_id, owner_type, tg_user_id)
 
     cookie = request.cookies.get(f"session_{token}", "")
     data = await request.post()
@@ -512,17 +648,17 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
 
     if action == "done":
         await db.mark_done(task_id)
-        await db.log_history(task_id, owner_id, task["title"], "done")
+        await db.log_history(task_id, acting_user_id, task["title"], "done")
     elif action == "undone":
         await db.mark_undone(task_id)
-        await db.log_history(task_id, owner_id, task["title"], "undone")
+        await db.log_history(task_id, acting_user_id, task["title"], "undone")
     elif action == "postpone":
         from datetime import timedelta
         await db.update_task(task_id, due_at=task["due_at"] + timedelta(days=1))
-        await db.log_history(task_id, owner_id, task["title"], "rescheduled")
+        await db.log_history(task_id, acting_user_id, task["title"], "rescheduled")
     elif action == "delete":
         await db.delete_task(task_id)
-        await db.log_history(task_id, owner_id, task["title"], "deleted")
+        await db.log_history(task_id, acting_user_id, task["title"], "deleted")
 
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
@@ -530,5 +666,6 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
 def register_dashboard_routes(app: aioweb.Application):
     app.router.add_get("/dashboard/{token}", handle_dashboard)
     app.router.add_post("/dashboard/{token}", handle_dashboard)
+    app.router.add_post("/dashboard/{token}/telegram-auth", handle_telegram_auth)
     app.router.add_post("/dashboard/{token}/tasks/new", handle_task_create)
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)

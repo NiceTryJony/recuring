@@ -17,8 +17,14 @@ def _forge(payload: str) -> str:
 
 @pytest.mark.parametrize("owner_id, owner_type", [(123456, "user"), (-1001234567890, "chat")])
 def test_session_roundtrip(owner_id, owner_type):
+    # tg_user_id не передан -> дефолт 0 ("личность неизвестна", вход по паролю без виджета)
     cookie = _sign_session(owner_id, owner_type, "token")
-    assert _verify_session(cookie) == (owner_id, owner_type)
+    assert _verify_session(cookie) == (owner_id, owner_type, 0)
+
+
+def test_session_roundtrip_with_telegram_identity():
+    cookie = _sign_session(-1001234567890, "chat", "token", tg_user_id=555)
+    assert _verify_session(cookie) == (-1001234567890, "chat", 555)
 
 
 def test_session_tampered_owner_rejected():
@@ -31,6 +37,11 @@ def test_session_tampered_owner_type_rejected():
     assert _verify_session(cookie.replace("user:", "chat:", 1)) is None
 
 
+def test_session_tampered_tg_user_id_rejected():
+    cookie = _sign_session(1, "chat", "t", tg_user_id=555)
+    assert _verify_session(cookie.replace(":555:", ":999:", 1)) is None
+
+
 def test_session_tampered_signature_rejected():
     cookie = _sign_session(1, "user", "t")
     flipped = cookie[:-1] + ("0" if cookie[-1] != "0" else "1")
@@ -38,20 +49,20 @@ def test_session_tampered_signature_rejected():
 
 
 def test_session_expired_rejected():
-    assert _verify_session(_forge(f"user:1:{int(time_module.time()) - 10}")) is None
+    assert _verify_session(_forge(f"user:1:0:{int(time_module.time()) - 10}")) is None
 
 
 def test_session_not_yet_expired_accepted():
-    assert _verify_session(_forge(f"user:1:{int(time_module.time()) + 60}")) == (1, "user")
+    assert _verify_session(_forge(f"user:1:0:{int(time_module.time()) + 60}")) == (1, "user", 0)
 
 
 def test_session_signed_with_other_secret_rejected():
-    payload = f"user:1:{int(time_module.time()) + 60}"
+    payload = f"user:1:0:{int(time_module.time()) + 60}"
     bad = hmac.new(b"other-secret", payload.encode(), hashlib.sha256).hexdigest()
     assert _verify_session(f"{payload}:{bad}") is None
 
 
-@pytest.mark.parametrize("garbage", ["", "abc", "a:b:c", "a:b:c:d:e", "user:x:y:z", "user:1:notint:sig", ":::"])
+@pytest.mark.parametrize("garbage", ["", "abc", "a:b:c", "a:b:c:d:e:f", "user:x:0:y:z", "user:1:0:notint:sig", ":::::"])
 def test_session_garbage_rejected_without_exception(garbage):
     assert _verify_session(garbage) is None
 
@@ -109,8 +120,8 @@ def test_render_task_escapes_html_and_repeating_not_overdue():
     utc = ZoneInfo("UTC")
     task = {"title": "<script>x</script>", "tag": "a&b", "done": False, "repeat": "daily",
             "due_at": datetime(2020, 1, 1, tzinfo=utc)}
-    html = dashboard._render_task(task, utc, "ru")
+    html = dashboard._render_task(task, utc, "ru", "tok", "csrf-value")
     assert "<script>" not in html and "&lt;script&gt;" in html and "a&amp;b" in html
     assert "overdue" not in html            # регресс: повторяющиеся не «просрочены» вечно
     task["repeat"] = "none"
-    assert "overdue" in dashboard._render_task(task, utc, "ru")
+    assert "overdue" in dashboard._render_task(task, utc, "ru", "tok", "csrf-value")
