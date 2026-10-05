@@ -80,6 +80,36 @@ def _verify_session(cookie_value: str) -> tuple[int, str] | None:
         return None
 
 
+async def _require_session(request: aioweb.Request, token: str) -> tuple[int, str] | None:
+    """Общая проверка доступа для всех POST-действий (done/undone и т.д.): владелец
+    дашборда должен существовать, а cookie — валидно расписываться именно на него.
+    Возвращает (owner_id, owner_type) или None, если доступ запрещён."""
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        return None
+    cookie = request.cookies.get(f"session_{token}")
+    session = _verify_session(cookie) if cookie else None
+    expected = (settings["owner_id"], settings["owner_type"])
+    if session != expected:
+        return None
+    return expected
+
+
+# ---------- CSRF ----------
+# Токен — HMAC от значения сессионной cookie: привязан к конкретной сессии, но
+# не требует отдельного хранилища на сервере (stateless, как и сама сессия).
+
+def _csrf_token(session_cookie_value: str) -> str:
+    return hmac.new(SESSION_SECRET.encode(), session_cookie_value.encode(), hashlib.sha256).hexdigest()
+
+
+def _verify_csrf(request_token: str, session_cookie_value: str) -> bool:
+    if not request_token or not session_cookie_value:
+        return False
+    expected = _csrf_token(session_cookie_value)
+    return hmac.compare_digest(request_token, expected)
+
+
 # ---------- переводы ----------
 
 DASHBOARD_TEXTS = {
@@ -106,6 +136,12 @@ DASHBOARD_TEXTS = {
             "weekdays": "По будням",
             "monthly_nth_weekday": "N-й день недели месяца",
         },
+        "btn_postpone": "Отложить на день",
+        "btn_delete": "Удалить",
+        "confirm_delete": "Удалить задачу?",
+        "new_title_placeholder": "Новая задача…",
+        "btn_add": "Добавить",
+        "error_empty_title": "Введите название задачи",
     },
     "en": {
         "html_lang": "en",
@@ -130,6 +166,12 @@ DASHBOARD_TEXTS = {
             "weekdays": "Weekdays",
             "monthly_nth_weekday": "Nth weekday of month",
         },
+        "btn_postpone": "Postpone 1 day",
+        "btn_delete": "Delete",
+        "confirm_delete": "Delete this task?",
+        "new_title_placeholder": "New task…",
+        "btn_add": "Add",
+        "error_empty_title": "Enter a task title",
     },
     "pl": {
         "html_lang": "pl",
@@ -154,6 +196,12 @@ DASHBOARD_TEXTS = {
             "weekdays": "W dni robocze",
             "monthly_nth_weekday": "N-ty dzień tygodnia miesiąca",
         },
+        "btn_postpone": "Przełóż o dzień",
+        "btn_delete": "Usuń",
+        "confirm_delete": "Usunąć zadanie?",
+        "new_title_placeholder": "Nowe zadanie…",
+        "btn_add": "Dodaj",
+        "error_empty_title": "Wpisz nazwę zadania",
     },
 }
 
@@ -196,11 +244,21 @@ body {{ font-family: -apple-system, sans-serif; background: #0f0f0f; color: #eee
        margin: 0; padding: 1.5rem; max-width: 640px; margin: 0 auto; }}
 h1 {{ font-size: 1.4rem; }}
 .task {{ background: #1a1a1a; border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem;
-         border-left: 3px solid #555; }}
+         border-left: 3px solid #555; display: flex; gap: 0.75rem; align-items: flex-start; }}
 .task.done {{ border-left-color: #4a9d5f; opacity: 0.6; }}
 .task.overdue {{ border-left-color: #e05f5f; }}
+.task form {{ margin: 0; line-height: 0; }}
+.check-btn {{ width: 22px; height: 22px; border-radius: 50%; border: 2px solid #666;
+              background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 2px; padding: 0; }}
+.task.done .check-btn {{ background: #4a9d5f; border-color: #4a9d5f; }}
+.task-body {{ flex: 1; min-width: 0; }}
 .title {{ font-weight: 600; font-size: 1.05rem; }}
 .meta {{ color: #999; font-size: 0.85rem; margin-top: 4px; }}
+.task-actions {{ display: flex; gap: 10px; margin-top: 8px; }}
+.task-actions button {{ background: none; border: none; color: #888; font-size: 0.8rem;
+                         cursor: pointer; padding: 0; }}
+.task-actions button:hover {{ color: #e07a3f; }}
+.task-actions .del-btn:hover {{ color: #e05f5f; }}
 .tag {{ display: inline-block; background: #333; padding: 2px 8px; border-radius: 4px;
         font-size: 0.75rem; margin-top: 6px; }}
 .empty {{ color: #777; text-align: center; padding: 3rem 1rem; }}
@@ -215,15 +273,31 @@ h1 {{ font-size: 1.4rem; }}
 .bar.zero {{ background: #333; }}
 .labels {{ display: flex; gap: 4px; margin-top: 4px; }}
 .labels span {{ flex: 1; text-align: center; font-size: 0.65rem; color: #777; }}
+.new-task-form {{ display: flex; gap: 8px; margin-bottom: 1rem; }}
+.new-task-form input[type=text] {{ flex: 1; min-width: 0; padding: 10px; border-radius: 6px;
+    border: 1px solid #333; background: #1a1a1a; color: #eee; box-sizing: border-box; }}
+.new-task-form input[type=datetime-local] {{ padding: 10px; border-radius: 6px; border: 1px solid #333;
+    background: #1a1a1a; color: #eee; color-scheme: dark; box-sizing: border-box; }}
+.new-task-form button {{ padding: 10px 16px; border-radius: 6px; border: none; background: #e07a3f;
+    color: #fff; font-weight: 600; cursor: pointer; flex-shrink: 0; }}
+.new-task-error {{ color: #e05f5f; font-size: 0.85rem; margin: -0.5rem 0 1rem; }}
+@media (max-width: 480px) {{ .new-task-form {{ flex-wrap: wrap; }} .new-task-form button {{ width: 100%; }} }}
 </style></head>
 <body>
 <h1>{heading}</h1>
+{new_task_error}
+<form class="new-task-form" method="post" action="/dashboard/{token}/tasks/new">
+<input type="hidden" name="csrf" value="{csrf}">
+<input type="text" name="title" placeholder="{new_title_placeholder}" maxlength="200" required>
+<input type="datetime-local" name="due_at" required>
+<button type="submit">{btn_add}</button>
+</form>
 {tasks_html}
 {chart_html}
 </body></html>"""
 
 
-def _render_task(task: dict, tz, lang: str) -> str:
+def _render_task(task: dict, tz, lang: str, token: str, csrf: str) -> str:
     import datetime as dt
     texts = _dt(lang)
     local_due = task["due_at"].astimezone(tz)
@@ -237,11 +311,32 @@ def _render_task(task: dict, tz, lang: str) -> str:
     tag_html = f'<div class="tag">🏷 {escape(task["tag"])}</div>' if task.get("tag") else ""
     repeat_label = texts["repeat"].get(task["repeat"], task["repeat"])
     repeat_html = f" · 🔁 {escape(repeat_label)}" if task["repeat"] != "none" and repeat_label else ""
+    toggle_action = "undone" if task["done"] else "done"
+
+    extra_actions = ""
+    if not task["done"]:
+        extra_actions = f"""<div class="task-actions">
+<form method="post" action="/dashboard/{token}/tasks/{task['id']}/postpone">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit">⏭ {escape(texts["btn_postpone"])}</button>
+</form>
+<form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit" class="del-btn">🗑 {escape(texts["btn_delete"])}</button>
+</form>
+</div>"""
 
     return f"""<div class="{css_class}">
-<div class="title">{"✅ " if task["done"] else ""}{escape(task["title"])}</div>
+<form method="post" action="/dashboard/{token}/tasks/{task['id']}/{toggle_action}">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit" class="check-btn" aria-label="toggle"></button>
+</form>
+<div class="task-body">
+<div class="title">{escape(task["title"])}</div>
 <div class="meta">📅 {local_due.strftime('%d.%m.%Y %H:%M')}{repeat_html}</div>
 {tag_html}
+{extra_actions}
+</div>
 </div>"""
 
 
@@ -318,11 +413,13 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     except Exception:
         tz = ZoneInfo("UTC")
 
+    csrf = _csrf_token(cookie)
+
     tasks = await db.get_tasks(owner_id, owner_type, include_done=True)
     if not tasks:
         tasks_html = f'<div class="empty">{escape(texts["empty"])}</div>'
     else:
-        tasks_html = "\n".join(_render_task(t, tz, lang) for t in tasks)
+        tasks_html = "\n".join(_render_task(t, tz, lang, token, csrf) for t in tasks)
 
     try:
         chart_html = await _build_chart(owner_id, owner_type, tz, texts)
@@ -332,13 +429,106 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         chart_html = ""
 
     heading = texts["heading_chat"] if owner_type == "chat" else texts["heading"]
+    new_task_error_html = ""
+    if request.query.get("error") == "empty_title":
+        new_task_error_html = f'<div class="new-task-error">{escape(texts["error_empty_title"])}</div>'
     page = TASKS_PAGE.format(
         tasks_html=tasks_html, chart_html=chart_html, heading=heading,
+        token=token, csrf=csrf, new_task_error=new_task_error_html,
         **{k: v for k, v in texts.items() if k not in ("heading",)},
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
+async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/tasks/new — создание задачи прямо с дашборда.
+    Та же защита, что и у остальных действий: сессия + CSRF."""
+    token = request.match_info["token"]
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    title = data.get("title", "").strip()
+    due_at_raw = data.get("due_at", "")
+    if not title:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=empty_title"})
+
+    settings = await db.get_owner_by_dashboard_token(token)
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(settings["timezone"])
+    except Exception:
+        tz = ZoneInfo("UTC")
+
+    try:
+        # datetime-local отдаёт naive строку вида "2026-10-05T14:30" — трактуем её
+        # как локальное время владельца (та же tz, в которой рендерится дашборд).
+        due_at = datetime.fromisoformat(due_at_raw).replace(tzinfo=tz)
+    except ValueError:
+        due_at = datetime.now(tz)
+
+    # repeat/remind — обязательные позиционные параметры add_task; с дашборда задача
+    # создаётся без повтора и с дефолтным напоминанием (то же, что ожидает остальной код).
+    task_id = await db.add_task(owner_id, owner_type, title, due_at, "none", "on_time")
+    await db.log_history(task_id, owner_id, title, "created")
+
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+
+
+async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/tasks/{task_id}/{action}, action = done | undone.
+    Без JS: обычная HTML-форма с redirect обратно на страницу дашборда."""
+    token = request.match_info["token"]
+    action = request.match_info["action"]
+    try:
+        task_id = int(request.match_info["task_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+    if action not in ("done", "undone", "postpone", "delete"):
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    # Задача должна принадлежать именно этому владельцу — иначе валидный логин в
+    # СВОЙ дашборд позволил бы менять задачи по произвольному id из чужого.
+    task = await db.get_task(task_id)
+    if not task or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
+        return aioweb.Response(status=404)
+
+    if action == "done":
+        await db.mark_done(task_id)
+        await db.log_history(task_id, owner_id, task["title"], "done")
+    elif action == "undone":
+        await db.mark_undone(task_id)
+        await db.log_history(task_id, owner_id, task["title"], "undone")
+    elif action == "postpone":
+        from datetime import timedelta
+        await db.update_task(task_id, due_at=task["due_at"] + timedelta(days=1))
+        await db.log_history(task_id, owner_id, task["title"], "rescheduled")
+    elif action == "delete":
+        await db.delete_task(task_id)
+        await db.log_history(task_id, owner_id, task["title"], "deleted")
+
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+
+
 def register_dashboard_routes(app: aioweb.Application):
     app.router.add_get("/dashboard/{token}", handle_dashboard)
     app.router.add_post("/dashboard/{token}", handle_dashboard)
+    app.router.add_post("/dashboard/{token}/tasks/new", handle_task_create)
+    app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)
