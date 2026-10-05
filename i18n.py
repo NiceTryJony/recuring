@@ -5,14 +5,22 @@ TEXTS = {
         "welcome": "Привет! Я слежу за твоими задачами и сроками.\n\n"
                    "/add — добавить задачу\n"
                    "/list — список задач\n"
-                   "/find — поиск задачи по названию\n"
-                   "/tags — задачи по тегу\n"
-                   "/history — история выполненных\n"
-                   "/timezone — сменить часовой пояс\n"
-                   "/quiet — тихий час (без уведомлений)\n"
-                   "/lang — сменить язык\n"
-                   "/dashboard — веб-страница со списком задач\n"
-                   "/help — помощь",
+                   "/help — все команды",
+        "welcome_group": "Привет! Я слежу за задачами этого чата — они общие для всех участников.\n\n"
+                         "/add — добавить задачу\n"
+                         "/list — список задач\n"
+                         "/help — все команды",
+        "help_full": "Все команды:\n\n"
+                     "/add — добавить задачу\n"
+                     "/list — список задач\n"
+                     "/find — поиск задачи по названию\n"
+                     "/tags — задачи по тегу\n"
+                     "/history — история выполненных\n"
+                     "/timezone — сменить часовой пояс\n"
+                     "/quiet — тихий час (без уведомлений)\n"
+                     "/lang — сменить язык\n"
+                     "/dashboard — веб-страница со списком задач\n"
+                     "/help — эта подсказка",
         "cancelled": "Отменено.",
         "ask_title": "Название задачи/события:\n(/cancel — отменить)",
         "ask_date": "Дата и время в формате ДД.ММ.ГГГГ ЧЧ:ММ\nнапример: 15.10.2026 18:00\n\n"
@@ -107,14 +115,22 @@ TEXTS = {
         "welcome": "Hi! I track your tasks and deadlines.\n\n"
                    "/add — add a task\n"
                    "/list — list tasks\n"
-                   "/find — search tasks by title\n"
-                   "/tags — tasks by tag\n"
-                   "/history — completed history\n"
-                   "/timezone — change timezone\n"
-                   "/quiet — quiet hours (no notifications)\n"
-                   "/lang — change language\n"
-                   "/dashboard — web page with your tasks\n"
-                   "/help — help",
+                   "/help — all commands",
+        "welcome_group": "Hi! I track this chat's tasks — shared by everyone here.\n\n"
+                         "/add — add a task\n"
+                         "/list — list tasks\n"
+                         "/help — all commands",
+        "help_full": "All commands:\n\n"
+                     "/add — add a task\n"
+                     "/list — list tasks\n"
+                     "/find — search tasks by title\n"
+                     "/tags — tasks by tag\n"
+                     "/history — completed history\n"
+                     "/timezone — change timezone\n"
+                     "/quiet — quiet hours (no notifications)\n"
+                     "/lang — change language\n"
+                     "/dashboard — web page with your tasks\n"
+                     "/help — this message",
         "cancelled": "Cancelled.",
         "ask_title": "Task/event title:\n(/cancel — cancel)",
         "ask_date": "Date and time as DD.MM.YYYY HH:MM\ne.g. 15.10.2026 18:00\n\n"
@@ -209,14 +225,22 @@ TEXTS = {
         "welcome": "Cześć! Pilnuję Twoich zadań i terminów.\n\n"
                    "/add — dodaj zadanie\n"
                    "/list — lista zadań\n"
-                   "/find — szukaj zadania po nazwie\n"
-                   "/tags — zadania wg tagu\n"
-                   "/history — historia wykonanych\n"
-                   "/timezone — zmień strefę czasową\n"
-                   "/quiet — cisza nocna (bez powiadomień)\n"
-                   "/lang — zmień język\n"
-                   "/dashboard — strona internetowa z listą zadań\n"
-                   "/help — pomoc",
+                   "/help — wszystkie komendy",
+        "welcome_group": "Cześć! Pilnuję zadań tego czatu — są wspólne dla wszystkich uczestników.\n\n"
+                         "/add — dodaj zadanie\n"
+                         "/list — lista zadań\n"
+                         "/help — wszystkie komendy",
+        "help_full": "Wszystkie komendy:\n\n"
+                     "/add — dodaj zadanie\n"
+                     "/list — lista zadań\n"
+                     "/find — szukaj zadania po nazwie\n"
+                     "/tags — zadania wg tagu\n"
+                     "/history — historia wykonanych\n"
+                     "/timezone — zmień strefę czasową\n"
+                     "/quiet — cisza nocna (bez powiadomień)\n"
+                     "/lang — zmień język\n"
+                     "/dashboard — strona internetowa z listą zadań\n"
+                     "/help — ta wiadomość",
         "cancelled": "Anulowano.",
         "ask_title": "Nazwa zadania/wydarzenia:\n(/cancel — anuluj)",
         "ask_date": "Data i godzina w formacie DD.MM.RRRR GG:MM\nnp. 15.10.2026 18:00\n\n"
