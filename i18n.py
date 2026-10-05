@@ -5,6 +5,7 @@ TEXTS = {
         "welcome": "Привет! Я слежу за твоими задачами и сроками.\n\n"
                    "/add — добавить задачу\n"
                    "/list — список задач\n"
+                   "/quiet — тихий час (без уведомлений)\n"
                    "/help — все команды",
         "welcome_group": "Привет! Я слежу за задачами этого чата — они общие для всех участников.\n\n"
                          "/add — добавить задачу\n"
@@ -115,6 +116,7 @@ TEXTS = {
         "welcome": "Hi! I track your tasks and deadlines.\n\n"
                    "/add — add a task\n"
                    "/list — list tasks\n"
+                   "/quiet — quiet hours (no notifications)\n"
                    "/help — all commands",
         "welcome_group": "Hi! I track this chat's tasks — shared by everyone here.\n\n"
                          "/add — add a task\n"
@@ -225,6 +227,7 @@ TEXTS = {
         "welcome": "Cześć! Pilnuję Twoich zadań i terminów.\n\n"
                    "/add — dodaj zadanie\n"
                    "/list — lista zadań\n"
+                   "/quiet — cisza nocna (bez powiadomień)\n"
                    "/help — wszystkie komendy",
         "welcome_group": "Cześć! Pilnuję zadań tego czatu — są wspólne dla wszystkich uczestników.\n\n"
                          "/add — dodaj zadanie\n"
