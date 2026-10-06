@@ -169,6 +169,17 @@ async def init_db():
             await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS quiet_hours_start TIME")
             await conn.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS quiet_hours_end TIME")
 
+        # Версия пароля дашборда — инкрементится при каждой смене пароля
+        # (см. set_owner_dashboard_credentials) и зашита в подпись сессионной
+        # cookie (dashboard._sign_session). Это и есть инвалидация старых
+        # сессий: сменил пароль -> версия выросла -> все ранее выданные cookie
+        # с старой версией больше не проходят _verify_session, даже если TTL
+        # (неделя) ещё не истёк.
+        for tbl in ("user_settings", "chat_settings"):
+            await conn.execute(
+                f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS dashboard_password_version INTEGER NOT NULL DEFAULT 0"
+            )
+
         # «Повторять напоминание, пока не выполню»
         await conn.execute(
             "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remind_until_done BOOLEAN NOT NULL DEFAULT FALSE"
@@ -662,16 +673,23 @@ async def set_owner_quiet_hours(owner_id: int, owner_type: str, start: time | No
 
 
 async def set_owner_dashboard_credentials(owner_id: int, owner_type: str, password_hash: str) -> str:
-    """Генерирует уникальный токен (часть URL) и сохраняет хеш пароля. Возвращает токен."""
+    """Генерирует уникальный токен (часть URL) и сохраняет хеш пароля. Возвращает токен.
+
+    dashboard_password_version инкрементится при КАЖДОЙ смене пароля (включая
+    первое создание — там рост с дефолтного 0 до 1 безвреден, сессий ещё нет).
+    Это то, на чём держится инвалидация старых cookie при смене пароля — см.
+    миграцию в init_db и dashboard._sign_session/_verify_session."""
     table, id_col = _owner_table(owner_type)
     token = secrets.token_urlsafe(16)
 
     async def _run():
         async with _pool.acquire() as conn:
             await conn.execute(
-                f"""INSERT INTO {table} ({id_col}, dashboard_token, dashboard_password_hash)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT ({id_col}) DO UPDATE SET dashboard_token = $2, dashboard_password_hash = $3""",
+                f"""INSERT INTO {table} ({id_col}, dashboard_token, dashboard_password_hash, dashboard_password_version)
+                    VALUES ($1, $2, $3, 1)
+                    ON CONFLICT ({id_col}) DO UPDATE
+                    SET dashboard_token = $2, dashboard_password_hash = $3,
+                        dashboard_password_version = {table}.dashboard_password_version + 1""",
                 owner_id, token, password_hash
             )
     await _with_retry(_run)

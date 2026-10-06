@@ -49,11 +49,11 @@ def test_session_tampered_signature_rejected():
 
 
 def test_session_expired_rejected():
-    assert _verify_session(_forge(f"user:1:0:{int(time_module.time()) - 10}")) is None
+    assert _verify_session(_forge(f"user:1:0:0:{int(time_module.time()) - 10}")) is None
 
 
 def test_session_not_yet_expired_accepted():
-    assert _verify_session(_forge(f"user:1:0:{int(time_module.time()) + 60}")) == (1, "user", 0)
+    assert _verify_session(_forge(f"user:1:0:0:{int(time_module.time()) + 60}")) == (1, "user", 0)
 
 
 def test_session_signed_with_other_secret_rejected():
