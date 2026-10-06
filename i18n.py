@@ -11,17 +11,19 @@ TEXTS = {
                          "/add — добавить задачу\n"
                          "/list — список задач\n"
                          "/help — все команды",
-        "help_full": "Все команды:\n\n"
-                     "/add — добавить задачу\n"
-                     "/list — список задач\n"
-                     "/find — поиск задачи по названию\n"
-                     "/tags — задачи по тегу\n"
-                     "/history — история выполненных\n"
+        "help_full": "📖 Все команды:\n\n"
+                     "/add — добавить новую задачу (название, дата, повтор, напоминание)\n"
+                     "/list — список твоих задач с фильтром и сортировкой\n"
+                     "/find — найти задачу по части названия\n"
+                     "/tags — показать задачи, сгруппированные по тегу\n"
+                     "/history — история выполненных/удалённых задач и статистика\n"
+                     "/export — выгрузить все задачи в CSV-файл\n"
                      "/timezone — сменить часовой пояс\n"
-                     "/quiet — тихий час (без уведомлений)\n"
-                     "/lang — сменить язык\n"
-                     "/dashboard — веб-страница со списком задач\n"
-                     "/help — эта подсказка",
+                     "/quiet — тихий час: в это время уведомления не приходят\n"
+                     "/lang — сменить язык бота\n"
+                     "/dashboard — получить ссылку на веб-страницу со списком задач\n"
+                     "/cancel — отменить текущее действие (например, добавление задачи)\n"
+                     "/help — показать это сообщение",
         "cancelled": "Отменено.",
         "ask_title": "Название задачи/события:\n(/cancel — отменить)",
         "ask_date": "Дата и время в формате ДД.ММ.ГГГГ ЧЧ:ММ\nнапример: 15.10.2026 18:00\n\n"
@@ -123,17 +125,19 @@ TEXTS = {
                          "/add — add a task\n"
                          "/list — list tasks\n"
                          "/help — all commands",
-        "help_full": "All commands:\n\n"
-                     "/add — add a task\n"
-                     "/list — list tasks\n"
-                     "/find — search tasks by title\n"
-                     "/tags — tasks by tag\n"
-                     "/history — completed history\n"
-                     "/timezone — change timezone\n"
-                     "/quiet — quiet hours (no notifications)\n"
-                     "/lang — change language\n"
-                     "/dashboard — web page with your tasks\n"
-                     "/help — this message",
+        "help_full": "📖 All commands:\n\n"
+                     "/add — add a new task (title, date, repeat, reminder)\n"
+                     "/list — list your tasks with filter and sorting\n"
+                     "/find — search for a task by part of its title\n"
+                     "/tags — show tasks grouped by tag\n"
+                     "/history — completed/deleted task history and stats\n"
+                     "/export — export all tasks as a CSV file\n"
+                     "/timezone — change your timezone\n"
+                     "/quiet — quiet hours: no notifications during this time\n"
+                     "/lang — change the bot's language\n"
+                     "/dashboard — get a link to the web page with your tasks\n"
+                     "/cancel — cancel the current action (e.g. adding a task)\n"
+                     "/help — show this message",
         "cancelled": "Cancelled.",
         "ask_title": "Task/event title:\n(/cancel — cancel)",
         "ask_date": "Date and time as DD.MM.YYYY HH:MM\ne.g. 15.10.2026 18:00\n\n"
@@ -235,17 +239,19 @@ TEXTS = {
                          "/add — dodaj zadanie\n"
                          "/list — lista zadań\n"
                          "/help — wszystkie komendy",
-        "help_full": "Wszystkie komendy:\n\n"
-                     "/add — dodaj zadanie\n"
-                     "/list — lista zadań\n"
-                     "/find — szukaj zadania po nazwie\n"
-                     "/tags — zadania wg tagu\n"
-                     "/history — historia wykonanych\n"
+        "help_full": "📖 Wszystkie komendy:\n\n"
+                     "/add — dodaj nowe zadanie (nazwa, data, powtarzanie, przypomnienie)\n"
+                     "/list — lista Twoich zadań z filtrem i sortowaniem\n"
+                     "/find — znajdź zadanie po części nazwy\n"
+                     "/tags — pokaż zadania pogrupowane wg tagu\n"
+                     "/history — historia wykonanych/usuniętych zadań i statystyki\n"
+                     "/export — wyeksportuj wszystkie zadania do pliku CSV\n"
                      "/timezone — zmień strefę czasową\n"
-                     "/quiet — cisza nocna (bez powiadomień)\n"
-                     "/lang — zmień język\n"
-                     "/dashboard — strona internetowa z listą zadań\n"
-                     "/help — ta wiadomość",
+                     "/quiet — cisza nocna: w tym czasie nie przychodzą powiadomienia\n"
+                     "/lang — zmień język bota\n"
+                     "/dashboard — pobierz link do strony z listą Twoich zadań\n"
+                     "/cancel — anuluj bieżącą czynność (np. dodawanie zadania)\n"
+                     "/help — pokaż tę wiadomość",
         "cancelled": "Anulowano.",
         "ask_title": "Nazwa zadania/wydarzenia:\n(/cancel — anuluj)",
         "ask_date": "Data i godzina w formacie DD.MM.RRRR GG:MM\nnp. 15.10.2026 18:00\n\n"

@@ -17,7 +17,10 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Chat
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Chat,
+    BotCommand, BotCommandScopeDefault,
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -1708,6 +1711,49 @@ async def restore_jobs():
         schedule_daily_summary(owner["owner_id"], owner["owner_type"], tz)
 
 
+# ---------- меню команд Telegram (кнопка "/") ----------
+# Telegram сам выбирает нужный набор по language_code КЛИЕНТА пользователя
+# (не по языку, выбранному внутри бота через /lang) — так что человек видит
+# понятные описания команд ещё до того, как вообще начал ими пользоваться,
+# даже если потом выберет в боте другой язык через /lang. Набор без
+# language_code (BotCommandScopeDefault без указания языка) — фолбэк для
+# всех остальных языков клиента Telegram, которых нет в списке ниже.
+_COMMAND_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "add": {"ru": "Добавить задачу", "en": "Add a task", "pl": "Dodaj zadanie"},
+    "list": {"ru": "Список задач", "en": "List tasks", "pl": "Lista zadań"},
+    "find": {"ru": "Найти задачу по названию", "en": "Find a task by title", "pl": "Znajdź zadanie po nazwie"},
+    "tags": {"ru": "Задачи по тегам", "en": "Tasks by tag", "pl": "Zadania według tagów"},
+    "history": {"ru": "История и статистика", "en": "History and stats", "pl": "Historia i statystyki"},
+    "export": {"ru": "Выгрузить задачи в CSV", "en": "Export tasks to CSV", "pl": "Eksportuj zadania do CSV"},
+    "timezone": {"ru": "Сменить часовой пояс", "en": "Change timezone", "pl": "Zmień strefę czasową"},
+    "quiet": {"ru": "Тихий час (без уведомлений)", "en": "Quiet hours (no notifications)", "pl": "Cisza nocna (bez powiadomień)"},
+    "lang": {"ru": "Сменить язык бота", "en": "Change bot language", "pl": "Zmień język bota"},
+    "dashboard": {"ru": "Веб-страница со списком задач", "en": "Web page with your tasks", "pl": "Strona z listą zadań"},
+    "cancel": {"ru": "Отменить текущее действие", "en": "Cancel current action", "pl": "Anuluj bieżącą czynność"},
+    "help": {"ru": "Все команды и что они делают", "en": "All commands explained", "pl": "Wszystkie komendy — opis"},
+}
+# Порядок в меню — как в /help, а не алфавитный (Telegram сохраняет порядок списка)
+_COMMAND_ORDER = ["add", "list", "find", "tags", "history", "export", "timezone", "quiet", "lang", "dashboard", "cancel", "help"]
+
+
+async def setup_bot_commands():
+    for lang in ("ru", "en", "pl"):
+        commands = [
+            BotCommand(command=cmd, description=_COMMAND_DESCRIPTIONS[cmd][lang])
+            for cmd in _COMMAND_ORDER
+        ]
+        await bot.set_my_commands(commands, scope=BotCommandScopeDefault(), language_code=lang)
+    # Фолбэк без language_code — для клиентов Telegram на языках вне ru/en/pl
+    # (например, de, fr): используем английские описания как наиболее
+    # универсальный вариант.
+    fallback_commands = [
+        BotCommand(command=cmd, description=_COMMAND_DESCRIPTIONS[cmd]["en"])
+        for cmd in _COMMAND_ORDER
+    ]
+    await bot.set_my_commands(fallback_commands, scope=BotCommandScopeDefault())
+    logger.info("Меню команд Telegram настроено (ru/en/pl + фолбэк)")
+
+
 # ---------- health-check веб-сервер (нужен Render Web Service, чтобы видеть открытый порт) ----------
 
 async def health(request):
@@ -1742,6 +1788,12 @@ def _handle_signal(sig_name: str):
 
 async def main():
     await db.init_db()
+    try:
+        await setup_bot_commands()
+    except Exception:
+        # Не критично для работы бота — если Telegram API моргнул на старте,
+        # просто остаёмся со старым меню (или без него), не блокируем запуск.
+        logger.exception("Не удалось настроить меню команд Telegram")
     scheduler.start()
     await restore_jobs()
     health_runner = await run_health_server()
