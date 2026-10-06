@@ -255,6 +255,23 @@ def pagination_kb(page: int, has_next: bool, prefix: str = "page"):
     return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
 
 
+def list_nav_kb(lang: str, filter_mode: str, sort_by: str, page: int, total_pages: int):
+    """Клавиатура под навигационным сообщением /list: строки фильтра/сортировки
+    (как и раньше) плюс, если страниц больше одной, зацикленная пагинация —
+    ⬅️ с последней страницы уводит на первую и наоборот, а не упирается в край."""
+    kb = list_filter_kb(lang, filter_mode, sort_by)
+    rows = list(kb.inline_keyboard)
+    if total_pages > 1:
+        prev_page = (page - 1) % total_pages
+        next_page = (page + 1) % total_pages
+        rows.append([
+            InlineKeyboardButton(text="⬅️", callback_data=f"listpage_{prev_page}"),
+            InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"),
+            InlineKeyboardButton(text="➡️", callback_data=f"listpage_{next_page}"),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def list_filter_kb(lang: str, filter_mode: str, sort_by: str):
     def label(key: str, active: bool) -> str:
         text = t(lang, key)
@@ -673,6 +690,7 @@ async def _finalize_add_task(state: FSMContext, tag: str | None, target_message:
         remind=data["remind"],
         tag=tag,
         remind_until_done=nag,
+        created_by=actor_id,
     )
     await db.log_history(task_id, actor_id, data["title"], "created")
     schedule_task(task_id, owner_id, owner_type, due_at, data["repeat"], data["remind"], tz, remind_until_done=nag)
@@ -687,24 +705,88 @@ async def _finalize_add_task(state: FSMContext, tag: str | None, target_message:
 # ---------- список задач ----------
 
 def _get_list_view(owner_id: int, owner_type: str) -> dict:
-    return _list_view_cache.setdefault((owner_type, owner_id), {"filter_mode": "all", "sort_by": "date"})
+    return _list_view_cache.setdefault(
+        (owner_type, owner_id),
+        {"filter_mode": "all", "sort_by": "date", "page": 0, "nav_msg_id": None, "task_msg_ids": []},
+    )
 
 
 _list_view_cache: dict[tuple[str, int], dict] = {}
 _search_cache: dict[tuple[str, int], dict] = {}
 
 
-async def _render_list_tasks(answer, owner_id: int, owner_type: str, lang: str, view: dict):
-    """answer — awaitable вида message.answer / call.message.answer, уже привязанное к чату."""
+async def _render_list_page(chat_id: int, owner_id: int, owner_type: str, lang: str, view: dict):
+    """Единый механизм показа страницы /list: одно навигационное сообщение
+    (фильтр/сортировка/пагинация) + по одному сообщению на задачу страницы.
+    При повторном вызове (смена фильтра, листание, повторный /list) СУЩЕСТВУЮЩИЕ
+    сообщения редактируются на месте, а не дублируются — чат не засоряется.
+    Если на новой странице задач меньше, чем было карточек — лишние карточки
+    удаляются; если больше — недостающие досылаются."""
     tasks = await db.get_tasks(owner_id, owner_type, filter_mode=view["filter_mode"], sort_by=view["sort_by"])
+
     if not tasks:
-        await answer(t(lang, "no_tasks"))
+        # Пустой результат — убираем всё, что было показано раньше, и оставляем
+        # только навигацию с сообщением "задач нет", без карточек.
+        for mid in view["task_msg_ids"]:
+            try:
+                await bot.delete_message(chat_id, mid)
+            except TelegramBadRequest:
+                pass
+        view["task_msg_ids"] = []
+        view["page"] = 0
+        text = t(lang, "list_controls") + "\n\n" + t(lang, "no_tasks")
+        kb = list_filter_kb(lang, view["filter_mode"], view["sort_by"])
+        if view["nav_msg_id"]:
+            try:
+                await bot.edit_message_text(text, chat_id=chat_id, message_id=view["nav_msg_id"], reply_markup=kb)
+                return
+            except TelegramBadRequest:
+                pass
+        msg = await bot.send_message(chat_id, text, reply_markup=kb)
+        view["nav_msg_id"] = msg.message_id
         return
-    for task in tasks[:PAGE_SIZE]:
+
+    total_pages = (len(tasks) + PAGE_SIZE - 1) // PAGE_SIZE
+    page = view["page"] % total_pages
+    view["page"] = page
+    start = page * PAGE_SIZE
+    page_items = tasks[start:start + PAGE_SIZE]
+
+    nav_text = t(lang, "list_controls")
+    nav_kb = list_nav_kb(lang, view["filter_mode"], view["sort_by"], page, total_pages)
+    if view["nav_msg_id"]:
+        try:
+            await bot.edit_message_text(nav_text, chat_id=chat_id, message_id=view["nav_msg_id"], reply_markup=nav_kb)
+        except TelegramBadRequest:
+            msg = await bot.send_message(chat_id, nav_text, reply_markup=nav_kb)
+            view["nav_msg_id"] = msg.message_id
+    else:
+        msg = await bot.send_message(chat_id, nav_text, reply_markup=nav_kb)
+        view["nav_msg_id"] = msg.message_id
+
+    old_ids = view["task_msg_ids"]
+    new_ids = []
+    for i, task in enumerate(page_items):
         text = await fmt_task(task)
-        await answer(text, reply_markup=task_kb(task["id"], lang, done=task["done"]), parse_mode="HTML")
-    if len(tasks) > PAGE_SIZE:
-        await answer(t(lang, "showing_first", page_size=PAGE_SIZE, total=len(tasks)))
+        kb = task_kb(task["id"], lang, done=task["done"])
+        if i < len(old_ids):
+            try:
+                await bot.edit_message_text(text, chat_id=chat_id, message_id=old_ids[i], reply_markup=kb, parse_mode="HTML")
+                new_ids.append(old_ids[i])
+                continue
+            except TelegramBadRequest:
+                pass  # сообщение могли удалить руками — просто пришлём новое
+        msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
+        new_ids.append(msg.message_id)
+
+    # Прошлая страница была длиннее текущей — лишние карточки больше не нужны.
+    for leftover_id in old_ids[len(page_items):]:
+        try:
+            await bot.delete_message(chat_id, leftover_id)
+        except TelegramBadRequest:
+            pass
+
+    view["task_msg_ids"] = new_ids
 
 
 @dp.message(Command("list"))
@@ -712,8 +794,8 @@ async def list_tasks(message: Message):
     owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
     view = _get_list_view(owner_id, owner_type)
-    await message.answer(t(lang, "list_controls"), reply_markup=list_filter_kb(lang, view["filter_mode"], view["sort_by"]))
-    await _render_list_tasks(message.answer, owner_id, owner_type, lang, view)
+    view["page"] = 0  # свежий /list всегда показывает список с начала
+    await _render_list_page(message.chat.id, owner_id, owner_type, lang, view)
 
 
 @dp.callback_query(F.data.startswith("listf_"))
@@ -723,8 +805,8 @@ async def list_filter_pick(call: CallbackQuery):
     mode = call.data.split("_", 1)[1]
     view = _get_list_view(owner_id, owner_type)
     view["filter_mode"] = mode
-    await call.message.edit_reply_markup(reply_markup=list_filter_kb(lang, view["filter_mode"], view["sort_by"]))
-    await _render_list_tasks(call.message.answer, owner_id, owner_type, lang, view)
+    view["page"] = 0  # смена фильтра — список другой, со старой страницы смысла нет
+    await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
     await call.answer()
 
 
@@ -735,8 +817,24 @@ async def list_sort_pick(call: CallbackQuery):
     sort_by = call.data.split("_", 1)[1]
     view = _get_list_view(owner_id, owner_type)
     view["sort_by"] = sort_by
-    await call.message.edit_reply_markup(reply_markup=list_filter_kb(lang, view["filter_mode"], view["sort_by"]))
-    await _render_list_tasks(call.message.answer, owner_id, owner_type, lang, view)
+    view["page"] = 0
+    await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("listpage_"))
+async def list_page_nav(call: CallbackQuery):
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    view = _get_list_view(owner_id, owner_type)
+    view["page"] = int(call.data.split("_", 1)[1])
+    await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
+    await call.answer()
+
+
+@dp.callback_query(F.data == "noop")
+async def noop_cb(call: CallbackQuery):
+    # Кнопка-индикатор "2/5" в пагинации — просто гасим "часики" на тапе.
     await call.answer()
 
 
