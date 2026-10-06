@@ -203,11 +203,11 @@ async def init_db():
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        # photo_file_id — Telegram file_id самой крупной версии фото профиля на
-        # момент последнего входа через Login Widget. Сам file_id не истекает,
-        # но ссылка на файл (getFile) живёт ~1ч — поэтому дашборд резолвит её
-        # заново при каждом показе аватарки, а не хранит готовый URL.
-        await conn.execute("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS photo_file_id TEXT")
+        # Храним уже сжатую картинку (до ~128px, JPEG) прямо в БД как bytea —
+        # для масштаба "семья из нескольких человек" это десятки-сотни КБ
+        # суммарно, а показ аватарки не требует обращения к Bot API каждый раз.
+        await conn.execute("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS photo_data BYTEA")
+        await conn.execute("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS photo_mime TEXT")
 
 
 async def close_db():
@@ -530,30 +530,36 @@ async def get_chat_members(chat_id: int) -> list[int]:
 # ---------- telegram_users: имена для отображения ----------
 
 async def upsert_telegram_user(
-    user_id: int, username: str | None, first_name: str | None, photo_file_id: str | None = None,
+    user_id: int, username: str | None, first_name: str | None,
+    photo_data: bytes | None = None, photo_mime: str | None = None,
 ):
     """Вызывается при каждом успешном входе через Telegram Login Widget на
     дашборде — данные могут устареть (смена имени/username/фото), поэтому просто
     перезаписываем при каждом логине, а не только при первом появлении.
-    photo_file_id: передавай None только если фото не получилось узнать в этот
+    photo_data: передавай None только если фото не получилось скачать в этот
     раз (сетевой сбой и т.п.) — COALESCE сохранит прежнее значение, а не сотрёт его."""
     async def _run():
         async with _pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO telegram_users (user_id, username, first_name, photo_file_id, updated_at)
-                   VALUES ($1, $2, $3, $4, now())
+                """INSERT INTO telegram_users (user_id, username, first_name, photo_data, photo_mime, updated_at)
+                   VALUES ($1, $2, $3, $4, $5, now())
                    ON CONFLICT (user_id) DO UPDATE
                    SET username = $2, first_name = $3,
-                       photo_file_id = COALESCE($4, telegram_users.photo_file_id),
+                       photo_data = COALESCE($4, telegram_users.photo_data),
+                       photo_mime = COALESCE($5, telegram_users.photo_mime),
                        updated_at = now()""",
-                user_id, username, first_name, photo_file_id
+                user_id, username, first_name, photo_data, photo_mime
             )
     await _with_retry(_run)
 
 
 async def get_telegram_users(user_ids: list[int]) -> dict[int, dict]:
-    """Батч-подгрузка имён/фото по списку id — для рендера истории/дашборда без
-    N+1 запросов. Возвращает {user_id: {"username":..., "first_name":..., "photo_file_id":...}};
+    """Батч-подгрузка имён/признака наличия фото по списку id — для рендера
+    истории/дашборда без N+1 запросов. Специально НЕ тянем сами байты фото
+    здесь (список задач может содержать десяток разных авторов — незачем
+    гонять картинки в каждом SELECT'е списка), только has_photo — сами байты
+    отдаёт get_telegram_user_photo() по одному id в сам момент показа картинки.
+    Возвращает {user_id: {"username":..., "first_name":..., "has_photo": bool}};
     id без записи в таблице (человек ещё не логинился через виджет) просто
     отсутствуют в результате — вызывающий код сам решает, что показать (например,
     сырой id)."""
@@ -562,13 +568,28 @@ async def get_telegram_users(user_ids: list[int]) -> dict[int, dict]:
     async def _run():
         async with _pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT user_id, username, first_name, photo_file_id FROM telegram_users WHERE user_id = ANY($1::bigint[])",
+                "SELECT user_id, username, first_name, (photo_data IS NOT NULL) AS has_photo "
+                "FROM telegram_users WHERE user_id = ANY($1::bigint[])",
                 user_ids
             )
             return {
-                r["user_id"]: {"username": r["username"], "first_name": r["first_name"], "photo_file_id": r["photo_file_id"]}
+                r["user_id"]: {"username": r["username"], "first_name": r["first_name"], "has_photo": r["has_photo"]}
                 for r in rows
             }
+    return await _with_retry(_run)
+
+
+async def get_telegram_user_photo(user_id: int) -> tuple[bytes, str] | None:
+    """Сами байты аватарки — отдельный лёгкий запрос, только для роута показа
+    картинки (/dashboard/{token}/avatar/{user_id}), не для батч-списков."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT photo_data, photo_mime FROM telegram_users WHERE user_id = $1", user_id
+            )
+            if not row or row["photo_data"] is None:
+                return None
+            return row["photo_data"], row["photo_mime"] or "image/jpeg"
     return await _with_retry(_run)
 
 
