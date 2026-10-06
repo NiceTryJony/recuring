@@ -111,6 +111,7 @@ TEXTS = {
         "stats_totals": "➕ Создано: {created}\n✅ Выполнено: {done}\n🗑 Удалено: {deleted}",
         "streak_line": "🔥 Серия: {n} дн.\n",
         "weekdays_short": "Пн,Вт,Ср,Чт,Пт,Сб,Вс",
+        "throttled": "Полегче 🙂 Подожди секунду между командами.",
     },
     "en": {
         "welcome": "Hi! I track your tasks and deadlines.\n\n"
@@ -222,6 +223,7 @@ TEXTS = {
         "stats_totals": "➕ Created: {created}\n✅ Done: {done}\n🗑 Deleted: {deleted}",
         "streak_line": "🔥 Streak: {n} days\n",
         "weekdays_short": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+        "throttled": "Slow down 🙂 Wait a second between commands.",
     },
     "pl": {
         "welcome": "Cześć! Pilnuję Twoich zadań i terminów.\n\n"
@@ -333,6 +335,7 @@ TEXTS = {
         "stats_totals": "➕ Utworzone: {created}\n✅ Wykonane: {done}\n🗑 Usunięte: {deleted}",
         "streak_line": "🔥 Seria: {n} dni\n",
         "weekdays_short": "Pn,Wt,Śr,Cz,Pt,Sb,Nd",
+        "throttled": "Spokojnie 🙂 Poczekaj chwilę między komendami.",
     },
 }
 

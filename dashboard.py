@@ -32,6 +32,46 @@ CHART_DAYS = 14
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 SESSION_SECRET = BOT_TOKEN or "fallback-secret"  # используем токен бота как секрет для HMAC
 SESSION_MAX_AGE = 60 * 60 * 24 * 7  # неделя
+
+# ---------- rate-limit на попытки входа ----------
+# In-memory, т.к. процесс один (Render free-тир); при рестарте счётчики
+# обнуляются — это ок, не security-critical state. Ключ — (token, ip),
+# чтобы не блокировать весь дашборд одному пользователю из-за соседа по NAT
+# полностью, но и не дать перебирать пароль одного конкретного дашборда.
+_LOGIN_ATTEMPTS: dict[tuple[str, str], list[float]] = {}
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW_SECONDS = 15 * 60   # считаем неудачи за последние 15 минут
+_LOGIN_LOCKOUT_SECONDS = 10 * 60  # и блокируем на 10 минут после превышения
+
+
+def _client_ip(request: aioweb.Request) -> str:
+    # Render (и большинство PaaS) кладёт реальный IP в X-Forwarded-For;
+    # первый адрес в списке — исходный клиент.
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote or "unknown"
+
+
+def _login_rate_limited(token: str, ip: str) -> bool:
+    key = (token, ip)
+    now = time.time()
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(key, []) if now - t < _LOGIN_WINDOW_SECONDS]
+    _LOGIN_ATTEMPTS[key] = attempts
+    if len(attempts) < _LOGIN_MAX_ATTEMPTS:
+        return False
+    # Уже достигли лимита — проверяем lockout от момента последней попытки,
+    # а не просто окно неудач (иначе лимит снимался бы раньше времени).
+    return (now - attempts[-1]) < _LOGIN_LOCKOUT_SECONDS
+
+
+def _record_failed_login(token: str, ip: str):
+    key = (token, ip)
+    _LOGIN_ATTEMPTS.setdefault(key, []).append(time.time())
+
+
+def _clear_login_attempts(token: str, ip: str):
+    _LOGIN_ATTEMPTS.pop((token, ip), None)
 AVATAR_CACHE_SECONDS = 3600  # getFile-ссылка живёт ~1ч, чтобы не дёргать Bot API на каждый показ
 # Имя бота без @ — нужно виджету Telegram Login (data-telegram-login=...).
 # Домен, на котором крутится дашборд, должен быть прописан боту через
@@ -66,25 +106,36 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(legacy, stored)
 
 
-def _sign_session(owner_id: int, owner_type: str, token: str, tg_user_id: int = 0) -> str:
+def _sign_session(owner_id: int, owner_type: str, token: str, tg_user_id: int = 0, password_version: int = 0) -> str:
     """tg_user_id — личность реального Telegram-пользователя, известная только
     после входа через Telegram Login Widget (см. verify_telegram_login).
     0 значит "неизвестно" — так входят по обычному паролю на групповом
     дашборде, пока не прошли через виджет; для owner_type='user' сюда всегда
-    пишется owner_id, потому что там владелец дашборда и есть тот пользователь."""
-    payload = f"{owner_type}:{owner_id}:{tg_user_id}:{int(time.time()) + SESSION_MAX_AGE}"
+    пишется owner_id, потому что там владелец дашборда и есть тот пользователь.
+
+    password_version зашит в подпись, чтобы смена пароля дашборда (/dashboard
+    в боте) реально инвалидировала уже выданные cookie: db.set_owner_dashboard_credentials
+    должен инкрементить это поле при каждой смене пароля. Без этого утёкший
+    токен сессии продолжал бы работать даже после смены пароля."""
+    payload = f"{owner_type}:{owner_id}:{tg_user_id}:{password_version}:{int(time.time()) + SESSION_MAX_AGE}"
     sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{sig}"
 
 
-def _verify_session(cookie_value: str) -> tuple[int, str, int] | None:
+def _verify_session(cookie_value: str, current_password_version: int | None = None) -> tuple[int, str, int] | None:
+    """current_password_version, если передан, сверяется с версией в подписи —
+    это и есть инвалидация старых сессий при смене пароля. None (вызовы без
+    доступа к settings) пропускает эту проверку — обратная совместимость для
+    мест, где version ещё не прокинута."""
     try:
-        owner_type, owner_id_str, tg_user_id_str, expiry_str, sig = cookie_value.split(":")
-        payload = f"{owner_type}:{owner_id_str}:{tg_user_id_str}:{expiry_str}"
+        owner_type, owner_id_str, tg_user_id_str, pwd_ver_str, expiry_str, sig = cookie_value.split(":")
+        payload = f"{owner_type}:{owner_id_str}:{tg_user_id_str}:{pwd_ver_str}:{expiry_str}"
         expected_sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expected_sig):
             return None
         if int(expiry_str) < time.time():
+            return None
+        if current_password_version is not None and int(pwd_ver_str) != current_password_version:
             return None
         return int(owner_id_str), owner_type, int(tg_user_id_str)
     except (ValueError, AttributeError):
@@ -99,7 +150,8 @@ async def _require_session(request: aioweb.Request, token: str) -> tuple[int, st
     if not settings:
         return None
     cookie = request.cookies.get(f"session_{token}")
-    session = _verify_session(cookie) if cookie else None
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
     if session is None:
         return None
     owner_id, owner_type, tg_user_id = session
@@ -258,6 +310,7 @@ DASHBOARD_TEXTS = {
         "password_placeholder": "Пароль",
         "btn_login": "Войти",
         "error_wrong_password": "Неверный пароль",
+        "error_too_many_attempts": "Слишком много попыток. Подождите немного и попробуйте снова.",
         "page_title": "Мои задачи",
         "heading": "📋 Мои задачи",
         "heading_chat": "📋 Общие задачи чата",
@@ -300,6 +353,7 @@ DASHBOARD_TEXTS = {
         "password_placeholder": "Password",
         "btn_login": "Log in",
         "error_wrong_password": "Wrong password",
+        "error_too_many_attempts": "Too many attempts. Please wait a bit and try again.",
         "page_title": "My Tasks",
         "heading": "📋 My Tasks",
         "heading_chat": "📋 Shared Chat Tasks",
@@ -342,6 +396,7 @@ DASHBOARD_TEXTS = {
         "password_placeholder": "Hasło",
         "btn_login": "Zaloguj się",
         "error_wrong_password": "Nieprawidłowe hasło",
+        "error_too_many_attempts": "Zbyt wiele prób. Odczekaj chwilę i spróbuj ponownie.",
         "page_title": "Moje zadania",
         "heading": "📋 Moje zadania",
         "heading_chat": "📋 Wspólne zadania czatu",
@@ -472,6 +527,7 @@ TELEGRAM_WIDGET_BANNER = """<div class="tg-widget-banner">
     data-onauth="onTelegramAuth(user)" data-request-access="write"></script>
 <script>
 function onTelegramAuth(user) {{
+  user._csrf = "{csrf}";
   fetch("/dashboard/{token}/telegram-auth", {{
     method: "POST", headers: {{"Content-Type": "application/json"}},
     body: JSON.stringify(user),
@@ -783,23 +839,35 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     texts = _dt(lang)
 
     cookie = request.cookies.get(f"session_{token}")
-    session = _verify_session(cookie) if cookie else None
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
 
     if request.method == "POST":
+        ip = _client_ip(request)
+        if _login_rate_limited(token, ip):
+            error_html = f'<div class="error">{escape(texts["error_too_many_attempts"])}</div>'
+            return aioweb.Response(
+                text=LOGIN_PAGE.format(error=error_html, **texts),
+                content_type="text/html", status=429,
+            )
+
         data = await request.post()
         password = data.get("password", "")
         if await asyncio.to_thread(verify_password, password, settings["dashboard_password_hash"] or ""):
+            _clear_login_attempts(token, ip)
             # tg_user_id=0: кто именно ввёл общий пароль, нам неизвестно — для
             # owner_type='chat' это уточнится позже через виджет на самой
             # странице (см. handle_telegram_auth), без этого шага деградируем
             # на owner_id (chat_id) в истории, как было раньше.
-            session_value = _sign_session(owner_id, owner_type, token)
+            session_value = _sign_session(owner_id, owner_type, token, password_version=settings.get("dashboard_password_version", 0))
             resp = aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
             # Render терминирует TLS на прокси — схему берём из X-Forwarded-Proto
             is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
             resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
                             samesite="Strict", secure=is_https)
             return resp
+
+        _record_failed_login(token, ip)
         error_html = f'<div class="error">{escape(texts["error_wrong_password"])}</div>'
         return aioweb.Response(
             text=LOGIN_PAGE.format(error=error_html, **texts),
@@ -854,7 +922,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     tg_widget_html = ""
     if owner_type == "chat" and tg_user_id == 0 and BOT_USERNAME:
         tg_widget_html = TELEGRAM_WIDGET_BANNER.format(
-            bot_username=BOT_USERNAME, token=token, note=texts["tg_widget_note"],
+            bot_username=BOT_USERNAME, token=token, note=texts["tg_widget_note"], csrf=csrf,
         )
 
     page = TASKS_PAGE.format(
@@ -886,6 +954,11 @@ async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
     except Exception:
         return aioweb.Response(status=400)
 
+    cookie = request.cookies.get(f"session_{token}", "")
+    csrf_token = payload.pop("_csrf", "")
+    if not _verify_csrf(csrf_token, cookie):
+        return aioweb.Response(status=403)
+
     if not verify_telegram_login(payload):
         return aioweb.Response(status=403)
 
@@ -894,7 +967,9 @@ async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
     photo_data, photo_mime = photo if photo else (None, None)
     await db.upsert_telegram_user(tg_user_id, payload.get("username"), payload.get("first_name"), photo_data, photo_mime)
 
-    session_value = _sign_session(owner_id, owner_type, token, tg_user_id=tg_user_id)
+    settings = await db.get_owner_by_dashboard_token(token)
+    pwd_version = settings.get("dashboard_password_version", 0) if settings else 0
+    session_value = _sign_session(owner_id, owner_type, token, tg_user_id=tg_user_id, password_version=pwd_version)
     resp = aioweb.Response(status=200)
     is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
     resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
