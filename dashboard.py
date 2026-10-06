@@ -169,80 +169,82 @@ def verify_telegram_login(data: dict) -> bool:
 
 # ---------- аватарки профиля (Telegram Bot API) ----------
 # Telegram не присылает фото профиля сам по себе — ни в Login Widget, ни в
-# обычных апдейтах бота. Нужно отдельно спросить getUserProfilePhotos (даёт
-# file_id, не истекает) и на показ — getFile (даёт file_path, истекает через
-# ~час, поэтому резолвим заново при каждом открытии дашборда, а не храним URL).
-# Токен бота никогда не уходит на фронтенд: картинка всегда отдаётся через
-# наш же прокси-роут /dashboard/{token}/avatar/{user_id}.
+# обычных апдейтах бота. Один раз при логине через виджет: getUserProfilePhotos
+# (file_id) -> getFile (file_path, живёт ~1ч) -> скачиваем байты -> сжимаем до
+# AVATAR_MAX_SIDE и кладём в БД как JPEG. Дальше показ аватарки — это просто
+# SELECT из БД, без единого обращения к Telegram на каждый просмотр дашборда.
+AVATAR_MAX_SIDE = 128
+AVATAR_JPEG_QUALITY = 82
 
-async def _fetch_profile_photo_file_id(tg_user_id: int) -> str | None:
+
+async def _fetch_and_compress_photo(tg_user_id: int) -> tuple[bytes, str] | None:
     if not BOT_TOKEN:
         return None
     import aiohttp
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params={"user_id": tg_user_id, "limit": 1}, timeout=10) as resp:
-                data = await resp.json()
+            async with session.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos",
+                params={"user_id": tg_user_id, "limit": 1}, timeout=10,
+            ) as resp:
+                photos_data = await resp.json()
+            if not photos_data.get("ok") or not photos_data["result"]["photos"]:
+                return None
+            file_id = photos_data["result"]["photos"][0][-1]["file_id"]  # самый крупный размер
+
+            async with session.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getFile",
+                params={"file_id": file_id}, timeout=10,
+            ) as resp:
+                file_data = await resp.json()
+            if not file_data.get("ok"):
+                return None
+            file_path = file_data["result"]["file_path"]
+
+            async with session.get(
+                f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}", timeout=10,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                raw = await resp.read()
     except Exception:
-        logger.exception("Не удалось получить фото профиля для user_id=%s", tg_user_id)
+        logger.exception("Не удалось скачать фото профиля для user_id=%s", tg_user_id)
         return None
-    if not data.get("ok") or not data["result"]["photos"]:
-        return None
-    sizes = data["result"]["photos"][0]
-    return sizes[-1]["file_id"]  # последний размер — самый крупный
 
-
-async def _resolve_file_path(file_id: str) -> str | None:
-    import aiohttp
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params={"file_id": file_id}, timeout=10) as resp:
-            data = await resp.json()
-    if not data.get("ok"):
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(raw))
+        img = img.convert("RGB")
+        img.thumbnail((AVATAR_MAX_SIDE, AVATAR_MAX_SIDE))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=AVATAR_JPEG_QUALITY, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        logger.exception("Не удалось сжать фото профиля для user_id=%s", tg_user_id)
         return None
-    return data["result"]["file_path"]
 
 
 async def handle_avatar(request: aioweb.Request) -> aioweb.Response:
-    """GET /dashboard/{token}/avatar/{user_id} — отдаёт картинку аватарки,
-    проксируя её с серверов Telegram, чтобы не светить BOT_TOKEN на фронтенде.
+    """GET /dashboard/{token}/avatar/{user_id} — отдаёт уже сжатую картинку из БД.
     Доступ не завязан на сессию (как и сами изображения в <img>), но токен
     дашборда должен быть валиден, иначе id участников чата можно перебирать."""
     token = request.match_info["token"]
     settings = await db.get_owner_by_dashboard_token(token)
-    if not settings or not BOT_TOKEN:
+    if not settings:
         return aioweb.Response(status=404)
     try:
         user_id = int(request.match_info["user_id"])
     except ValueError:
         return aioweb.Response(status=404)
 
-    users = await db.get_telegram_users([user_id])
-    photo_file_id = users.get(user_id, {}).get("photo_file_id")
-    if not photo_file_id:
+    photo = await db.get_telegram_user_photo(user_id)
+    if not photo:
         return aioweb.Response(status=404)
-
-    file_path = await _resolve_file_path(photo_file_id)
-    if not file_path:
-        return aioweb.Response(status=404)
-
-    import aiohttp
-    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(file_url, timeout=10) as resp:
-                if resp.status != 200:
-                    return aioweb.Response(status=404)
-                body = await resp.read()
-                content_type = resp.headers.get("Content-Type", "image/jpeg")
-    except Exception:
-        logger.exception("Не удалось скачать аватарку file_id=%s", photo_file_id)
-        return aioweb.Response(status=404)
-
+    data, mime = photo
     return aioweb.Response(
-        body=body, content_type=content_type,
-        headers={"Cache-Control": f"private, max-age={AVATAR_CACHE_SECONDS}"},
+        body=data, content_type=mime,
+        headers={"Cache-Control": f"public, max-age={AVATAR_CACHE_SECONDS}"},
     )
 
 
@@ -382,19 +384,70 @@ def _dt(lang: str) -> dict:
     return DASHBOARD_TEXTS.get(lang, DASHBOARD_TEXTS["ru"])
 
 
+# Общие дизайн-токены и база — единый визуальный язык под Telegram (тёмная
+# тема, закруглённые карточки, мягкие тени, лёгкое появление карточек и
+# отклик на тап), без реальной интеграции Telegram WebApp SDK. Подставляется
+# как есть во все три шаблона до их .format() — поэтому фигурные скобки уже
+# задвоены, как и в остальных шаблонах этого файла.
+SHARED_CSS = """
+:root {{
+  --bg: #0b0b0f; --bg-elevated: #17171b; --accent: #e07a3f;
+  --text: #f2f2f2; --text-secondary: #9a9aa1; --text-tertiary: #6b6b70;
+  --danger: #e05f5f; --success: #4a9d5f; --border: rgba(255,255,255,0.06);
+  --radius-lg: 16px; --radius-md: 12px; --radius-sm: 8px;
+  --space-3: 12px; --space-4: 16px; --space-5: 24px;
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -10px rgba(0,0,0,0.5);
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text); margin: 0;
+  padding: var(--space-4);
+  padding-top: max(var(--space-4), env(safe-area-inset-top));
+  padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
+  max-width: 640px; margin-left: auto; margin-right: auto;
+  -webkit-font-smoothing: antialiased;
+}}
+h1 {{ font-size: 1.3rem; font-weight: 700; margin: 0 0 var(--space-4); letter-spacing: -0.01em; }}
+button {{ font-family: inherit; -webkit-tap-highlight-color: transparent; transition: transform 0.1s ease; }}
+button:active {{ transform: scale(0.96); }}
+.nav-link {{ -webkit-tap-highlight-color: transparent; transition: opacity 0.1s ease; }}
+.nav-link:active {{ opacity: 0.6; }}
+@keyframes fade-up {{ from {{ opacity: 0; transform: translateY(6px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+.task, .event, .chart-block, .tg-widget-banner {{
+  background: var(--bg-elevated); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card); border: 1px solid var(--border);
+  animation: fade-up 0.3s ease both;
+}}
+{stagger_rules}
+"""
+
+# Лёгкий stagger для первых карточек в списке — ощущение, что список
+# "выстраивается", а не просто мгновенно появляется весь разом. ВАЖНО: эти
+# правила ещё не прогнаны через .format() — фигурные скобки здесь намеренно
+# задвоены (как и во всём остальном SHARED_CSS), настоящее форматирование
+# произойдёт один раз, позже, вместе со всей страницей (TASKS_PAGE/HISTORY_PAGE).
+_stagger_rules = "\n".join(
+    f".task:nth-child({i}), .event:nth-child({i}) {{{{ animation-delay: {i * 0.035:.3f}s; }}}}"
+    for i in range(1, 13)
+)
+SHARED_CSS = SHARED_CSS.replace("{stagger_rules}", _stagger_rules)
+
+
 LOGIN_PAGE = """<!DOCTYPE html>
 <html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{login_title}</title>
-<style>
-body {{ font-family: -apple-system, sans-serif; background: #0f0f0f; color: #eee;
-       display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
-form {{ background: #1a1a1a; padding: 2rem; border-radius: 12px; width: 280px; }}
-input {{ width: 100%; padding: 10px; margin: 8px 0; border-radius: 6px; border: 1px solid #333;
-         background: #0f0f0f; color: #eee; box-sizing: border-box; }}
-button {{ width: 100%; padding: 10px; border-radius: 6px; border: none; background: #e07a3f;
+<style>""" + SHARED_CSS + """
+body {{ display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
+form {{ background: var(--bg-elevated); padding: 2rem; border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-card); border: 1px solid var(--border); width: 280px;
+        animation: fade-up 0.3s ease both; }}
+input {{ width: 100%; padding: 10px; margin: 8px 0; border-radius: var(--radius-sm); border: 1px solid #333;
+         background: var(--bg); color: var(--text); box-sizing: border-box; }}
+button {{ width: 100%; padding: 10px; border-radius: var(--radius-sm); border: none; background: var(--accent);
           color: #fff; font-weight: 600; cursor: pointer; }}
-.error {{ color: #e05f5f; font-size: 0.9rem; margin-top: 8px; }}
+.error {{ color: var(--danger); font-size: 0.9rem; margin-top: 8px; }}
 h2 {{ margin-top: 0; }}
 </style></head>
 <body>
@@ -432,68 +485,64 @@ TASKS_PAGE = """<!DOCTYPE html>
 <html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{page_title}</title>
-<style>
-body {{ font-family: -apple-system, sans-serif; background: #0f0f0f; color: #eee;
-       margin: 0; padding: 1.5rem; max-width: 640px; margin: 0 auto; }}
-h1 {{ font-size: 1.4rem; }}
-.task {{ background: #1a1a1a; border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem;
-         border-left: 3px solid #555; display: flex; gap: 0.75rem; align-items: flex-start; }}
-.task.done {{ border-left-color: #4a9d5f; opacity: 0.6; }}
-.task.overdue {{ border-left-color: #e05f5f; }}
+<style>""" + SHARED_CSS + """
+.task {{ padding: var(--space-4); margin-bottom: var(--space-3);
+         border-left: 3px solid #555; display: flex; gap: var(--space-3); align-items: flex-start; }}
+.task.done {{ border-left-color: var(--success); opacity: 0.6; }}
+.task.overdue {{ border-left-color: var(--danger); }}
 .task form {{ margin: 0; line-height: 0; }}
 .check-btn {{ width: 22px; height: 22px; border-radius: 50%; border: 2px solid #666;
-              background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 2px; padding: 0; }}
-.task.done .check-btn {{ background: #4a9d5f; border-color: #4a9d5f; }}
+              background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 2px; padding: 0;
+              transition: background 0.15s ease, border-color 0.15s ease; }}
+.task.done .check-btn {{ background: var(--success); border-color: var(--success); }}
 .task-body {{ flex: 1; min-width: 0; }}
 .title {{ font-weight: 600; font-size: 1.05rem; }}
-.meta {{ color: #999; font-size: 0.85rem; margin-top: 4px; }}
-.task-actions {{ display: flex; gap: 10px; margin-top: 8px; }}
-.task-actions button {{ background: none; border: none; color: #888; font-size: 0.8rem;
-                         cursor: pointer; padding: 0; }}
-.task-actions button:hover {{ color: #e07a3f; }}
-.task-actions .del-btn:hover {{ color: #e05f5f; }}
-.tag {{ display: inline-block; background: #333; padding: 2px 8px; border-radius: 4px;
+.meta {{ color: var(--text-secondary); font-size: 0.85rem; margin-top: 4px; }}
+.task-actions {{ display: flex; gap: 14px; margin-top: 10px; }}
+.task-actions button {{ background: none; border: none; color: var(--text-tertiary); font-size: 0.8rem;
+                         cursor: pointer; padding: 0; transition: color 0.15s ease; }}
+.task-actions button:active {{ color: var(--accent); }}
+.task-actions .del-btn:active {{ color: var(--danger); }}
+.tag {{ display: inline-block; background: #2a2a2e; padding: 2px 8px; border-radius: var(--radius-sm);
         font-size: 0.75rem; margin-top: 6px; }}
-.task-author {{ display: flex; align-items: center; gap: 6px; margin-top: 6px;
-                 font-size: 0.8rem; color: #aaa; }}
+.task-author {{ display: flex; align-items: center; gap: 6px; margin-top: 8px;
+                 font-size: 0.8rem; color: var(--text-secondary); }}
 .avatar {{ width: 20px; height: 20px; border-radius: 50%; object-fit: cover;
            background: #333; flex-shrink: 0; }}
 .avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center;
                         font-size: 0.7rem; }}
-.empty {{ color: #777; text-align: center; padding: 3rem 1rem; }}
-.chart-block {{ background: #1a1a1a; border-radius: 10px; padding: 1rem; margin-top: 1.5rem; }}
+.empty {{ color: var(--text-tertiary); text-align: center; padding: 3rem 1rem; }}
+.chart-block {{ padding: var(--space-4); margin-top: var(--space-5); }}
 .chart-head {{ display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px; }}
 .chart-title {{ font-weight: 600; }}
-.streak {{ color: #e07a3f; font-size: 0.9rem; }}
+.streak {{ color: var(--accent); font-size: 0.9rem; }}
 .bars {{ display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 12px; }}
 .col {{ flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; }}
-.num {{ font-size: 0.7rem; color: #bbb; height: 14px; line-height: 14px; }}
-.bar {{ width: 100%; background: #e07a3f; border-radius: 3px 3px 0 0; }}
+.num {{ font-size: 0.7rem; color: var(--text-secondary); height: 14px; line-height: 14px; }}
+.bar {{ width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; transition: height 0.3s ease; }}
 .bar.zero {{ background: #333; }}
 .labels {{ display: flex; gap: 4px; margin-top: 4px; }}
-.labels span {{ flex: 1; text-align: center; font-size: 0.65rem; color: #777; }}
-.new-task-form {{ display: flex; gap: 8px; margin-bottom: 1rem; }}
-.new-task-form input[type=text] {{ flex: 1; min-width: 0; padding: 10px; border-radius: 6px;
-    border: 1px solid #333; background: #1a1a1a; color: #eee; box-sizing: border-box; }}
-.new-task-form input[type=datetime-local] {{ padding: 10px; border-radius: 6px; border: 1px solid #333;
-    background: #1a1a1a; color: #eee; color-scheme: dark; box-sizing: border-box; }}
-.new-task-form button {{ padding: 10px 16px; border-radius: 6px; border: none; background: #e07a3f;
+.labels span {{ flex: 1; text-align: center; font-size: 0.65rem; color: var(--text-tertiary); }}
+.new-task-form {{ display: flex; gap: 8px; margin-bottom: var(--space-4); }}
+.new-task-form input[type=text] {{ flex: 1; min-width: 0; padding: 10px; border-radius: var(--radius-sm);
+    border: 1px solid #333; background: var(--bg-elevated); color: var(--text); box-sizing: border-box; }}
+.new-task-form input[type=datetime-local] {{ padding: 10px; border-radius: var(--radius-sm); border: 1px solid #333;
+    background: var(--bg-elevated); color: var(--text); color-scheme: dark; box-sizing: border-box; }}
+.new-task-form button {{ padding: 10px 16px; border-radius: var(--radius-sm); border: none; background: var(--accent);
     color: #fff; font-weight: 600; cursor: pointer; flex-shrink: 0; }}
-.new-task-error {{ color: #e05f5f; font-size: 0.85rem; margin: -0.5rem 0 1rem; }}
-.tg-widget-banner {{ background: #1a1a1a; border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1rem;
+.new-task-error {{ color: var(--danger); font-size: 0.85rem; margin: -0.5rem 0 1rem; }}
+.tg-widget-banner {{ padding: 0.75rem 1rem; margin-bottom: var(--space-4);
     display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }}
-.tg-widget-banner span {{ font-size: 0.85rem; color: #aaa; }}
-.nav-link {{ display: inline-block; color: #e07a3f; text-decoration: none; font-size: 0.85rem; margin-bottom: 1rem; }}
-.nav-link:hover {{ text-decoration: underline; }}
-.event {{ background: #1a1a1a; border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 0.6rem;
-          display: flex; gap: 0.65rem; align-items: center; }}
+.tg-widget-banner span {{ font-size: 0.85rem; color: var(--text-secondary); }}
+.nav-link {{ display: inline-block; color: var(--accent); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4); }}
+.event {{ padding: 0.85rem 1rem; margin-bottom: 0.6rem; display: flex; gap: 0.65rem; align-items: center; }}
 .event-body {{ flex: 1; min-width: 0; }}
 .event-line {{ font-size: 0.92rem; }}
 .event-line .ev-title {{ font-weight: 600; }}
-.event-time {{ color: #777; font-size: 0.78rem; margin-top: 2px; }}
-.load-more {{ display: block; width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333;
-    background: #1a1a1a; color: #ccc; text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box; }}
-.load-more:hover {{ border-color: #e07a3f; color: #e07a3f; }}
+.event-time {{ color: var(--text-tertiary); font-size: 0.78rem; margin-top: 2px; }}
+.load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px solid #333;
+    background: var(--bg-elevated); color: #ccc; text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box; }}
+.load-more:active {{ border-color: var(--accent); color: var(--accent); }}
 @media (max-width: 480px) {{ .new-task-form {{ flex-wrap: wrap; }} .new-task-form button {{ width: 100%; }} }}
 </style></head>
 <body>
@@ -516,25 +565,20 @@ HISTORY_PAGE = """<!DOCTYPE html>
 <html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{history_page_title}</title>
-<style>
-body {{ font-family: -apple-system, sans-serif; background: #0f0f0f; color: #eee;
-       margin: 0; padding: 1.5rem; max-width: 640px; margin: 0 auto; }}
-h1 {{ font-size: 1.4rem; }}
-.nav-link {{ display: inline-block; color: #e07a3f; text-decoration: none; font-size: 0.85rem; margin-bottom: 1rem; }}
-.nav-link:hover {{ text-decoration: underline; }}
-.event {{ background: #1a1a1a; border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 0.6rem;
-          display: flex; gap: 0.65rem; align-items: center; }}
+<style>""" + SHARED_CSS + """
+.event {{ padding: 0.85rem 1rem; margin-bottom: 0.6rem; display: flex; gap: 0.65rem; align-items: center; }}
 .event-body {{ flex: 1; min-width: 0; }}
 .event-line {{ font-size: 0.92rem; }}
 .event-line .ev-title {{ font-weight: 600; }}
-.event-time {{ color: #777; font-size: 0.78rem; margin-top: 2px; }}
+.event-time {{ color: var(--text-tertiary); font-size: 0.78rem; margin-top: 2px; }}
 .avatar {{ width: 28px; height: 28px; border-radius: 50%; object-fit: cover;
            background: #333; flex-shrink: 0; }}
 .avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem; }}
-.empty {{ color: #777; text-align: center; padding: 3rem 1rem; }}
-.load-more {{ display: block; width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333;
-    background: #1a1a1a; color: #ccc; text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box; }}
-.load-more:hover {{ border-color: #e07a3f; color: #e07a3f; }}
+.empty {{ color: var(--text-tertiary); text-align: center; padding: 3rem 1rem; }}
+.load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px solid #333;
+    background: var(--bg-elevated); color: #ccc; text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box; }}
+.load-more:active {{ border-color: var(--accent); color: var(--accent); }}
+.nav-link {{ display: inline-block; color: var(--accent); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4); }}
 </style></head>
 <body>
 <a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
@@ -553,7 +597,7 @@ def _render_event(ev: dict, tz, lang: str, token: str, creator: dict | None) -> 
         name = creator.get("first_name") or f"@{creator['username']}"
     else:
         name = f"id{actor_id}"
-    if creator and creator.get("photo_file_id"):
+    if creator and creator.get("has_photo"):
         avatar_html = f'<img class="avatar" src="/dashboard/{token}/avatar/{actor_id}" alt="">'
     else:
         avatar_html = '<span class="avatar avatar-placeholder">👤</span>'
@@ -637,7 +681,7 @@ def _render_author(created_by: int | None, creator: dict | None, token: str) -> 
         name = creator.get("first_name") or f"@{creator['username']}"
     else:
         name = f"id{created_by}"
-    if creator and creator.get("photo_file_id"):
+    if creator and creator.get("has_photo"):
         avatar_html = f'<img class="avatar" src="/dashboard/{token}/avatar/{created_by}" alt="">'
     else:
         avatar_html = '<span class="avatar avatar-placeholder">👤</span>'
@@ -846,8 +890,9 @@ async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=403)
 
     tg_user_id = int(payload["id"])
-    photo_file_id = await _fetch_profile_photo_file_id(tg_user_id)
-    await db.upsert_telegram_user(tg_user_id, payload.get("username"), payload.get("first_name"), photo_file_id)
+    photo = await _fetch_and_compress_photo(tg_user_id)
+    photo_data, photo_mime = photo if photo else (None, None)
+    await db.upsert_telegram_user(tg_user_id, payload.get("username"), payload.get("first_name"), photo_data, photo_mime)
 
     session_value = _sign_session(owner_id, owner_type, token, tg_user_id=tg_user_id)
     resp = aioweb.Response(status=200)
