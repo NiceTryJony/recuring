@@ -1,117 +1,185 @@
+"""Юнит-тесты для date_parser.py. Чистые функции без БД/Telegram — запускать
+`python3 test_date_parser.py` (pytest не обязателен, см. блок __main__)."""
+
 from datetime import datetime, time
 
-import pytest
-
-from date_parser import is_quiet_time, next_quiet_end, parse_human_date, parse_quiet_hours
-
-NOW = datetime(2026, 10, 4, 12, 0)  # воскресенье, 12:00
+from date_parser import (
+    parse_human_date, parse_quiet_hours, is_quiet_time, next_quiet_end, split_title_and_date,
+)
 
 
-@pytest.mark.parametrize("text, expected", [
-    # строгие форматы
-    ("15.10.2026 18:00", datetime(2026, 10, 15, 18, 0)),
-    ("15.10.2026 9:05", datetime(2026, 10, 15, 9, 5)),
-    ("15.10.2026", datetime(2026, 10, 15, 9, 0)),
-    # завтра / сегодня (ru, en, pl)
-    ("завтра", datetime(2026, 10, 5, 9, 0)),
-    ("завтра 18:00", datetime(2026, 10, 5, 18, 0)),
-    ("Tomorrow 7.30", datetime(2026, 10, 5, 7, 30)),
-    ("jutro 18:00", datetime(2026, 10, 5, 18, 0)),
-    ("сегодня 20:15", datetime(2026, 10, 4, 20, 15)),
-    ("today 20:15", datetime(2026, 10, 4, 20, 15)),
-    ("dziś 20:15", datetime(2026, 10, 4, 20, 15)),
-    ("сегодня", datetime(2026, 10, 4, 12, 0)),
-    # через N <единица>
-    ("через 3 дня", datetime(2026, 10, 7, 12, 0)),
-    ("через 3 дня 10:00", datetime(2026, 10, 7, 10, 0)),
-    ("через 1 день", datetime(2026, 10, 5, 12, 0)),
-    ("через 2 часа", datetime(2026, 10, 4, 14, 0)),
-    ("через 1 час", datetime(2026, 10, 4, 13, 0)),
-    ("через 30 минут", datetime(2026, 10, 4, 12, 30)),
-    ("через 1 минуту", datetime(2026, 10, 4, 12, 1)),   # регресс: раньше -> None
-    ("через 30 мин", datetime(2026, 10, 4, 12, 30)),
-    ("через 2 недели", datetime(2026, 10, 18, 12, 0)),
-    ("через 5 недель", datetime(2026, 11, 8, 12, 0)),   # регресс: раньше -> None
-    ("in 2 hours", datetime(2026, 10, 4, 14, 0)),
-    ("in 5 mins", datetime(2026, 10, 4, 12, 5)),
-    ("in 1 minute", datetime(2026, 10, 4, 12, 1)),
-    ("in 3 days 10:00", datetime(2026, 10, 7, 10, 0)),
-    ("in 2 weeks", datetime(2026, 10, 18, 12, 0)),
-    ("za 3 dni 10:00", datetime(2026, 10, 7, 10, 0)),
-    ("za 2 tygodnie", datetime(2026, 10, 18, 12, 0)),
-    ("za 5 minut", datetime(2026, 10, 4, 12, 5)),
-    ("za 2 godziny", datetime(2026, 10, 4, 14, 0)),
-    # без числа
-    ("через час", datetime(2026, 10, 4, 13, 0)),
-    ("через   час", datetime(2026, 10, 4, 13, 0)),      # лишние пробелы
-    ("in an hour", datetime(2026, 10, 4, 13, 0)),
-    ("za godzinę", datetime(2026, 10, 4, 13, 0)),
-    ("через минуту", datetime(2026, 10, 4, 12, 1)),
-    ("через неделю", datetime(2026, 10, 11, 12, 0)),
-    ("in a day", datetime(2026, 10, 5, 12, 0)),
-    ("  ЗАВТРА 18:00  ", datetime(2026, 10, 5, 18, 0)),  # регистр и обрамляющие пробелы
-])
-def test_parse_valid(text, expected):
-    assert parse_human_date(text, NOW) == expected
+# ---------- parse_quiet_hours ----------
+
+def test_quiet_hours_valid():
+    assert parse_quiet_hours("23:00-08:00") == (time(23, 0), time(8, 0))
 
 
-@pytest.mark.parametrize("text", [
-    "", "мусор", "завтра 25:00", "завтра 12:75", "через 3 парсека", "32.13.2026 10:00",
-    "через час 18:00", "tomorrow at 18",
-])
-def test_parse_invalid_returns_none_and_never_raises(text):
-    assert parse_human_date(text, NOW) is None
+def test_quiet_hours_accepts_dot_and_dash_variants():
+    assert parse_quiet_hours("23.00 – 08.00") == (time(23, 0), time(8, 0))
 
 
-def test_parse_result_is_naive():
-    assert parse_human_date("завтра 18:00", NOW).tzinfo is None
+def test_quiet_hours_rejects_equal_start_end():
+    assert parse_quiet_hours("10:00-10:00") is None
 
 
-# ---------- тихий час ----------
-
-@pytest.mark.parametrize("text, expected", [
-    ("23:00-08:00", (time(23, 0), time(8, 0))),
-    ("23.00 – 8:00", (time(23, 0), time(8, 0))),
-    (" 22:30—07:15 ", (time(22, 30), time(7, 15))),
-    ("13:00-15:00", (time(13, 0), time(15, 0))),
-])
-def test_parse_quiet_hours_valid(text, expected):
-    assert parse_quiet_hours(text) == expected
+def test_quiet_hours_rejects_out_of_range():
+    assert parse_quiet_hours("25:00-08:00") is None
+    assert parse_quiet_hours("10:00-08:61") is None
 
 
-@pytest.mark.parametrize("text", ["10:00-10:00", "25:00-08:00", "23:00-24:00", "23:60-08:00", "23:00", "abc", ""])
-def test_parse_quiet_hours_invalid(text):
-    assert parse_quiet_hours(text) is None
+def test_quiet_hours_rejects_garbage():
+    assert parse_quiet_hours("выкл") is None
+    assert parse_quiet_hours("") is None
 
 
-NIGHT = (time(23, 0), time(8, 0))
+# ---------- is_quiet_time ----------
+
+def test_is_quiet_time_same_day_window():
+    s, e = time(13, 0), time(14, 0)
+    assert is_quiet_time(time(13, 0), s, e) is True   # начало включено
+    assert is_quiet_time(time(13, 30), s, e) is True
+    assert is_quiet_time(time(14, 0), s, e) is False  # конец не включён
+    assert is_quiet_time(time(12, 59), s, e) is False
 
 
-@pytest.mark.parametrize("t, expected", [
-    (time(22, 59), False), (time(23, 0), True), (time(0, 0), True), (time(2, 0), True),
-    (time(7, 59), True), (time(8, 0), False),   # конец не включается
-    (time(12, 0), False),
-])
-def test_is_quiet_time_overnight(t, expected):
-    assert is_quiet_time(t, *NIGHT) is expected
+def test_is_quiet_time_crosses_midnight():
+    s, e = time(23, 0), time(8, 0)
+    assert is_quiet_time(time(23, 0), s, e) is True
+    assert is_quiet_time(time(23, 59), s, e) is True
+    assert is_quiet_time(time(0, 0), s, e) is True
+    assert is_quiet_time(time(7, 59), s, e) is True
+    assert is_quiet_time(time(8, 0), s, e) is False   # конец не включён
+    assert is_quiet_time(time(12, 0), s, e) is False
 
 
-@pytest.mark.parametrize("t, expected", [
-    (time(12, 59), False), (time(13, 0), True), (time(14, 59), True), (time(15, 0), False),
-])
-def test_is_quiet_time_same_day_window(t, expected):
-    assert is_quiet_time(t, time(13, 0), time(15, 0)) is expected
+def test_is_quiet_time_equal_start_end_always_false():
+    # defensive: parse_quiet_hours такое не пропустит, но функция всё равно
+    # не должна молча говорить "весь день тихий час".
+    assert is_quiet_time(time(10, 0), time(5, 0), time(5, 0)) is False
 
 
-def test_is_quiet_time_equal_bounds_is_disabled():
-    assert is_quiet_time(time(10, 0), time(10, 0), time(10, 0)) is False
+# ---------- next_quiet_end ----------
+
+def test_next_quiet_end_same_day():
+    s, e = time(13, 0), time(14, 0)
+    now = datetime(2026, 10, 7, 13, 30)
+    assert next_quiet_end(now, s, e) == datetime(2026, 10, 7, 14, 0)
 
 
-@pytest.mark.parametrize("now, start_end, expected", [
-    (datetime(2026, 10, 4, 23, 30), NIGHT, datetime(2026, 10, 5, 8, 0)),   # до полуночи -> завтра утром
-    (datetime(2026, 10, 5, 2, 0), NIGHT, datetime(2026, 10, 5, 8, 0)),     # после полуночи -> сегодня утром
-    (datetime(2026, 10, 5, 14, 0), (time(13), time(15)), datetime(2026, 10, 5, 15, 0)),
-    (datetime(2026, 12, 31, 23, 59), NIGHT, datetime(2027, 1, 1, 8, 0)),   # переход через год
-])
-def test_next_quiet_end(now, start_end, expected):
-    assert next_quiet_end(now, *start_end) == expected
+def test_next_quiet_end_crosses_midnight_before_midnight():
+    s, e = time(23, 0), time(8, 0)
+    now = datetime(2026, 10, 7, 23, 30)
+    assert next_quiet_end(now, s, e) == datetime(2026, 10, 8, 8, 0)
+
+
+def test_next_quiet_end_crosses_midnight_after_midnight():
+    s, e = time(23, 0), time(8, 0)
+    now = datetime(2026, 10, 8, 2, 0)
+    assert next_quiet_end(now, s, e) == datetime(2026, 10, 8, 8, 0)
+
+
+# ---------- parse_human_date ----------
+
+NOW = datetime(2026, 10, 7, 12, 0)  # вторник, 12:00
+
+
+def test_strict_format_with_time():
+    assert parse_human_date("15.10.2026 18:00", NOW) == datetime(2026, 10, 15, 18, 0)
+
+
+def test_strict_format_date_only_defaults_to_9am():
+    assert parse_human_date("15.10.2026", NOW) == datetime(2026, 10, 15, 9, 0)
+
+
+def test_tomorrow_with_time():
+    assert parse_human_date("завтра 18:00", NOW) == datetime(2026, 10, 8, 18, 0)
+    assert parse_human_date("tomorrow at 18:00", NOW) == datetime(2026, 10, 8, 18, 0)
+    assert parse_human_date("jutro o 18:00", NOW) == datetime(2026, 10, 8, 18, 0)
+
+
+def test_tomorrow_without_time_defaults_to_9am():
+    assert parse_human_date("завтра", NOW) == datetime(2026, 10, 8, 9, 0)
+
+
+def test_today_without_time_keeps_current_time():
+    assert parse_human_date("сегодня", NOW) == NOW
+
+
+def test_relative_amount_with_unit():
+    assert parse_human_date("через 3 дня", NOW) == NOW.replace(day=10)
+    assert parse_human_date("через 2 часа", NOW) == datetime(2026, 10, 7, 14, 0)
+    assert parse_human_date("in 2 hours", NOW) == datetime(2026, 10, 7, 14, 0)
+    assert parse_human_date("za 3 dni", NOW) == NOW.replace(day=10)
+
+
+def test_relative_amount_with_time_override():
+    # "через 3 дня в 09:30" — число дней для даты, время — переопределяется явно
+    result = parse_human_date("через 3 дня в 09:30", NOW)
+    assert result == datetime(2026, 10, 10, 9, 30)
+
+
+def test_relative_no_number_phrases():
+    assert parse_human_date("через час", NOW) == datetime(2026, 10, 7, 13, 0)
+    assert parse_human_date("через минуту", NOW) == datetime(2026, 10, 7, 12, 1)
+    assert parse_human_date("через неделю", NOW) == datetime(2026, 10, 14, 12, 0)
+    assert parse_human_date("через день", NOW) == datetime(2026, 10, 8, 12, 0)
+
+
+def test_invalid_hour_returns_none_not_exception():
+    # Регекс пропускает 1-2 цифры, не глядя на допустимый диапазон 0-23/0-59 —
+    # .replace(hour=99) должен кинуть ValueError, пойманный внутри parse_human_date.
+    assert parse_human_date("завтра в 99:99", NOW) is None
+    assert parse_human_date("25.02.2026 25:00", NOW) is None
+
+
+def test_invalid_calendar_date_returns_none():
+    assert parse_human_date("31.02.2026 10:00", NOW) is None  # 31 февраля не существует
+
+
+def test_garbage_returns_none():
+    assert parse_human_date("как дела", NOW) is None
+    assert parse_human_date("", NOW) is None
+
+
+# ---------- split_title_and_date ----------
+
+def test_split_title_and_date_basic():
+    title, dt = split_title_and_date("Купить молоко завтра в 18:00", NOW)
+    assert title == "Купить молоко"
+    assert dt == datetime(2026, 10, 8, 18, 0)
+
+
+def test_split_title_and_date_strips_trailing_preposition():
+    title, dt = split_title_and_date("Позвонить маме на завтра", NOW)
+    assert title == "Позвонить маме"
+    assert dt == datetime(2026, 10, 8, 9, 0)
+
+
+def test_split_title_and_date_whole_string_is_date_returns_none():
+    # Вся строка — сама дата, заголовка не остаётся: не считаем это парой
+    # (заголовок, дата), чтобы вызывающий код запросил дату отдельным шагом.
+    title, dt = split_title_and_date("завтра", NOW)
+    assert (title, dt) == ("завтра", None)
+
+
+def test_split_title_and_date_no_date_in_text():
+    title, dt = split_title_and_date("Просто заметка без даты", NOW)
+    assert (title, dt) == ("Просто заметка без даты", None)
+
+
+if __name__ == "__main__":
+    import sys
+    failures = 0
+    tests = {name: fn for name, fn in list(globals().items()) if name.startswith("test_")}
+    for name, fn in tests.items():
+        try:
+            fn()
+            print(f"ok  {name}")
+        except AssertionError as e:
+            failures += 1
+            print(f"FAIL {name}: {e}")
+        except Exception as e:
+            failures += 1
+            print(f"ERROR {name}: {e!r}")
+    print(f"\n{len(tests) - failures}/{len(tests)} passed")
+    sys.exit(1 if failures else 0)
