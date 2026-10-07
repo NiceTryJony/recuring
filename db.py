@@ -538,6 +538,20 @@ async def get_chat_members(chat_id: int) -> list[int]:
     return await _with_retry(_run)
 
 
+async def is_chat_member(chat_id: int, user_id: int) -> bool:
+    """Используется для авторизации действий с задачами чата: нажатие кнопки
+    приходит личным сообщением (бот рассылает уведомления в личку), поэтому
+    нельзя просто сравнить chat.id нажавшего — нужно явно спросить БД, состоит
+    ли этот user_id в участниках chat_id."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2", chat_id, user_id
+            )
+            return row is not None
+    return await _with_retry(_run)
+
+
 # ---------- telegram_users: имена для отображения ----------
 
 async def upsert_telegram_user(

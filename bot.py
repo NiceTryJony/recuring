@@ -35,7 +35,7 @@ from stats import compute_streak, daily_series, totals
 API_TOKEN = os.environ["BOT_TOKEN"]
 DASHBOARD_BASE_URL = os.environ.get("DASHBOARD_BASE_URL", "")  # напр. https://task-reminder-bot-xxxx.onrender.com
 DEFAULT_TZ = ZoneInfo("Europe/Warsaw")
-PAGE_SIZE = 5
+PAGE_SIZE = 8  # до 10 — ограничено набором _NUMBER_EMOJI и шириной ряда кнопок
 
 # «Повторять напоминание, пока не выполню»: дефолты, чтобы не спамить бесконечно.
 NAG_INTERVAL_MINUTES = 30   # не чаще раза в 30 минут
@@ -169,6 +169,65 @@ async def resolve_owner(chat: Chat, from_user_id: int) -> tuple[int, str]:
     return from_user_id, "user"
 
 
+async def _can_access_task(task: dict, chat: Chat, from_user_id: int) -> bool:
+    """Может ли этот пользователь управлять этой задачей (отмечать выполненной,
+    удалять, редактировать и т.п.)?
+
+    Два легитимных случая:
+    1. Нажатие в том же чате, которому принадлежит задача (обычный случай
+       для личных задач, и для групповых — кнопка под сообщением в самой группе).
+    2. Нажатие в личке с ботом по задаче чата (owner_type='chat') — так
+       приходят уведомления о групповых задачах (_recipients рассылает их
+       личными сообщениями), поэтому chat.id нажавшего будет его личным ЛС,
+       а не chat_id задачи. Легитимно, только если нажавший реально состоит
+       в участниках этого чата (db.chat_members)."""
+    owner_id, owner_type = task["owner_id"], task["owner_type"]
+
+    same_owner = (owner_id, owner_type) == await resolve_owner(chat, from_user_id)
+    if same_owner:
+        return True
+
+    if owner_type == "chat":
+        return await db.is_chat_member(owner_id, from_user_id)
+
+    return False
+
+
+async def _authorize_task(call: CallbackQuery, task_id: int) -> dict | None:
+    """Общая точка входа для всех действий с задачей по кнопке: загружает
+    задачу и проверяет права. Возвращает задачу при успехе; при провале сама
+    отвечает call.answer() с текстом ошибки (на известном нам языке, если task
+    существует — иначе на дефолтном) и возвращает None. Вызывающий код просто
+    делает `if task is None: return`."""
+    task = await db.get_task(task_id)
+    if not task:
+        await call.answer()
+        return None
+    if not await _can_access_task(task, call.message.chat, call.from_user.id):
+        lang = await owner_lang(task["owner_id"], task["owner_type"])
+        await call.answer(t(lang, "not_authorized"), show_alert=True)
+        return None
+    return task
+
+
+async def _authorize_subtask(call: CallbackQuery, subtask_id: int) -> tuple[dict, dict] | None:
+    """То же самое для подзадач: сверяет права по родительской задаче.
+    Возвращает (subtask, task) при успехе, иначе None (и сама отвечает call.answer())."""
+    sub = await db.get_subtask(subtask_id)
+    if not sub:
+        await call.answer()
+        return None
+    task = await db.get_task(sub["task_id"])
+    if not task:
+        await call.answer()
+        return None
+    if not await _can_access_task(task, call.message.chat, call.from_user.id):
+        lang = await owner_lang(task["owner_id"], task["owner_type"])
+        await call.answer(t(lang, "not_authorized"), show_alert=True)
+        return None
+    return sub, task
+
+
 # ---------- helpers: настройки владельца ----------
 
 _settings_cache: dict[tuple[str, int], dict] = {}
@@ -292,21 +351,33 @@ def edit_field_kb(task_id: int, lang: str):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-def pagination_kb(page: int, has_next: bool, prefix: str = "page"):
-    row = []
-    if page > 0:
-        row.append(InlineKeyboardButton(text="⬅️", callback_data=f"{prefix}_{page-1}"))
-    if has_next:
-        row.append(InlineKeyboardButton(text="➡️", callback_data=f"{prefix}_{page+1}"))
-    return InlineKeyboardMarkup(inline_keyboard=[row]) if row else None
+# Клетки 1-9 рисуются как key-cap эмодзи ("1️⃣"), 10 — отдельным символом
+# "🔟"; больше 10 на страницу не бывает (PAGE_SIZE <= 10 см. ниже), так что
+# набора хватает с запасом.
+_NUMBER_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
 
-def list_nav_kb(lang: str, filter_mode: str, sort_by: str, page: int, total_pages: int):
-    """Клавиатура под навигационным сообщением /list: строки фильтра/сортировки
-    (как и раньше) плюс, если страниц больше одной, зацикленная пагинация —
-    ⬅️ с последней страницы уводит на первую и наоборот, а не упирается в край."""
+def list_open_kb(task_ids: list[int], prefix: str = "listopen"):
+    """Ряд кнопок-номеров под компактным списком — тап по номеру открывает
+    полную карточку конкретной задачи отдельным сообщением. prefix различает
+    источник ("listopen" -> list_task_open, "findopen" -> find_task_open),
+    у каждого свой кэш открытых карточек (view["open_cards"])."""
+    row = [
+        InlineKeyboardButton(text=_NUMBER_EMOJI[i], callback_data=f"{prefix}_{task_id}")
+        for i, task_id in enumerate(task_ids)
+    ]
+    return row
+
+
+def list_nav_kb(lang: str, filter_mode: str, sort_by: str, page: int, total_pages: int, task_ids: list[int]):
+    """Клавиатура под навигационным сообщением /list: строки фильтра/сортировки,
+    ряд кнопок-номеров (открыть карточку конкретной задачи), и, если страниц
+    больше одной, зацикленная пагинация — ⬅️ с последней страницы уводит на
+    первую и наоборот, а не упирается в край."""
     kb = list_filter_kb(lang, filter_mode, sort_by)
     rows = list(kb.inline_keyboard)
+    if task_ids:
+        rows.append(list_open_kb(task_ids))
     if total_pages > 1:
         prev_page = (page - 1) % total_pages
         next_page = (page + 1) % total_pages
@@ -397,6 +468,16 @@ def fmt_remind(remind: str, lang: str) -> str:
     return ", ".join(parts) if parts else REMIND_OPTIONS["0"][lang]
 
 
+def _task_status_icon(t_row: dict) -> str:
+    """✅ выполнена, ⚠️ просрочена (есть срок в прошлом и не выполнена), иначе ⏳."""
+    if t_row["done"]:
+        return "✅"
+    due = t_row["due_at"]
+    if due and due < datetime.now(ZoneInfo("UTC")):
+        return "⚠️"
+    return "⏳"
+
+
 async def fmt_task(t_row: dict) -> str:
     """Язык и часовой пояс берутся из владельца самой задачи (t_row['owner_id']/
     ['owner_type']), а не из того, кто сейчас смотрит карточку — так в групповом
@@ -404,7 +485,7 @@ async def fmt_task(t_row: dict) -> str:
     lang = await owner_lang(t_row["owner_id"], t_row["owner_type"])
     tz = await owner_tz(t_row["owner_id"], t_row["owner_type"])
     local_dt = to_local(t_row["due_at"], tz)
-    status = "✅" if t_row["done"] else "⏳"
+    status = _task_status_icon(t_row)
     # parse_mode=HTML: без экранирования заголовок вида "a < b" ломает отправку (TelegramBadRequest)
     text = f"{status} <b>{html.escape(t_row['title'])}</b>\n📅 {local_dt.strftime('%d.%m.%Y %H:%M')}"
     if t_row["repeat"] != "none":
@@ -417,6 +498,21 @@ async def fmt_task(t_row: dict) -> str:
         text += f"\n🏷 {html.escape(t_row['tag'])}"
     text += f"\n<code>#{t_row['id']}</code>"
     return text
+
+
+def fmt_task_line(t_row: dict, number: int, tz: ZoneInfo) -> str:
+    """Одна строка компактного списка: номер (соответствует кнопке с тем же
+    номером), статус, название (обрезано, чтобы длинные заголовки не ломали
+    строку), дата. Без HTML-тегов — список шлётся как HTML, поэтому экранируем."""
+    status = _task_status_icon(t_row)
+    local_dt = to_local(t_row["due_at"], tz)
+    title = t_row["title"]
+    if len(title) > 40:
+        title = title[:39] + "…"
+    title = html.escape(title)
+    date_str = local_dt.strftime("%d.%m %H:%M")
+    tag_suffix = f" 🏷{html.escape(t_row['tag'])}" if t_row.get("tag") else ""
+    return f"{_NUMBER_EMOJI[number - 1]} {status} {title} — {date_str}{tag_suffix}"
 
 
 # ---------- базовые команды ----------
@@ -474,7 +570,14 @@ async def timezone_custom(message: Message, state: FSMContext):
     data = await state.get_data()
     owner_id = data.get("owner_id", message.from_user.id)
     owner_type = data.get("owner_type", "user")
-    await _apply_timezone(owner_id, owner_type, message.text.strip(), message)
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        # любая другая команда выводит из режима ввода (иначе "/cancel" считался бы кривым поясом)
+        lang = await owner_lang(owner_id, owner_type)
+        await state.clear()
+        await message.answer(t(lang, "cancelled"))
+        return
+    await _apply_timezone(owner_id, owner_type, text, message)
     await state.clear()
 
 
@@ -753,32 +856,60 @@ async def _finalize_add_task(state: FSMContext, tag: str | None, target_message:
 def _get_list_view(owner_id: int, owner_type: str) -> dict:
     return _list_view_cache.setdefault(
         (owner_type, owner_id),
-        {"filter_mode": "all", "sort_by": "date", "page": 0, "nav_msg_id": None, "task_msg_ids": []},
+        # nav_msg_id — сообщение со списком+кнопками; open_cards — {task_id:
+        # msg_id} карточек, открытых тапом по номеру (см. list_task_open).
+        # Открытые карточки переживают листание страниц/смену фильтра (если
+        # задача на них ещё видна), но закрываются, если задача пропала со
+        # страницы — иначе кнопка "1" на новой странице молча правила бы
+        # карточку другой, уже закрытой задачи с прошлой страницы.
+        {"filter_mode": "all", "sort_by": "date", "page": 0, "nav_msg_id": None, "open_cards": {}},
     )
 
 
 _list_view_cache: dict[tuple[str, int], dict] = {}
 _search_cache: dict[tuple[str, int], dict] = {}
 
+# Групповой чат: несколько участников могут одновременно жать разные кнопки
+# /list (фильтр/сортировка/страница) по одному и тому же view-объекту — без
+# сериализации гонка на чтении/правке nav_msg_id/open_cards могла расставить
+# или стереть карточки не того пользователя. Лочим по (owner_type, owner_id),
+# а не глобально — чаты/юзеры друг друга не блокируют.
+_list_view_locks: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _get_list_view_lock(owner_id: int, owner_type: str) -> asyncio.Lock:
+    return _list_view_locks.setdefault((owner_type, owner_id), asyncio.Lock())
+
+
+def _fmt_list_body(lang: str, page_items: list[dict], tz: ZoneInfo) -> str:
+    header = t(lang, "list_controls")
+    lines = [fmt_task_line(task, i + 1, tz) for i, task in enumerate(page_items)]
+    return header + "\n\n" + "\n".join(lines)
+
+
+async def _close_stale_open_cards(chat_id: int, view: dict, visible_task_ids: set[int]):
+    """Карточки, открытые тапом по номеру, но чья задача больше не видна на
+    текущей странице (сменили фильтр/страницу/задачу удалили) — закрываем,
+    чтобы номер на новой странице не управлял чужой, невидимой карточкой."""
+    stale = [tid for tid in view["open_cards"] if tid not in visible_task_ids]
+    for tid in stale:
+        mid = view["open_cards"].pop(tid)
+        try:
+            await bot.delete_message(chat_id, mid)
+        except TelegramBadRequest:
+            pass
+
 
 async def _render_list_page(chat_id: int, owner_id: int, owner_type: str, lang: str, view: dict):
-    """Единый механизм показа страницы /list: одно навигационное сообщение
-    (фильтр/сортировка/пагинация) + по одному сообщению на задачу страницы.
-    При повторном вызове (смена фильтра, листание, повторный /list) СУЩЕСТВУЮЩИЕ
-    сообщения редактируются на месте, а не дублируются — чат не засоряется.
-    Если на новой странице задач меньше, чем было карточек — лишние карточки
-    удаляются; если больше — недостающие досылаются."""
+    """Единый механизм показа страницы /list: ОДНО навигационное сообщение —
+    компактный нумерованный список + фильтр/сортировка/пагинация + ряд кнопок-
+    номеров. Тап по номеру открывает полную карточку задачи отдельным
+    сообщением (list_task_open) — так при 10+ задачах нет шторма сообщений, но
+    полный контроль (✅/✏️/🗑/⏰) остаётся доступен по одному тапу."""
     tasks = await db.get_tasks(owner_id, owner_type, filter_mode=view["filter_mode"], sort_by=view["sort_by"])
 
     if not tasks:
-        # Пустой результат — убираем всё, что было показано раньше, и оставляем
-        # только навигацию с сообщением "задач нет", без карточек.
-        for mid in view["task_msg_ids"]:
-            try:
-                await bot.delete_message(chat_id, mid)
-            except TelegramBadRequest:
-                pass
-        view["task_msg_ids"] = []
+        await _close_stale_open_cards(chat_id, view, visible_task_ids=set())
         view["page"] = 0
         text = t(lang, "list_controls") + "\n\n" + t(lang, "no_tasks")
         kb = list_filter_kb(lang, view["filter_mode"], view["sort_by"])
@@ -797,42 +928,70 @@ async def _render_list_page(chat_id: int, owner_id: int, owner_type: str, lang: 
     view["page"] = page
     start = page * PAGE_SIZE
     page_items = tasks[start:start + PAGE_SIZE]
+    task_ids = [task["id"] for task in page_items]
 
-    nav_text = t(lang, "list_controls")
-    nav_kb = list_nav_kb(lang, view["filter_mode"], view["sort_by"], page, total_pages)
+    await _close_stale_open_cards(chat_id, view, visible_task_ids=set(task_ids))
+
+    tz = await owner_tz(owner_id, owner_type)
+    nav_text = _fmt_list_body(lang, page_items, tz)
+    nav_kb = list_nav_kb(lang, view["filter_mode"], view["sort_by"], page, total_pages, task_ids)
     if view["nav_msg_id"]:
         try:
-            await bot.edit_message_text(nav_text, chat_id=chat_id, message_id=view["nav_msg_id"], reply_markup=nav_kb)
+            await bot.edit_message_text(nav_text, chat_id=chat_id, message_id=view["nav_msg_id"], reply_markup=nav_kb, parse_mode="HTML")
         except TelegramBadRequest:
-            msg = await bot.send_message(chat_id, nav_text, reply_markup=nav_kb)
+            msg = await bot.send_message(chat_id, nav_text, reply_markup=nav_kb, parse_mode="HTML")
             view["nav_msg_id"] = msg.message_id
     else:
-        msg = await bot.send_message(chat_id, nav_text, reply_markup=nav_kb)
+        msg = await bot.send_message(chat_id, nav_text, reply_markup=nav_kb, parse_mode="HTML")
         view["nav_msg_id"] = msg.message_id
 
-    old_ids = view["task_msg_ids"]
-    new_ids = []
-    for i, task in enumerate(page_items):
+    # Открытые карточки задач, которые остались видимы на (возможно новой)
+    # странице — обновляем их текст/клавиатуру на месте (например, после
+    # смены сортировки статус задачи мог измениться с прошлого рендера).
+    for task in page_items:
+        mid = view["open_cards"].get(task["id"])
+        if mid is None:
+            continue
         text = await fmt_task(task)
         kb = task_kb(task["id"], lang, done=task["done"])
-        if i < len(old_ids):
-            try:
-                await bot.edit_message_text(text, chat_id=chat_id, message_id=old_ids[i], reply_markup=kb, parse_mode="HTML")
-                new_ids.append(old_ids[i])
-                continue
-            except TelegramBadRequest:
-                pass  # сообщение могли удалить руками — просто пришлём новое
-        msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
-        new_ids.append(msg.message_id)
-
-    # Прошлая страница была длиннее текущей — лишние карточки больше не нужны.
-    for leftover_id in old_ids[len(page_items):]:
         try:
-            await bot.delete_message(chat_id, leftover_id)
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=mid, reply_markup=kb, parse_mode="HTML")
         except TelegramBadRequest:
-            pass
+            pass  # "message is not modified" или сообщение удалили руками — не критично
 
-    view["task_msg_ids"] = new_ids
+
+async def _open_task_card(call: CallbackQuery, task: dict, view: dict):
+    """Общая механика для listopen_/findopen_/tagfopen_: открывает (или, если
+    уже открыта на этой view, обновляет на месте) полную карточку задачи
+    отдельным сообщением. view — любой из *_view_cache объектов с ключом
+    "open_cards" ({task_id: msg_id})."""
+    task_id = task["id"]
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
+    text = await fmt_task(task)
+    kb = task_kb(task_id, lang, done=task["done"])
+    chat_id = call.message.chat.id
+    existing_mid = view["open_cards"].get(task_id)
+    if existing_mid:
+        try:
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=existing_mid, reply_markup=kb, parse_mode="HTML")
+            await call.answer()
+            return
+        except TelegramBadRequest:
+            pass  # карточку удалили руками — пришлём новую ниже
+    msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
+    view["open_cards"][task_id] = msg.message_id
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("listopen_"))
+async def list_task_open(call: CallbackQuery):
+    """Тап по кнопке-номеру под компактным списком /list."""
+    task_id = int(call.data.split("_", 1)[1])
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    view = _get_list_view(task["owner_id"], task["owner_type"])
+    await _open_task_card(call, task, view)
 
 
 @dp.message(Command("list"))
@@ -840,8 +999,9 @@ async def list_tasks(message: Message):
     owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
     view = _get_list_view(owner_id, owner_type)
-    view["page"] = 0  # свежий /list всегда показывает список с начала
-    await _render_list_page(message.chat.id, owner_id, owner_type, lang, view)
+    async with _get_list_view_lock(owner_id, owner_type):
+        view["page"] = 0  # свежий /list всегда показывает список с начала
+        await _render_list_page(message.chat.id, owner_id, owner_type, lang, view)
 
 
 @dp.callback_query(F.data.startswith("listf_"))
@@ -850,9 +1010,10 @@ async def list_filter_pick(call: CallbackQuery):
     lang = await owner_lang(owner_id, owner_type)
     mode = call.data.split("_", 1)[1]
     view = _get_list_view(owner_id, owner_type)
-    view["filter_mode"] = mode
-    view["page"] = 0  # смена фильтра — список другой, со старой страницы смысла нет
-    await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
+    async with _get_list_view_lock(owner_id, owner_type):
+        view["filter_mode"] = mode
+        view["page"] = 0  # смена фильтра — список другой, со старой страницы смысла нет
+        await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
     await call.answer()
 
 
@@ -862,9 +1023,10 @@ async def list_sort_pick(call: CallbackQuery):
     lang = await owner_lang(owner_id, owner_type)
     sort_by = call.data.split("_", 1)[1]
     view = _get_list_view(owner_id, owner_type)
-    view["sort_by"] = sort_by
-    view["page"] = 0
-    await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
+    async with _get_list_view_lock(owner_id, owner_type):
+        view["sort_by"] = sort_by
+        view["page"] = 0
+        await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
     await call.answer()
 
 
@@ -873,8 +1035,9 @@ async def list_page_nav(call: CallbackQuery):
     owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
     view = _get_list_view(owner_id, owner_type)
-    view["page"] = int(call.data.split("_", 1)[1])
-    await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
+    async with _get_list_view_lock(owner_id, owner_type):
+        view["page"] = int(call.data.split("_", 1)[1])
+        await _render_list_page(call.message.chat.id, owner_id, owner_type, lang, view)
     await call.answer()
 
 
@@ -895,8 +1058,10 @@ async def find_start(message: Message, state: FSMContext):
     await message.answer(t(lang, "ask_find_query"))
 
 
-async def _render_find_page(owner_id: int, owner_type: str, lang: str, page: int):
-    """Возвращает (текст_заголовка, клавиатура_пагинации, задачи_на_странице)."""
+async def _render_find_page(owner_id: int, owner_type: str, lang: str, page: int, tz: ZoneInfo):
+    """Возвращает (текст, клавиатура, задачи_на_странице) — компактный
+    нумерованный список как в /list (см. _render_list_page), с кнопками-
+    номерами для открытия полной карточки по тапу вместо шторма сообщений."""
     cache = _search_cache.get((owner_type, owner_id))
     results = cache["results"] if cache else []
     if not results:
@@ -905,8 +1070,29 @@ async def _render_find_page(owner_id: int, owner_type: str, lang: str, page: int
     page_items = results[start:start + PAGE_SIZE]
     has_next = start + PAGE_SIZE < len(results)
     header = t(lang, "find_results", total=len(results))
-    kb = pagination_kb(page, has_next, prefix="findpage")
-    return header, kb, page_items
+    lines = [fmt_task_line(task, i + 1, tz) for i, task in enumerate(page_items)]
+    text = header + "\n\n" + "\n".join(lines)
+    rows = []
+    if page_items:
+        rows.append(list_open_kb([task["id"] for task in page_items], prefix="findopen"))
+    if page > 0 or has_next:
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"findpage_{page-1}"))
+        if has_next:
+            nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"findpage_{page+1}"))
+        rows.append(nav_row)
+    kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    return text, kb, page_items
+
+
+def _get_find_view(owner_id: int, owner_type: str) -> dict:
+    # open_cards: {task_id: msg_id} карточек, открытых тапом по номеру —
+    # тот же паттерн, что и _get_list_view (см. list_task_open).
+    return _find_view_cache.setdefault((owner_type, owner_id), {"nav_msg_id": None, "open_cards": {}})
+
+
+_find_view_cache: dict[tuple[str, int], dict] = {}
 
 
 @dp.message(FindTask.query)
@@ -914,30 +1100,47 @@ async def find_query(message: Message, state: FSMContext):
     data = await state.get_data()
     owner_id, owner_type = data["owner_id"], data["owner_type"]
     lang = await owner_lang(owner_id, owner_type)
+    tz = await owner_tz(owner_id, owner_type)
     await state.clear()
     query_text = message.text.strip()
     results = await db.search_tasks(owner_id, owner_type, query_text)
     _search_cache[(owner_type, owner_id)] = {"query": query_text, "results": results}
+    # Новый поиск — прошлые открытые карточки относятся к прошлой выдаче, забываем о них
+    _find_view_cache.pop((owner_type, owner_id), None)
+    view = _get_find_view(owner_id, owner_type)
 
-    header, kb, page_items = await _render_find_page(owner_id, owner_type, lang, 0)
-    await message.answer(header, reply_markup=kb)
-    for task in page_items:
-        text = await fmt_task(task)
-        await message.answer(text, reply_markup=task_kb(task["id"], lang, done=task["done"]), parse_mode="HTML")
+    text, kb, _ = await _render_find_page(owner_id, owner_type, lang, 0, tz)
+    msg = await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    view["nav_msg_id"] = msg.message_id
 
 
 @dp.callback_query(F.data.startswith("findpage_"))
 async def find_page_nav(call: CallbackQuery):
     owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
+    tz = await owner_tz(owner_id, owner_type)
     page = int(call.data.split("_", 1)[1])
 
-    header, kb, page_items = await _render_find_page(owner_id, owner_type, lang, page)
-    await call.message.edit_text(header, reply_markup=kb)
-    for task in page_items:
-        text = await fmt_task(task)
-        await call.message.answer(text, reply_markup=task_kb(task["id"], lang, done=task["done"]), parse_mode="HTML")
+    text, kb, page_items = await _render_find_page(owner_id, owner_type, lang, page, tz)
+    view = _get_find_view(owner_id, owner_type)
+    await _close_stale_open_cards(call.message.chat.id, view, visible_task_ids={t["id"] for t in page_items})
+    try:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest:
+        pass
     await call.answer()
+
+
+@dp.callback_query(F.data.startswith("findopen_"))
+async def find_task_open(call: CallbackQuery):
+    """Тап по кнопке-номеру под результатами /find. Свой кэш (_find_view_cache),
+    отдельный от /list — см. _open_task_card."""
+    task_id = int(call.data.split("_", 1)[1])
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    view = _get_find_view(task["owner_id"], task["owner_type"])
+    await _open_task_card(call, task, view)
 
 
 # ---------- /tags ----------
@@ -953,20 +1156,89 @@ async def tags_cmd(message: Message):
     await message.answer(t(lang, "choose_tag"), reply_markup=tags_kb(tags))
 
 
+def _get_tagf_view(owner_id: int, owner_type: str) -> dict:
+    # tag хранится в самом view, чтобы tagf_page_N знал, по какому тегу
+    # листать — в отличие от /list тут нет отдельного состояния фильтра.
+    return _tagf_view_cache.setdefault((owner_type, owner_id), {"tag": None, "nav_msg_id": None, "open_cards": {}})
+
+
+_tagf_view_cache: dict[tuple[str, int], dict] = {}
+
+
+async def _render_tagf_page(owner_id: int, owner_type: str, lang: str, tag: str, page: int, tz: ZoneInfo):
+    tasks = await db.get_tasks(owner_id, owner_type, tag=tag)
+    if not tasks:
+        return t(lang, "no_tasks"), None, []
+    start = page * PAGE_SIZE
+    page_items = tasks[start:start + PAGE_SIZE]
+    has_next = start + PAGE_SIZE < len(tasks)
+    header = t(lang, "find_results", total=len(tasks))  # "Найдено: N" подходит и для фильтра по тегу
+    lines = [fmt_task_line(task, i + 1, tz) for i, task in enumerate(page_items)]
+    text = f"🏷 {html.escape(tag)}\n{header}\n\n" + "\n".join(lines)
+    rows = []
+    if page_items:
+        rows.append(list_open_kb([task["id"] for task in page_items], prefix="tagfopen"))
+    if page > 0 or has_next:
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"tagfpage_{page-1}"))
+        if has_next:
+            nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"tagfpage_{page+1}"))
+        rows.append(nav_row)
+    kb = InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    return text, kb, page_items
+
+
 @dp.callback_query(F.data.startswith("tagf_"))
 async def tags_filter(call: CallbackQuery):
     owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
+    tz = await owner_tz(owner_id, owner_type)
     tag = call.data.split("_", 1)[1]
-    tasks = await db.get_tasks(owner_id, owner_type, tag=tag)
-    if not tasks:
-        await call.message.answer(t(lang, "no_tasks"))
+
+    # Новый выбор тега — прошлые открытые карточки относились к прошлому тегу
+    _tagf_view_cache.pop((owner_type, owner_id), None)
+    view = _get_tagf_view(owner_id, owner_type)
+    view["tag"] = tag
+
+    text, kb, _ = await _render_tagf_page(owner_id, owner_type, lang, tag, 0, tz)
+    msg = await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    view["nav_msg_id"] = msg.message_id
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("tagfpage_"))
+async def tags_filter_page(call: CallbackQuery):
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    tz = await owner_tz(owner_id, owner_type)
+    page = int(call.data.split("_", 1)[1])
+    view = _get_tagf_view(owner_id, owner_type)
+    tag = view["tag"]
+    if tag is None:
+        # Состояние потеряно (рестарт процесса) — просим начать заново через /tags
         await call.answer()
         return
-    for task in tasks[:PAGE_SIZE]:
-        text = await fmt_task(task)
-        await call.message.answer(text, reply_markup=task_kb(task["id"], lang, done=task["done"]), parse_mode="HTML")
+
+    text, kb, page_items = await _render_tagf_page(owner_id, owner_type, lang, tag, page, tz)
+    await _close_stale_open_cards(call.message.chat.id, view, visible_task_ids={t["id"] for t in page_items})
+    try:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest:
+        pass
     await call.answer()
+
+
+@dp.callback_query(F.data.startswith("tagfopen_"))
+async def tagf_task_open(call: CallbackQuery):
+    """Тап по кнопке-номеру под результатами /tags. Свой кэш
+    (_tagf_view_cache) — см. _open_task_card."""
+    task_id = int(call.data.split("_", 1)[1])
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    view = _get_tagf_view(task["owner_id"], task["owner_type"])
+    await _open_task_card(call, task, view)
 
 
 # ---------- /history ----------
@@ -1043,7 +1315,9 @@ async def history_cmd(message: Message):
 async def history_mode_pick(call: CallbackQuery):
     mode = call.data.split("_", 1)[1]
     if mode not in HISTORY_MODES:
-        await call.answer()
+        owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+        lang = await owner_lang(owner_id, owner_type)
+        await call.answer(t(lang, "history_mode_unknown"), show_alert=True)
         return
     owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
@@ -1135,9 +1409,8 @@ async def dashboard_set_password(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("done_"))
 async def mark_done(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = await db.get_task(task_id)
-    if not task:
-        await call.answer()
+    task = await _authorize_task(call, task_id)
+    if task is None:
         return
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     await db.mark_done(task_id)
@@ -1156,9 +1429,8 @@ async def mark_done(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("undone_"))
 async def mark_undone(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = await db.get_task(task_id)
-    if not task:
-        await call.answer()
+    task = await _authorize_task(call, task_id)
+    if task is None:
         return
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     await db.mark_undone(task_id)
@@ -1183,8 +1455,10 @@ async def mark_undone(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("del_"))
 async def delete_confirm(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = await db.get_task(task_id)
-    lang = await owner_lang(task["owner_id"], task["owner_type"]) if task else "ru"
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     await call.message.edit_reply_markup(reply_markup=confirm_delete_kb(task_id, lang))
     await call.answer()
 
@@ -1192,12 +1466,18 @@ async def delete_confirm(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("delok_"))
 async def delete_task(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = await db.get_task(task_id)
-    lang = await owner_lang(task["owner_id"], task["owner_type"]) if task else "ru"
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     await db.delete_task(task_id)
-    if task:
-        await db.log_history(task_id, call.from_user.id, task["title"], "deleted")
+    await db.log_history(task_id, call.from_user.id, task["title"], "deleted")
     _remove_task_jobs(task_id)
+    # Если карточка была открыта из /list по номеру — забываем о ней, иначе
+    # следующий рендер списка попытается отредактировать уже нерелевантное
+    # сообщение "задача удалена".
+    view = _get_list_view(task["owner_id"], task["owner_type"])
+    view["open_cards"].pop(task_id, None)
     await call.message.edit_text(t(lang, "task_deleted"))
     await call.answer()
 
@@ -1205,20 +1485,20 @@ async def delete_task(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("delno_"))
 async def delete_cancel(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = await db.get_task(task_id)
-    if task:
-        lang = await owner_lang(task["owner_id"], task["owner_type"])
-        text = await fmt_task(task)
-        await call.message.edit_text(text, reply_markup=task_kb(task_id, lang, done=task["done"]), parse_mode="HTML")
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
+    text = await fmt_task(task)
+    await call.message.edit_text(text, reply_markup=task_kb(task_id, lang, done=task["done"]), parse_mode="HTML")
     await call.answer()
 
 
 @dp.callback_query(F.data.startswith("snooze_"))
 async def snooze_task(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = await db.get_task(task_id)
-    if not task:
-        await call.answer()
+    task = await _authorize_task(call, task_id)
+    if task is None:
         return
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     new_due = datetime.now(ZoneInfo("UTC")) + timedelta(hours=1)
@@ -1241,8 +1521,10 @@ async def snooze_task(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("edit_"))
 async def edit_choose_field(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = await db.get_task(task_id)
-    lang = await owner_lang(task["owner_id"], task["owner_type"]) if task else "ru"
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     await call.message.edit_reply_markup(reply_markup=edit_field_kb(task_id, lang))
     await call.answer()
 
@@ -1251,8 +1533,10 @@ async def edit_choose_field(call: CallbackQuery):
 async def edit_field_selected(call: CallbackQuery, state: FSMContext):
     _, field, task_id = call.data.split("_")
     task_id = int(task_id)
-    task = await db.get_task(task_id)
-    lang = await owner_lang(task["owner_id"], task["owner_type"]) if task else "ru"
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
 
     if field == "repeat":
         await call.message.edit_text(t(lang, "ask_repeat"), reply_markup=repeat_kb(lang, prefix=f"editrep_{task_id}"))
@@ -1274,6 +1558,9 @@ async def edit_field_selected(call: CallbackQuery, state: FSMContext):
 async def edit_repeat_apply(call: CallbackQuery):
     _, task_id, new_repeat = call.data.split("_", 2)  # в коде повтора бывают "_" (monthly_nth_weekday)
     task_id = int(task_id)
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
     await db.update_task(task_id, repeat=new_repeat)
     task = await db.get_task(task_id)
     lang = await owner_lang(task["owner_id"], task["owner_type"])
@@ -1319,16 +1606,16 @@ async def edit_value_apply(message: Message, state: FSMContext):
 
 
 # ---------- подзадачи ----------
-
-async def _task_lang(task_id: int) -> str:
-    task = await db.get_task(task_id)
-    return await owner_lang(task["owner_id"], task["owner_type"]) if task else "ru"
-
+# Везде ниже авторизация идёт через родительскую задачу (_authorize_task /
+# _authorize_subtask) — подзадача сама по себе владельца не хранит.
 
 @dp.callback_query(F.data.startswith("subs_"))
 async def subtasks_open(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    lang = await _task_lang(task_id)
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     subtasks = await db.get_subtasks(task_id)
     text = t(lang, "no_subtasks") if not subtasks else t(lang, "subtasks_title")
     await call.message.edit_text(text, reply_markup=subtasks_kb(task_id, subtasks, lang))
@@ -1338,11 +1625,11 @@ async def subtasks_open(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("subtoggle_"))
 async def subtask_toggle(call: CallbackQuery):
     subtask_id = int(call.data.split("_")[1])
-    sub = await db.get_subtask(subtask_id)
-    if not sub:
-        await call.answer()
+    authorized = await _authorize_subtask(call, subtask_id)
+    if authorized is None:
         return
-    lang = await _task_lang(sub["task_id"])
+    sub, task = authorized
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     await db.toggle_subtask(subtask_id)
     subtasks = await db.get_subtasks(sub["task_id"])
     await call.message.edit_reply_markup(reply_markup=subtasks_kb(sub["task_id"], subtasks, lang))
@@ -1352,11 +1639,11 @@ async def subtask_toggle(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("subdel_"))
 async def subtask_delete_confirm(call: CallbackQuery):
     subtask_id = int(call.data.split("_")[1])
-    sub = await db.get_subtask(subtask_id)
-    if not sub:
-        await call.answer()
+    authorized = await _authorize_subtask(call, subtask_id)
+    if authorized is None:
         return
-    lang = await _task_lang(sub["task_id"])
+    sub, task = authorized
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     subtasks = await db.get_subtasks(sub["task_id"])
     await call.message.edit_reply_markup(
         reply_markup=subtasks_kb(sub["task_id"], subtasks, lang, confirm_id=subtask_id)
@@ -1367,12 +1654,12 @@ async def subtask_delete_confirm(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("subdelok_"))
 async def subtask_delete_ok(call: CallbackQuery):
     subtask_id = int(call.data.split("_")[1])
-    sub = await db.get_subtask(subtask_id)
-    if not sub:
-        await call.answer()
+    authorized = await _authorize_subtask(call, subtask_id)
+    if authorized is None:
         return
+    sub, task = authorized
     task_id = sub["task_id"]
-    lang = await _task_lang(task_id)
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     await db.delete_subtask(subtask_id)
     subtasks = await db.get_subtasks(task_id)
     await call.message.edit_reply_markup(reply_markup=subtasks_kb(task_id, subtasks, lang))
@@ -1382,11 +1669,11 @@ async def subtask_delete_ok(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("subdelno_"))
 async def subtask_delete_no(call: CallbackQuery):
     subtask_id = int(call.data.split("_")[1])
-    sub = await db.get_subtask(subtask_id)
-    if not sub:
-        await call.answer()
+    authorized = await _authorize_subtask(call, subtask_id)
+    if authorized is None:
         return
-    lang = await _task_lang(sub["task_id"])
+    sub, task = authorized
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     subtasks = await db.get_subtasks(sub["task_id"])
     await call.message.edit_reply_markup(reply_markup=subtasks_kb(sub["task_id"], subtasks, lang))
     await call.answer()
@@ -1395,7 +1682,10 @@ async def subtask_delete_no(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("subadd_"))
 async def subtask_add_start(call: CallbackQuery, state: FSMContext):
     task_id = int(call.data.split("_")[1])
-    lang = await _task_lang(task_id)
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     await state.set_state(AddSubtasks.collecting)
     await state.update_data(task_id=task_id)
     await call.message.answer(t(lang, "subtask_prompt"))
@@ -1404,9 +1694,14 @@ async def subtask_add_start(call: CallbackQuery, state: FSMContext):
 
 @dp.message(AddSubtasks.collecting)
 async def subtask_add_collect(message: Message, state: FSMContext):
+    # task_id пришёл из state, установленного в subtask_add_start, который уже
+    # проверил права для (chat, user) этого FSM-диалога — повторная проверка
+    # тут не нужна по той же причине, что и в edit_value_apply: aiogram FSM
+    # состояние изолировано по (chat_id, user_id), подменить его нельзя.
     data = await state.get_data()
     task_id = data["task_id"]
-    lang = await _task_lang(task_id)
+    task = await db.get_task(task_id)
+    lang = await owner_lang(task["owner_id"], task["owner_type"]) if task else "ru"
     if message.text.strip() == "/done":
         await state.clear()
         subtasks = await db.get_subtasks(task_id)
@@ -1421,11 +1716,12 @@ async def subtask_add_collect(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("subback_"))
 async def subtasks_back(call: CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = await db.get_task(task_id)
-    if task:
-        lang = await owner_lang(task["owner_id"], task["owner_type"])
-        text = await fmt_task(task)
-        await call.message.edit_text(text, reply_markup=task_kb(task_id, lang, done=task["done"]), parse_mode="HTML")
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
+    text = await fmt_task(task)
+    await call.message.edit_text(text, reply_markup=task_kb(task_id, lang, done=task["done"]), parse_mode="HTML")
     await call.answer()
 
 
@@ -1433,9 +1729,14 @@ async def subtasks_back(call: CallbackQuery):
 
 @dp.message()
 async def fallback(message: Message):
+    # Раньше тут повторялся welcome — выглядело так, будто бот не узнаёт уже
+    # знакомого пользователя. fallback срабатывает только на случайный текст
+    # ВНЕ состояния FSM (т.е. не на середине /add и т.п.), значит это почти
+    # всегда опечатка в команде или просто не-команда — явная подсказка
+    # пойти в /help полезнее, чем ещё раз показывать приветствие.
     owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
-    await message.answer(t(lang, "welcome"))
+    await message.answer(t(lang, "unrecognized"))
 
 
 # ---------- планировщик ----------
@@ -1543,7 +1844,13 @@ async def _defer_if_quiet(owner_id: int, owner_type: str, task_id: int, kind: st
     """kind: 'due' | 'remind'. В тихий час не шлём, а ставим date-джобу на конец тихого часа.
     id джобы фиксирован (quiet_<kind>_<task_id>) + replace_existing: сколько бы раз за ночь ни
     сработал периодический nag, утром придёт ОДНО сообщение."""
-    run_at = await _quiet_end_utc(owner_id, owner_type)
+    try:
+        run_at = await _quiet_end_utc(owner_id, owner_type)
+    except Exception:
+        # Если в БД оказались кривые quiet_hours (например, ручная правка) — не
+        # роняем всю рассылку из-за этого, а просто ведём себя как без тихого часа.
+        logger.exception("Не удалось вычислить тихий час owner=%s/%s, игнорирую", owner_type, owner_id)
+        return False
     if run_at is None:
         return False
     func = send_reminder if kind == "remind" else send_due
@@ -1641,7 +1948,11 @@ async def send_daily_summary(owner_id: int, owner_type: str):
 
     tz = await owner_tz(owner_id, owner_type)
     # Сводка — self-check, откладывать её нельзя; в тихий час шлём беззвучно
-    silent = await _quiet_end_utc(owner_id, owner_type) is not None
+    try:
+        silent = await _quiet_end_utc(owner_id, owner_type) is not None
+    except Exception:
+        logger.exception("Не удалось вычислить тихий час owner=%s/%s для сводки, шлю не беззвучно", owner_type, owner_id)
+        silent = False
     for recipient_id in await _recipients(owner_id, owner_type):
         try:
             # Серия считается персонально по каждому получателю (история привязана к тому, кто выполнил)
@@ -1656,7 +1967,7 @@ async def send_daily_summary(owner_id: int, owner_type: str):
                 lang, "daily_summary", active=counts["active"], done_today=counts["done_today"],
                 overdue_line=overdue_line, streak_line=streak_line,
             )
-            await bot.send_message(recipient_id, text, parse_mode="Markdown", disable_notification=silent)
+            await bot.send_message(recipient_id, text, parse_mode="HTML", disable_notification=silent)
         except TelegramForbiddenError:
             logger.info("Юзер %s заблокировал бота, пропускаю daily_summary", recipient_id)
         except Exception:
