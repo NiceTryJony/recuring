@@ -18,7 +18,7 @@ import hmac
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 
 from aiohttp import web as aioweb
@@ -30,7 +30,17 @@ logger = logging.getLogger(__name__)
 
 CHART_DAYS = 14
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-SESSION_SECRET = BOT_TOKEN or "fallback-secret"  # используем токен бота как секрет для HMAC
+if not BOT_TOKEN:
+    # Раньше тут был тихий фолбэк на захардкоженную строку "fallback-secret" —
+    # если переменная окружения вдруг не задана, подписи cookie/CSRF/Telegram
+    # Login Widget стали бы подделываемы кем угодно, кто прочитал исходники.
+    # bot.py и так требует BOT_TOKEN жёстко (os.environ["BOT_TOKEN"]) и
+    # импортирует этот модуль раньше той строки, так что в текущей сборке
+    # процесс и без этого не доедет до старта веб-сервера — но если
+    # dashboard.py когда-нибудь запустят отдельно (тесты, отдельный процесс),
+    # пусть падает здесь же, а не обслуживает запросы с публично известным секретом.
+    raise RuntimeError("BOT_TOKEN не задан — без него SESSION_SECRET небезопасен")
+SESSION_SECRET = BOT_TOKEN  # используем токен бота как секрет для HMAC
 SESSION_MAX_AGE = 60 * 60 * 24 * 7  # неделя
 
 # ---------- rate-limit на попытки входа ----------
@@ -768,11 +778,22 @@ def _render_task(
 
     extra_actions = ""
     if not task["done"]:
-        extra_actions = f"""<div class="task-actions">
-<form method="post" action="/dashboard/{token}/tasks/{task['id']}/postpone">
+        # «Отложить на день» двигает due_at в БД, но у повторяющихся задач due_at
+        # не источник расписания (см. bot.py: schedule_task строит CronTrigger
+        # один раз, а restore_jobs() при рестарте пересоберёт его уже по
+        # сдвинутому due_at) — кнопка либо ничего не даёт сейчас, либо незаметно
+        # съедет день/час повтора после следующего рестарта процесса. Поэтому
+        # показываем её только для разовых задач (repeat == "none"); тот же
+        # repeat != "none" уже отдельно обрабатывается в bot.py/snooze_task.
+        postpone_html = (
+            f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/postpone">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit">⏭ {escape(texts["btn_postpone"])}</button>
-</form>
+</form>"""
+            if task["repeat"] == "none" else ""
+        )
+        extra_actions = f"""<div class="task-actions">
+{postpone_html}
 <form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="del-btn">🗑 {escape(texts["btn_delete"])}</button>
@@ -1056,7 +1077,13 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
         await db.mark_undone(task_id)
         await db.log_history(task_id, acting_user_id, task["title"], "undone")
     elif action == "postpone":
-        from datetime import timedelta
+        if task["repeat"] != "none":
+            # Сдвиг due_at у повторяющейся задачи не отражается на её реальном
+            # расписании (CronTrigger в bot.py строится по due_at только при
+            # создании/рестарте) — см. комментарий у _render_task. Кнопка в
+            # шаблоне уже скрыта для таких задач; это серверная подстраховка
+            # на случай прямого POST мимо формы.
+            return aioweb.Response(status=400)
         await db.update_task(task_id, due_at=task["due_at"] + timedelta(days=1))
         await db.log_history(task_id, acting_user_id, task["title"], "rescheduled")
     elif action == "delete":

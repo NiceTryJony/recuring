@@ -19,12 +19,15 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Chat,
-    BotCommand, BotCommandScopeDefault,
+    BotCommand, BotCommandScopeDefault, BufferedInputFile,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.base import JobLookupError
+
+import csv
+import io
 
 import dashboard
 import db
@@ -271,6 +274,17 @@ def to_utc(local_dt: datetime, tz: ZoneInfo) -> datetime:
 
 def to_local(utc_dt: datetime, tz: ZoneInfo) -> datetime:
     return utc_dt.astimezone(tz)
+
+
+def normalize_tag(text: str) -> str | None:
+    """Без этого «Дом», «дом » и «ДОМ» были бы тремя разными тегами в /tags и
+    в фильтре задач (get_owner_tags делает DISTINCT по сырой строке) —
+    приводим к единому виду до сохранения в БД. Пустая строка/"/skip" = None
+    (без тега), не пустой тег нормализованный."""
+    stripped = text.strip()
+    if not stripped or stripped == "/skip":
+        return None
+    return stripped.lower()
 
 
 # ---------- клавиатуры ----------
@@ -812,7 +826,7 @@ async def add_nag_pick(call: CallbackQuery, state: FSMContext):
 
 @dp.message(AddTask.tag)
 async def add_tag(message: Message, state: FSMContext):
-    tag = None if message.text.strip() == "/skip" else message.text.strip()
+    tag = normalize_tag(message.text)
     await _finalize_add_task(state, tag, message)
 
 
@@ -1342,8 +1356,6 @@ async def export_cmd(message: Message):
         await message.answer(t(lang, "no_tasks"))
         return
 
-    import csv
-    import io
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["id", "title", "due_at", "repeat", "remind", "tag", "done"])
@@ -1354,7 +1366,6 @@ async def export_cmd(message: Message):
             task["repeat"], task["remind"] or "0", task.get("tag") or "", task["done"],
         ])
 
-    from aiogram.types import BufferedInputFile
     data = buf.getvalue().encode("utf-8-sig")  # BOM для корректного открытия в Excel с кириллицей
     file = BufferedInputFile(data, filename="tasks_export.csv")
     await message.answer_document(file)
@@ -1583,7 +1594,7 @@ async def edit_value_apply(message: Message, state: FSMContext):
     if field == "title":
         await db.update_task(task_id, title=message.text.strip())
     elif field == "tag":
-        tag = None if message.text.strip() == "/skip" else message.text.strip()
+        tag = normalize_tag(message.text)
         await db.update_task(task_id, tag=tag)
     elif field == "date":
         tz = await owner_tz(task["owner_id"], task["owner_type"])
@@ -1945,6 +1956,11 @@ async def send_daily_summary(owner_id: int, owner_type: str):
     overdue_line = ""
     if counts["overdue"] > 0:
         overdue_line = t(lang, "daily_summary_overdue", overdue=counts["overdue"])
+    stuck_line = ""
+    if counts.get("stuck_repeats", 0) > 0:
+        # Повторяющиеся задачи, похоже слетевшие с планировщика (давно не
+        # напоминали, хотя срок явно уже проходил) — см. db.get_daily_summary_counts.
+        stuck_line = t(lang, "daily_summary_stuck", stuck=counts["stuck_repeats"])
 
     tz = await owner_tz(owner_id, owner_type)
     # Сводка — self-check, откладывать её нельзя; в тихий час шлём беззвучно
@@ -1965,7 +1981,7 @@ async def send_daily_summary(owner_id: int, owner_type: str):
                 logger.exception("Не удалось посчитать серию user_id=%s", recipient_id)
             text = t(
                 lang, "daily_summary", active=counts["active"], done_today=counts["done_today"],
-                overdue_line=overdue_line, streak_line=streak_line,
+                overdue_line=overdue_line, stuck_line=stuck_line, streak_line=streak_line,
             )
             await bot.send_message(recipient_id, text, parse_mode="HTML", disable_notification=silent)
         except TelegramForbiddenError:

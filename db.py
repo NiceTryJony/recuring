@@ -365,9 +365,25 @@ async def delete_task(task_id: int):
     await _with_retry(_run)
 
 
+# Поля tasks, которые реально обновляются через update_task (bot.py: snooze/
+# смена повтора/названия/тега/даты; dashboard.py: postpone). Ключи **fields
+# сейчас везде захардкожены на вызывающей стороне, так что инъекции имени
+# колонки сегодня нет — но f-string с именами полей (ниже) означает, что
+# стоит кому-то в будущем собрать fields из пользовательского ввода
+# (например, динамическая форма редактирования), и это станет SQL-инъекцией
+# через имя колонки. Белый список — дешёвая страховка от этого класса багов.
+_UPDATABLE_TASK_FIELDS = {
+    "title", "due_at", "repeat", "remind", "tag", "done", "done_at",
+    "last_notified_at", "remind_until_done",
+}
+
+
 async def update_task(task_id: int, **fields):
     if not fields:
         return
+    unknown = fields.keys() - _UPDATABLE_TASK_FIELDS
+    if unknown:
+        raise ValueError(f"update_task: недопустимые поля {sorted(unknown)}")
     set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(fields))
     values = list(fields.values())
 
@@ -752,7 +768,22 @@ async def get_all_known_owners() -> list[dict]:
 
 
 async def get_daily_summary_counts(owner_id: int, owner_type: str = "user") -> dict:
-    """Сколько активных задач и сколько выполнено за последние 24 часа — для self-check."""
+    """Сколько активных задач и сколько выполнено за последние 24 часа — для self-check.
+
+    overdue намеренно считает только repeat='none': у повторяющихся due_at не
+    продвигается никогда (расписание целиком живёт в CronTrigger планировщика,
+    см. bot.py:schedule_task), поэтому due_at < now() истинно для ЛЮБОЙ
+    повторяющейся задачи почти сразу после первого срабатывания — включать их
+    сюда значило бы показывать «просрочено» постоянно, даже когда всё штатно.
+
+    stuck_repeats — отдельная, более узкая проверка именно для повторяющихся:
+    задача, у которой уже должно было пройти хотя бы одно срабатывание (now() -
+    due_at > 2 дня, чтобы не зацепить свежесозданные с ещё не наступившим
+    первым разом), но last_notified_at либо пуст, либо давнее этого окна —
+    вероятный признак слетевшей с планировщика джобы (например, исключение
+    внутри send_due, которое не пересоздало job). Эвристика, не точный расчёт
+    следующего срабатывания по repeat-типу — ложные срабатывания возможны для
+    редких репитов (yearly), но это лучше, чем ничего не замечать вовсе."""
     async def _run():
         async with _pool.acquire() as conn:
             active = await conn.fetchval(
@@ -767,5 +798,12 @@ async def get_daily_summary_counts(owner_id: int, owner_type: str = "user") -> d
                 "SELECT COUNT(*) FROM tasks WHERE owner_id = $1 AND owner_type = $2 AND done = FALSE AND due_at < now() AND repeat = 'none'",
                 owner_id, owner_type
             )
-            return {"active": active, "done_today": done_today, "overdue": overdue}
+            stuck_repeats = await conn.fetchval(
+                """SELECT COUNT(*) FROM tasks
+                   WHERE owner_id = $1 AND owner_type = $2 AND done = FALSE AND repeat != 'none'
+                     AND due_at < now() - interval '2 days'
+                     AND (last_notified_at IS NULL OR last_notified_at < now() - interval '2 days')""",
+                owner_id, owner_type
+            )
+            return {"active": active, "done_today": done_today, "overdue": overdue, "stuck_repeats": stuck_repeats}
     return await _with_retry(_run)

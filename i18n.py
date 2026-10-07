@@ -65,9 +65,10 @@ TEXTS = {
         "daily_summary": "🌙 Вечерняя сводка\n\n"
                           "Активных задач: {active}\n"
                           "Выполнено сегодня: {done_today}\n"
-                          "{overdue_line}{streak_line}"
+                          "{overdue_line}{stuck_line}{streak_line}"
                           "\n<i>Бот работает нормально.</i>",
         "daily_summary_overdue": "⚠️ Просрочено: {overdue}\n",
+        "daily_summary_stuck": "🔧 Похоже, сбилось напоминание у повторяющихся задач: {stuck}. Загляните в /list.\n",
         "btn_done": "Готово",
         "btn_task_done": "✅ Выполнено",
         "btn_task_undone": "↩️ Отменить выполнение",
@@ -182,9 +183,10 @@ TEXTS = {
         "daily_summary": "🌙 Evening summary\n\n"
                           "Active tasks: {active}\n"
                           "Completed today: {done_today}\n"
-                          "{overdue_line}{streak_line}"
+                          "{overdue_line}{stuck_line}{streak_line}"
                           "\n<i>Bot is running normally.</i>",
         "daily_summary_overdue": "⚠️ Overdue: {overdue}\n",
+        "daily_summary_stuck": "🔧 Reminders for {stuck} repeating task(s) look stuck. Check /list.\n",
         "btn_done": "Done",
         "btn_task_done": "✅ Done",
         "btn_task_undone": "↩️ Mark not done",
@@ -299,9 +301,10 @@ TEXTS = {
         "daily_summary": "🌙 Wieczorne podsumowanie\n\n"
                           "Aktywne zadania: {active}\n"
                           "Wykonane dzisiaj: {done_today}\n"
-                          "{overdue_line}{streak_line}"
+                          "{overdue_line}{stuck_line}{streak_line}"
                           "\n<i>Bot działa poprawnie.</i>",
         "daily_summary_overdue": "⚠️ Zaległe: {overdue}\n",
+        "daily_summary_stuck": "🔧 Przypomnienia dla {stuck} powtarzających się zadań wyglądają na zablokowane. Sprawdź /list.\n",
         "btn_done": "Gotowe",
         "btn_task_done": "✅ Wykonane",
         "btn_task_undone": "↩️ Cofnij wykonanie",
