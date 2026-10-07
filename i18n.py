@@ -25,6 +25,8 @@ TEXTS = {
                      "/cancel — отменить текущее действие (например, добавление задачи)\n"
                      "/help — показать это сообщение",
         "cancelled": "Отменено.",
+        "not_authorized": "⛔ Это не ваша задача.",
+        "unrecognized": "Не понял команду 🤔\nПосмотри /help — там список всех команд.",
         "ask_title": "Название задачи/события:\n(/cancel — отменить)",
         "ask_date": "Дата и время в формате ДД.ММ.ГГГГ ЧЧ:ММ\nнапример: 15.10.2026 18:00\n\n"
                     "Также понимаю: «завтра 18:00», «через 3 дня 10:00», «через час»",
@@ -64,7 +66,7 @@ TEXTS = {
                           "Активных задач: {active}\n"
                           "Выполнено сегодня: {done_today}\n"
                           "{overdue_line}{streak_line}"
-                          "\n_Бот работает нормально._",
+                          "\n<i>Бот работает нормально.</i>",
         "daily_summary_overdue": "⚠️ Просрочено: {overdue}\n",
         "btn_done": "Готово",
         "btn_task_done": "✅ Выполнено",
@@ -109,6 +111,7 @@ TEXTS = {
         "btn_hist_recent": "📜 Последние события",
         "btn_hist_week": "📊 Статистика за неделю",
         "btn_hist_month": "📊 Статистика за месяц",
+        "history_mode_unknown": "Эта кнопка устарела, обновите список командой /history",
         "stats_title": "📊 Статистика за {days} дн.",
         "stats_totals": "➕ Создано: {created}\n✅ Выполнено: {done}\n🗑 Удалено: {deleted}",
         "streak_line": "🔥 Серия: {n} дн.\n",
@@ -139,6 +142,8 @@ TEXTS = {
                      "/cancel — cancel the current action (e.g. adding a task)\n"
                      "/help — show this message",
         "cancelled": "Cancelled.",
+        "not_authorized": "⛔ This isn't your task.",
+        "unrecognized": "I didn't understand that 🤔\nCheck /help for the full list of commands.",
         "ask_title": "Task/event title:\n(/cancel — cancel)",
         "ask_date": "Date and time as DD.MM.YYYY HH:MM\ne.g. 15.10.2026 18:00\n\n"
                     "Also understands: 'tomorrow 18:00', 'in 3 days 10:00', 'in an hour'",
@@ -178,7 +183,7 @@ TEXTS = {
                           "Active tasks: {active}\n"
                           "Completed today: {done_today}\n"
                           "{overdue_line}{streak_line}"
-                          "\n_Bot is running normally._",
+                          "\n<i>Bot is running normally.</i>",
         "daily_summary_overdue": "⚠️ Overdue: {overdue}\n",
         "btn_done": "Done",
         "btn_task_done": "✅ Done",
@@ -223,6 +228,7 @@ TEXTS = {
         "btn_hist_recent": "📜 Recent events",
         "btn_hist_week": "📊 Last 7 days",
         "btn_hist_month": "📊 Last 30 days",
+        "history_mode_unknown": "This button is outdated, refresh with /history",
         "stats_title": "📊 Stats for {days} days",
         "stats_totals": "➕ Created: {created}\n✅ Done: {done}\n🗑 Deleted: {deleted}",
         "streak_line": "🔥 Streak: {n} days\n",
@@ -253,6 +259,8 @@ TEXTS = {
                      "/cancel — anuluj bieżącą czynność (np. dodawanie zadania)\n"
                      "/help — pokaż tę wiadomość",
         "cancelled": "Anulowano.",
+        "not_authorized": "⛔ To nie jest Twoje zadanie.",
+        "unrecognized": "Nie zrozumiałem 🤔\nSprawdź /help — tam lista wszystkich komend.",
         "ask_title": "Nazwa zadania/wydarzenia:\n(/cancel — anuluj)",
         "ask_date": "Data i godzina w formacie DD.MM.RRRR GG:MM\nnp. 15.10.2026 18:00\n\n"
                     "Rozumiem też: „jutro 18:00”, „za 3 dni 10:00”, „za godzinę”",
@@ -292,7 +300,7 @@ TEXTS = {
                           "Aktywne zadania: {active}\n"
                           "Wykonane dzisiaj: {done_today}\n"
                           "{overdue_line}{streak_line}"
-                          "\n_Bot działa poprawnie._",
+                          "\n<i>Bot działa poprawnie.</i>",
         "daily_summary_overdue": "⚠️ Zaległe: {overdue}\n",
         "btn_done": "Gotowe",
         "btn_task_done": "✅ Wykonane",
@@ -337,6 +345,7 @@ TEXTS = {
         "btn_hist_recent": "📜 Ostatnie zdarzenia",
         "btn_hist_week": "📊 Statystyki z tygodnia",
         "btn_hist_month": "📊 Statystyki z miesiąca",
+        "history_mode_unknown": "Ten przycisk jest nieaktualny, odśwież poleceniem /history",
         "stats_title": "📊 Statystyki z {days} dni",
         "stats_totals": "➕ Utworzone: {created}\n✅ Wykonane: {done}\n🗑 Usunięte: {deleted}",
         "streak_line": "🔥 Seria: {n} dni\n",
