@@ -634,6 +634,21 @@ async def get_chat_members(chat_id: int) -> list[int]:
     return await _with_retry(_run)
 
 
+async def get_chats_for_user(user_id: int) -> list[int]:
+    """Обратный запрос к get_chat_members — в каких групповых чатах состоит
+    этот пользователь. Нужен для объединённой вечерней сводки: один человек
+    может быть участником нескольких групп + иметь личные задачи, и раньше
+    каждый owner (личка и каждая группа отдельно) слал СВОЮ сводку этому же
+    user_id — см. send_daily_summary в bot.py, где теперь джоба идёт по
+    user_id, а не по owner, и сама собирает все его контексты через эту
+    функцию."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("SELECT DISTINCT chat_id FROM chat_members WHERE user_id = $1", user_id)
+            return [r["chat_id"] for r in rows]
+    return await _with_retry(_run)
+
+
 async def is_chat_member(chat_id: int, user_id: int) -> bool:
     """Используется для авторизации действий с задачами чата: нажатие кнопки
     приходит личным сообщением (бот рассылает уведомления в личку), поэтому
@@ -844,6 +859,25 @@ async def get_all_known_owners() -> list[dict]:
             owners = [{"owner_id": r["user_id"], "owner_type": "user"} for r in user_rows]
             owners += [{"owner_id": r["chat_id"], "owner_type": "chat"} for r in chat_rows]
             return owners
+    return await _with_retry(_run)
+
+
+async def get_all_summary_recipients() -> list[int]:
+    """Все user_id, которым нужна вечерняя сводка: личные пользователи бота
+    (user_settings/owner задач) ПЛЮС участники групповых чатов (chat_members) —
+    второе нужно, потому что человек мог ни разу не писать боту в личку
+    (его просто добавили в группу), и тогда get_all_known_owners его бы не
+    нашёл вовсе, джоба сводки для него не создалась бы при restore_jobs."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT user_id FROM user_settings
+                UNION
+                SELECT DISTINCT owner_id FROM tasks WHERE owner_type = 'user'
+                UNION
+                SELECT DISTINCT user_id FROM chat_members
+            """)
+            return [r["user_id"] for r in rows]
     return await _with_retry(_run)
 
 

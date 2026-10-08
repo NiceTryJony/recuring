@@ -75,6 +75,18 @@ TEXTS = {
                           "\n<i>Бот работает нормально.</i>",
         "daily_summary_overdue": "⚠️ Просрочено: {overdue}\n",
         "daily_summary_stuck": "🔧 Похоже, сбилось напоминание у повторяющихся задач: {stuck}. Загляните в /list.\n",
+        # Объединённая сводка (личка + все группы одним сообщением): заголовок
+        # общий, дальше для каждого контекста идёт секция section_personal/
+        # section_chat — порядок: сначала личные задачи, потом группы.
+        "daily_summary_combined_header": "🌙 Вечерняя сводка\n",
+        "daily_summary_section_personal": "\n<b>Личные задачи</b>\n"
+                          "Активных: {active} · выполнено сегодня: {done_today}\n"
+                          "{overdue_line}{stuck_line}",
+        "daily_summary_section_chat": "\n<b>{chat_title}</b>\n"
+                          "Активных: {active} · выполнено сегодня: {done_today}\n"
+                          "{overdue_line}{stuck_line}",
+        "daily_summary_combined_footer": "{streak_line}\n<i>Бот работает нормально.</i>",
+        "daily_summary_chat_fallback": "Группа",
         "btn_done": "Готово",
         "btn_task_done": "✅ Выполнено",
         "btn_task_undone": "↩️ Отменить выполнение",
@@ -199,6 +211,15 @@ TEXTS = {
                           "\n<i>Bot is running normally.</i>",
         "daily_summary_overdue": "⚠️ Overdue: {overdue}\n",
         "daily_summary_stuck": "🔧 Reminders for {stuck} repeating task(s) look stuck. Check /list.\n",
+        "daily_summary_combined_header": "🌙 Evening summary\n",
+        "daily_summary_section_personal": "\n<b>Personal tasks</b>\n"
+                          "Active: {active} · done today: {done_today}\n"
+                          "{overdue_line}{stuck_line}",
+        "daily_summary_section_chat": "\n<b>{chat_title}</b>\n"
+                          "Active: {active} · done today: {done_today}\n"
+                          "{overdue_line}{stuck_line}",
+        "daily_summary_combined_footer": "{streak_line}\n<i>Bot is running fine.</i>",
+        "daily_summary_chat_fallback": "Group",
         "btn_done": "Done",
         "btn_task_done": "✅ Done",
         "btn_task_undone": "↩️ Mark not done",
@@ -323,6 +344,15 @@ TEXTS = {
                           "\n<i>Bot działa poprawnie.</i>",
         "daily_summary_overdue": "⚠️ Zaległe: {overdue}\n",
         "daily_summary_stuck": "🔧 Przypomnienia dla {stuck} powtarzających się zadań wyglądają na zablokowane. Sprawdź /list.\n",
+        "daily_summary_combined_header": "🌙 Wieczorne podsumowanie\n",
+        "daily_summary_section_personal": "\n<b>Zadania osobiste</b>\n"
+                          "Aktywne: {active} · wykonane dziś: {done_today}\n"
+                          "{overdue_line}{stuck_line}",
+        "daily_summary_section_chat": "\n<b>{chat_title}</b>\n"
+                          "Aktywne: {active} · wykonane dziś: {done_today}\n"
+                          "{overdue_line}{stuck_line}",
+        "daily_summary_combined_footer": "{streak_line}\n<i>Bot działa prawidłowo.</i>",
+        "daily_summary_chat_fallback": "Grupa",
         "btn_done": "Gotowe",
         "btn_task_done": "✅ Wykonane",
         "btn_task_undone": "↩️ Cofnij wykonanie",

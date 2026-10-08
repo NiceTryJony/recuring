@@ -611,7 +611,12 @@ async def _apply_timezone(owner_id: int, owner_type: str, tz_name: str, target_m
     await db.set_owner_timezone(owner_id, owner_type, tz_name)
     invalidate_settings(owner_id, owner_type)
     new_tz = ZoneInfo(tz_name)
-    schedule_daily_summary(owner_id, owner_type, new_tz)
+    # Джоба вечерней сводки теперь одна на user_id (объединяет личку + все
+    # группы, см. send_daily_summary) и живёт в поясе ЛИЧНЫХ настроек
+    # пользователя — смена пояса ГРУППЫ (owner_type == "chat") на неё не влияет,
+    # только /timezone в личном чате с ботом переставляет её на новый пояс.
+    if owner_type == "user":
+        schedule_daily_summary(owner_id, new_tz)
     # cron-джобы повторяющихся задач привязаны к поясу на момент создания — без
     # перепланирования после /timezone они продолжали бы срабатывать по старому времени.
     for task in await db.get_tasks(owner_id, owner_type):
@@ -863,8 +868,15 @@ async def _finalize_add_task(state: FSMContext, tag: str | None, target_message:
     )
     await db.log_history(task_id, actor_id, data["title"], "created")
     schedule_task(task_id, owner_id, owner_type, due_at, data["repeat"], data["remind"], tz, remind_until_done=nag)
-    if f"dailysummary_{owner_type}_{owner_id}" not in {j.id for j in scheduler.get_jobs()}:
-        schedule_daily_summary(owner_id, owner_type, tz)
+    # Джоба вечерней сводки — одна на РЕАЛЬНОГО ЧЕЛОВЕКА (actor_id), который
+    # создал задачу, а не на owner: создание задачи в группе не должно
+    # заводить отдельную джобу "для группы" — объединённая сводка и так
+    # подхватит эту группу через db.get_chats_for_user на следующем прогоне
+    # (bot.py:send_daily_summary), достаточно гарантировать, что у автора
+    # вообще есть джоба на его личный пояс.
+    if f"dailysummary_{actor_id}" not in {j.id for j in scheduler.get_jobs()}:
+        actor_tz = await owner_tz(actor_id, "user")
+        schedule_daily_summary(actor_id, actor_tz)
 
     local_str = to_local(due_at, tz).strftime("%d.%m.%Y %H:%M")
     await target_message.answer(t(lang, "task_added", title=data["title"], date=local_str))
@@ -2026,57 +2038,108 @@ DAILY_SUMMARY_HOUR = 21
 DAILY_SUMMARY_MINUTE = 0
 
 
-async def send_daily_summary(owner_id: int, owner_type: str):
-    """Ежедневная вечерняя сводка — заодно служит self-check: если сообщение дошло,
-    значит и scheduler, и polling живы."""
-    lang = await owner_lang(owner_id, owner_type)
+async def _summary_section_counts(owner_id: int, owner_type: str, lang: str) -> tuple[str, str] | None:
+    """Считает active/done_today/overdue/stuck для одного контекста (личного
+    или одной группы) и собирает готовые overdue_line/stuck_line. Возвращает
+    None при ошибке — вызывающая сторона просто пропускает секцию, не валит
+    всю сводку из-за проблемы в одном из нескольких контекстов пользователя."""
     try:
         counts = await db.get_daily_summary_counts(owner_id, owner_type)
     except Exception:
         logger.exception("Не удалось получить статистику для daily_summary owner=%s/%s", owner_type, owner_id)
-        return
+        return None
+    overdue_line = t(lang, "daily_summary_overdue", overdue=counts["overdue"]) if counts["overdue"] > 0 else ""
+    stuck_line = (
+        t(lang, "daily_summary_stuck", stuck=counts["stuck_repeats"])
+        if counts.get("stuck_repeats", 0) > 0 else ""
+    )
+    return counts, overdue_line, stuck_line
 
-    overdue_line = ""
-    if counts["overdue"] > 0:
-        overdue_line = t(lang, "daily_summary_overdue", overdue=counts["overdue"])
-    stuck_line = ""
-    if counts.get("stuck_repeats", 0) > 0:
-        # Повторяющиеся задачи, похоже слетевшие с планировщика (давно не
-        # напоминали, хотя срок явно уже проходил) — см. db.get_daily_summary_counts.
-        stuck_line = t(lang, "daily_summary_stuck", stuck=counts["stuck_repeats"])
 
-    tz = await owner_tz(owner_id, owner_type)
-    # Сводка — self-check, откладывать её нельзя; в тихий час шлём беззвучно
+async def send_daily_summary(user_id: int):
+    """Ежедневная вечерняя сводка — ОДНО сообщение на пользователя, объединяющее
+    его личные задачи и задачи всех групп, в которых он состоит. Раньше джоба
+    шла по owner (личка и каждая группа отдельно), и человек, состоящий в
+    нескольких группах, получал по сообщению на каждую — отсюда «три разных
+    сводки» за вечер. Теперь джоба одна на user_id, сама собирает контексты
+    через db.get_chats_for_user и строит секции внутри одного текста.
+
+    Заодно служит self-check: если сообщение дошло, значит и scheduler, и
+    polling живы."""
+    lang = await owner_lang(user_id, "user")
+
+    personal = await _summary_section_counts(user_id, "user", lang)
+    sections = []
+    if personal is not None:
+        counts, overdue_line, stuck_line = personal
+        sections.append(t(
+            lang, "daily_summary_section_personal",
+            active=counts["active"], done_today=counts["done_today"],
+            overdue_line=overdue_line, stuck_line=stuck_line,
+        ))
+
     try:
-        silent = await _quiet_end_utc(owner_id, owner_type) is not None
+        chat_ids = await db.get_chats_for_user(user_id)
     except Exception:
-        logger.exception("Не удалось вычислить тихий час owner=%s/%s для сводки, шлю не беззвучно", owner_type, owner_id)
-        silent = False
-    for recipient_id in await _recipients(owner_id, owner_type):
+        logger.exception("Не удалось получить список групп user_id=%s для daily_summary", user_id)
+        chat_ids = []
+
+    for chat_id in chat_ids:
+        section = await _summary_section_counts(chat_id, "chat", lang)
+        if section is None:
+            continue
+        counts, overdue_line, stuck_line = section
         try:
-            # Серия считается персонально по каждому получателю (история привязана к тому, кто выполнил)
-            streak_line = ""
-            try:
-                n = await _current_streak(recipient_id, tz)
-                if n > 0:
-                    streak_line = t(lang, "streak_line", n=n)
-            except Exception:
-                logger.exception("Не удалось посчитать серию user_id=%s", recipient_id)
-            text = t(
-                lang, "daily_summary", active=counts["active"], done_today=counts["done_today"],
-                overdue_line=overdue_line, stuck_line=stuck_line, streak_line=streak_line,
-            )
-            await bot.send_message(recipient_id, text, parse_mode="HTML", disable_notification=silent)
-        except TelegramForbiddenError:
-            logger.info("Юзер %s заблокировал бота, пропускаю daily_summary", recipient_id)
+            chat = await bot.get_chat(chat_id)
+            chat_title = chat.title or t(lang, "daily_summary_chat_fallback")
         except Exception:
-            logger.exception("Не удалось отправить daily_summary user_id=%s", recipient_id)
+            # Бот мог быть удалён из группы, но участник в chat_members ещё
+            # остался — не роняем всю сводку из-за одной недоступной группы.
+            logger.info("Не удалось получить title чата %s для daily_summary user_id=%s", chat_id, user_id)
+            chat_title = t(lang, "daily_summary_chat_fallback")
+        sections.append(t(
+            lang, "daily_summary_section_chat", chat_title=html.escape(chat_title),
+            active=counts["active"], done_today=counts["done_today"],
+            overdue_line=overdue_line, stuck_line=stuck_line,
+        ))
+
+    if not sections:
+        return  # ни одного доступного контекста — нечего слать
+
+    streak_line = ""
+    try:
+        tz = await owner_tz(user_id, "user")
+        n = await _current_streak(user_id, tz)
+        if n > 0:
+            streak_line = t(lang, "streak_line", n=n)
+    except Exception:
+        logger.exception("Не удалось посчитать серию user_id=%s", user_id)
+
+    text = (
+        t(lang, "daily_summary_combined_header")
+        + "".join(sections)
+        + "\n"
+        + t(lang, "daily_summary_combined_footer", streak_line=streak_line)
+    )
+
+    try:
+        silent = await _quiet_end_utc(user_id, "user") is not None
+    except Exception:
+        logger.exception("Не удалось вычислить тихий час user_id=%s для сводки, шлю не беззвучно", user_id)
+        silent = False
+
+    try:
+        await bot.send_message(user_id, text, parse_mode="HTML", disable_notification=silent)
+    except TelegramForbiddenError:
+        logger.info("Юзер %s заблокировал бота, пропускаю daily_summary", user_id)
+    except Exception:
+        logger.exception("Не удалось отправить daily_summary user_id=%s", user_id)
 
 
-def schedule_daily_summary(owner_id: int, owner_type: str, tz: ZoneInfo):
+def schedule_daily_summary(user_id: int, tz: ZoneInfo):
     scheduler.add_job(
         send_daily_summary, CronTrigger(hour=DAILY_SUMMARY_HOUR, minute=DAILY_SUMMARY_MINUTE, timezone=tz),
-        args=[owner_id, owner_type], id=f"dailysummary_{owner_type}_{owner_id}", replace_existing=True
+        args=[user_id], id=f"dailysummary_{user_id}", replace_existing=True
     )
 
 
@@ -2111,14 +2174,18 @@ async def restore_jobs():
             schedule_task(task["id"], owner_id, owner_type, task["due_at"], task["repeat"], task["remind"], tz,
                           remind_until_done=bool(task.get("remind_until_done")))
 
-    # Планируем ежедневную сводку (self-check) для всех, кто когда-либо пользовался ботом
-    known_owners = await db.get_all_known_owners()
-    for owner in known_owners:
+    # Планируем ежедневную сводку (self-check) для всех людей, которым она
+    # может быть нужна — личные пользователи бота И участники групп (человек
+    # мог ни разу не писать боту лично, только состоять в группе). Групповые
+    # owner'ы отдельной джобы больше не получают: каждая группа подхватывается
+    # объединённой сводкой её участников через db.get_chats_for_user
+    # (bot.py:send_daily_summary) — одна джоба на человека, а не на owner.
+    for user_id in await db.get_all_summary_recipients():
         try:
-            tz = await owner_tz(owner["owner_id"], owner["owner_type"])
+            tz = await owner_tz(user_id, "user")
         except Exception:
             tz = DEFAULT_TZ
-        schedule_daily_summary(owner["owner_id"], owner["owner_type"], tz)
+        schedule_daily_summary(user_id, tz)
 
 
 # ---------- меню команд Telegram (кнопка "/") ----------
