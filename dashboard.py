@@ -456,32 +456,67 @@ def _dt(lang: str) -> dict:
 # задвоены, как и в остальных шаблонах этого файла.
 SHARED_CSS = """
 :root {{
-  --bg: #0b0b0f; --bg-elevated: #17171b; --accent: #e07a3f;
-  --text: #f2f2f2; --text-secondary: #9a9aa1; --text-tertiary: #6b6b70;
-  --danger: #e05f5f; --success: #4a9d5f; --border: rgba(255,255,255,0.06);
-  --radius-lg: 16px; --radius-md: 12px; --radius-sm: 8px;
-  --space-3: 12px; --space-4: 16px; --space-5: 24px;
-  --shadow-card: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -10px rgba(0,0,0,0.5);
+  /* "Index card on a desk" — cream card stock on a deep bottle-green desk,
+     a brick-red stamp-ink accent for actions/overdue, ink-green for done.
+     Picked to read as a ledger/logbook (this dashboard IS a log of who did
+     what), not another dark-SaaS-with-one-accent-color screen. */
+  --bg-0: #141b17;
+  --bg-1: #1d2922;
+  --card: #f6efdd;
+  --card-edge: #e6d9b8;
+  --ink: #2b2317;
+  --ink-soft: #6e6250;
+  --paper: #e9e3d2;
+  --paper-soft: #93a093;
+  --stamp: #a8392c;
+  --stamp-deep: #7e2a20;
+  --ok: #3f6b4e;
+  --ok-deep: #2d4e38;
+  --rule: rgba(43, 35, 23, 0.16);
+  --rule-dark: rgba(233, 227, 210, 0.12);
+  --shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 14px 28px -16px rgba(0, 0, 0, 0.6);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 28px;
+  --font-display: "Spectral", Georgia, "Times New Roman", serif;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }}
 * {{ box-sizing: border-box; }}
 body {{
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: var(--bg); color: var(--text); margin: 0;
+  font-family: var(--font-body);
+  background:
+    radial-gradient(ellipse 900px 500px at 50% -10%, var(--bg-1) 0%, var(--bg-0) 65%);
+  background-attachment: fixed;
+  color: var(--paper); margin: 0;
   padding: var(--space-4);
   padding-top: max(var(--space-4), env(safe-area-inset-top));
   padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
   max-width: 640px; margin-left: auto; margin-right: auto;
   -webkit-font-smoothing: antialiased;
 }}
-h1 {{ font-size: 1.3rem; font-weight: 700; margin: 0 0 var(--space-4); letter-spacing: -0.01em; }}
+h1 {{
+  font-family: var(--font-display); font-weight: 600; font-style: italic;
+  font-size: 1.55rem; margin: 0 0 var(--space-4); letter-spacing: -0.01em;
+  color: var(--paper);
+}}
 button {{ font-family: inherit; -webkit-tap-highlight-color: transparent; transition: transform 0.1s ease; }}
 button:active {{ transform: scale(0.96); }}
+a {{ color: var(--stamp); }}
 .nav-link {{ -webkit-tap-highlight-color: transparent; transition: opacity 0.1s ease; }}
 .nav-link:active {{ opacity: 0.6; }}
+button:focus-visible, input:focus-visible, a:focus-visible {{
+  outline: 2px solid var(--stamp); outline-offset: 2px;
+}}
 @keyframes fade-up {{ from {{ opacity: 0; transform: translateY(6px); }} to {{ opacity: 1; transform: translateY(0); }} }}
-.task, .event, .chart-block, .tg-widget-banner {{
-  background: var(--bg-elevated); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card); border: 1px solid var(--border);
+@media (prefers-reduced-motion: reduce) {{
+  *, *::before, *::after {{ animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }}
+}}
+.task, .event, .chart-block, .tg-widget-banner, .new-task-form {{
+  background: var(--card); color: var(--ink);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  border: 1px solid var(--card-edge);
   animation: fade-up 0.3s ease both;
 }}
 {stagger_rules}
@@ -503,17 +538,29 @@ LOGIN_PAGE = """<!DOCTYPE html>
 <html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{login_title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
 <style>""" + SHARED_CSS + """
 body {{ display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
-form {{ background: var(--bg-elevated); padding: 2rem; border-radius: var(--radius-lg);
-        box-shadow: var(--shadow-card); border: 1px solid var(--border); width: 280px;
-        animation: fade-up 0.3s ease both; }}
-input {{ width: 100%; padding: 10px; margin: 8px 0; border-radius: var(--radius-sm); border: 1px solid #333;
-         background: var(--bg); color: var(--text); box-sizing: border-box; }}
-button {{ width: 100%; padding: 10px; border-radius: var(--radius-sm); border: none; background: var(--accent);
-          color: #fff; font-weight: 600; cursor: pointer; }}
-.error {{ color: var(--danger); font-size: 0.9rem; margin-top: 8px; }}
-h2 {{ margin-top: 0; }}
+form {{
+  background: var(--card); color: var(--ink); padding: 2rem 1.75rem;
+  border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--card-edge);
+  width: 290px; animation: fade-up 0.3s ease both;
+}}
+input[type=password] {{
+  width: 100%; padding: 10px 2px; margin: 4px 0 16px; border: none; border-bottom: 1.5px solid var(--rule);
+  border-radius: 0; background: transparent; color: var(--ink); font-family: var(--font-body);
+  font-size: 1rem; box-sizing: border-box;
+}}
+input[type=password]:focus {{ outline: none; border-bottom-color: var(--stamp); }}
+button[type=submit] {{
+  width: 100%; padding: 11px; border-radius: var(--radius-sm); border: none;
+  background: var(--stamp); color: var(--card); font-weight: 600; cursor: pointer; font-size: 0.95rem;
+}}
+button[type=submit]:active {{ background: var(--stamp-deep); }}
+.error {{ color: var(--stamp); font-size: 0.85rem; margin-top: 10px; font-style: italic; font-family: var(--font-display); }}
+h2 {{ font-family: var(--font-display); font-style: italic; font-weight: 600; margin: 0 0 1.1rem; font-size: 1.35rem; color: var(--ink); }}
 </style></head>
 <body>
 <form method="post">
@@ -551,65 +598,91 @@ TASKS_PAGE = """<!DOCTYPE html>
 <html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{page_title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
 <style>""" + SHARED_CSS + """
 .task {{ padding: var(--space-4); margin-bottom: var(--space-3);
-         border-left: 3px solid #555; display: flex; gap: var(--space-3); align-items: flex-start; }}
-.task.done {{ border-left-color: var(--success); opacity: 0.6; }}
-.task.overdue {{ border-left-color: var(--danger); }}
+        display: flex; gap: var(--space-3); align-items: flex-start; }}
+.task.done {{ background: #ece3cd; }}
+.task.done .title {{ color: var(--ink-soft); text-decoration: line-through; text-decoration-color: var(--ok); text-decoration-thickness: 1.5px; }}
+.task.done .meta {{ color: var(--ink-soft); opacity: 0.8; }}
+.task.overdue .meta {{ color: var(--stamp); }}
 .task form {{ margin: 0; line-height: 0; }}
-.check-btn {{ width: 22px; height: 22px; border-radius: 50%; border: 2px solid #666;
-              background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 2px; padding: 0;
-              transition: background 0.15s ease, border-color 0.15s ease; }}
-.task.done .check-btn {{ background: var(--success); border-color: var(--success); }}
+.check-btn {{
+  width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--ink-soft);
+  background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 2px; padding: 0;
+  position: relative; transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}}
+.task.overdue .check-btn {{ border-color: var(--stamp); }}
+.task.done .check-btn {{ background: var(--ok); border-color: var(--ok); }}
+.task.done .check-btn::after {{
+  content: ""; position: absolute; left: 8px; top: 4px; width: 6px; height: 11px;
+  border: solid var(--card); border-width: 0 2px 2px 0; transform: rotate(40deg);
+}}
 .task-body {{ flex: 1; min-width: 0; }}
-.title {{ font-weight: 600; font-size: 1.05rem; }}
-.meta {{ color: var(--text-secondary); font-size: 0.85rem; margin-top: 4px; }}
-.task-actions {{ display: flex; gap: 14px; margin-top: 10px; }}
-.task-actions button {{ background: none; border: none; color: var(--text-tertiary); font-size: 0.8rem;
-                         cursor: pointer; padding: 0; transition: color 0.15s ease; }}
-.task-actions button:active {{ color: var(--accent); }}
-.task-actions .del-btn:active {{ color: var(--danger); }}
-.tag {{ display: inline-block; background: #2a2a2e; padding: 2px 8px; border-radius: var(--radius-sm);
-        font-size: 0.75rem; margin-top: 6px; }}
+.title {{ font-family: var(--font-display); font-weight: 600; font-size: 1.08rem; color: var(--ink); }}
+.meta {{ color: var(--ink-soft); font-size: 0.85rem; margin-top: 4px; }}
+.task-actions {{ display: flex; gap: 16px; margin-top: 10px; }}
+.task-actions button {{
+  background: none; border: none; color: var(--ink-soft); font-size: 0.82rem;
+  font-family: var(--font-display); font-style: italic; cursor: pointer; padding: 0;
+  transition: color 0.15s ease;
+}}
+.task-actions button:active {{ color: var(--stamp); }}
+.task-actions .del-btn:active {{ color: var(--stamp-deep); }}
+.tag {{ display: inline-block; color: var(--stamp-deep); font-size: 0.78rem; font-weight: 600; margin-top: 6px; }}
 .task-author {{ display: flex; align-items: center; gap: 6px; margin-top: 8px;
-                 font-size: 0.8rem; color: var(--text-secondary); }}
+               font-size: 0.8rem; color: var(--ink-soft); }}
 .avatar {{ width: 20px; height: 20px; border-radius: 50%; object-fit: cover;
-           background: #333; flex-shrink: 0; }}
-.avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center;
-                        font-size: 0.7rem; }}
-.empty {{ color: var(--text-tertiary); text-align: center; padding: 3rem 1rem; }}
+          background: var(--card-edge); border: 1.5px solid var(--card); outline: 1px solid var(--rule);
+          flex-shrink: 0; }}
+.avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; }}
+.empty {{ color: var(--paper-soft); text-align: center; padding: 3rem 1rem; font-family: var(--font-display); font-style: italic; }}
 .chart-block {{ padding: var(--space-4); margin-top: var(--space-5); }}
 .chart-head {{ display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px; }}
-.chart-title {{ font-weight: 600; }}
-.streak {{ color: var(--accent); font-size: 0.9rem; }}
-.bars {{ display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 12px; }}
+.chart-title {{ font-family: var(--font-display); font-weight: 600; color: var(--ink); }}
+.streak {{ color: var(--stamp-deep); font-size: 0.9rem; font-style: italic; font-family: var(--font-display); }}
+.bars {{ display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 14px;
+        border-bottom: 1px solid var(--rule); padding-bottom: 1px; }}
 .col {{ flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; }}
-.num {{ font-size: 0.7rem; color: var(--text-secondary); height: 14px; line-height: 14px; }}
-.bar {{ width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; transition: height 0.3s ease; }}
-.bar.zero {{ background: #333; }}
+.num {{ font-size: 0.7rem; color: var(--ink-soft); height: 14px; line-height: 14px; }}
+.bar {{ width: 100%; background: var(--ok); border-radius: 2px 2px 0 0; transition: height 0.3s ease; }}
+.bar.zero {{ background: transparent; border: 1px dashed var(--rule); height: 2px !important; }}
 .labels {{ display: flex; gap: 4px; margin-top: 4px; }}
-.labels span {{ flex: 1; text-align: center; font-size: 0.65rem; color: var(--text-tertiary); }}
-.new-task-form {{ display: flex; gap: 8px; margin-bottom: var(--space-4); }}
-.new-task-form input[type=text] {{ flex: 1; min-width: 0; padding: 10px; border-radius: var(--radius-sm);
-    border: 1px solid #333; background: var(--bg-elevated); color: var(--text); box-sizing: border-box; }}
-.new-task-form input[type=datetime-local] {{ padding: 10px; border-radius: var(--radius-sm); border: 1px solid #333;
-    background: var(--bg-elevated); color: var(--text); color-scheme: dark; box-sizing: border-box; }}
-.new-task-form button {{ padding: 10px 16px; border-radius: var(--radius-sm); border: none; background: var(--accent);
-    color: #fff; font-weight: 600; cursor: pointer; flex-shrink: 0; }}
-.new-task-error {{ color: var(--danger); font-size: 0.85rem; margin: -0.5rem 0 1rem; }}
-.tg-widget-banner {{ padding: 0.75rem 1rem; margin-bottom: var(--space-4);
+.labels span {{ flex: 1; text-align: center; font-size: 0.65rem; color: var(--ink-soft); }}
+.new-task-form {{ display: flex; flex-direction: column; gap: 10px; padding: var(--space-4); margin-bottom: var(--space-4); }}
+.new-task-form input[type=text] {{
+  width: 100%; padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
+  background: transparent; color: var(--ink); font-family: var(--font-body); font-size: 1rem; box-sizing: border-box;
+}}
+.new-task-form input[type=text]::placeholder {{ color: var(--ink-soft); }}
+.new-task-form input[type=datetime-local] {{
+  padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
+  background: transparent; color: var(--ink); font-family: var(--font-body); color-scheme: light; box-sizing: border-box;
+}}
+.new-task-form input:focus {{ outline: none; border-bottom-color: var(--stamp); }}
+.new-task-form button {{
+  padding: 10px 16px; border-radius: var(--radius-sm); border: none; background: var(--stamp);
+  color: var(--card); font-weight: 600; cursor: pointer; flex-shrink: 0;
+}}
+.new-task-form button:active {{ background: var(--stamp-deep); }}
+.new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-style: italic; font-family: var(--font-display); }}
+.tg-widget-banner {{ padding: 0.8rem 1rem; margin-bottom: var(--space-4);
     display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }}
-.tg-widget-banner span {{ font-size: 0.85rem; color: var(--text-secondary); }}
-.nav-link {{ display: inline-block; color: var(--accent); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4); }}
+.tg-widget-banner span {{ font-size: 0.85rem; color: var(--ink-soft); font-style: italic; font-family: var(--font-display); }}
+.nav-link {{ display: inline-block; color: var(--paper-soft); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4);
+    font-family: var(--font-display); font-style: italic; }}
 .event {{ padding: 0.85rem 1rem; margin-bottom: 0.6rem; display: flex; gap: 0.65rem; align-items: center; }}
 .event-body {{ flex: 1; min-width: 0; }}
-.event-line {{ font-size: 0.92rem; }}
-.event-line .ev-title {{ font-weight: 600; }}
-.event-time {{ color: var(--text-tertiary); font-size: 0.78rem; margin-top: 2px; }}
-.load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px solid #333;
-    background: var(--bg-elevated); color: #ccc; text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box; }}
-.load-more:active {{ border-color: var(--accent); color: var(--accent); }}
-@media (max-width: 480px) {{ .new-task-form {{ flex-wrap: wrap; }} .new-task-form button {{ width: 100%; }} }}
+.event-line {{ font-size: 0.92rem; color: var(--ink); }}
+.event-line .ev-title {{ font-weight: 600; font-family: var(--font-display); }}
+.event-time {{ color: var(--ink-soft); font-size: 0.78rem; margin-top: 2px; }}
+.load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px dashed var(--rule-dark);
+    background: transparent; color: var(--paper-soft); text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box;
+    font-family: var(--font-display); font-style: italic; }}
+.load-more:active {{ border-color: var(--stamp); color: var(--stamp); }}
+@media (max-width: 480px) {{ .new-task-form button {{ width: 100%; }} }}
 </style></head>
 <body>
 <h1>{heading}</h1>
@@ -631,20 +704,25 @@ HISTORY_PAGE = """<!DOCTYPE html>
 <html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{history_page_title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
 <style>""" + SHARED_CSS + """
 .event {{ padding: 0.85rem 1rem; margin-bottom: 0.6rem; display: flex; gap: 0.65rem; align-items: center; }}
 .event-body {{ flex: 1; min-width: 0; }}
-.event-line {{ font-size: 0.92rem; }}
-.event-line .ev-title {{ font-weight: 600; }}
-.event-time {{ color: var(--text-tertiary); font-size: 0.78rem; margin-top: 2px; }}
+.event-line {{ font-size: 0.92rem; color: var(--ink); }}
+.event-line .ev-title {{ font-weight: 600; font-family: var(--font-display); }}
+.event-time {{ color: var(--ink-soft); font-size: 0.78rem; margin-top: 2px; }}
 .avatar {{ width: 28px; height: 28px; border-radius: 50%; object-fit: cover;
-           background: #333; flex-shrink: 0; }}
+          background: var(--card-edge); border: 1.5px solid var(--card); outline: 1px solid var(--rule); flex-shrink: 0; }}
 .avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem; }}
-.empty {{ color: var(--text-tertiary); text-align: center; padding: 3rem 1rem; }}
-.load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px solid #333;
-    background: var(--bg-elevated); color: #ccc; text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box; }}
-.load-more:active {{ border-color: var(--accent); color: var(--accent); }}
-.nav-link {{ display: inline-block; color: var(--accent); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4); }}
+.empty {{ color: var(--paper-soft); text-align: center; padding: 3rem 1rem; font-family: var(--font-display); font-style: italic; }}
+.load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px dashed var(--rule-dark);
+    background: transparent; color: var(--paper-soft); text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box;
+    font-family: var(--font-display); font-style: italic; }}
+.load-more:active {{ border-color: var(--stamp); color: var(--stamp); }}
+.nav-link {{ display: inline-block; color: var(--paper-soft); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4);
+    font-family: var(--font-display); font-style: italic; }}
 </style></head>
 <body>
 <a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
