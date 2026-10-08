@@ -1032,7 +1032,7 @@ def _render_upload_form(token: str, task_id: int, csrf: str, texts: dict, photo_
     return f"""<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo" enctype="multipart/form-data" class="photo-upload-form">
 <input type="hidden" name="csrf" value="{csrf}">
 <label class="photo-upload-btn">📷 {escape(texts["btn_add_photo"])}
-<input type="file" name="photo" accept="image/*" onchange="this.form.requestSubmit()">
+<input type="file" name="photo" accept="image/*" onchange="this.form.submit()">
 </label>
 </form>"""
 
@@ -1400,9 +1400,14 @@ def register_dashboard_routes(app: aioweb.Application):
     app.router.add_post("/dashboard/{token}", handle_dashboard)
     app.router.add_post("/dashboard/{token}/telegram-auth", handle_telegram_auth)
     app.router.add_post("/dashboard/{token}/tasks/new", handle_task_create)
-    app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)
+    # Важно: более специфичные /photo-маршруты регистрируются ДО общего
+    # /{action} — иначе POST .../tasks/{id}/photo перехватывался бы
+    # handle_task_toggle как action="photo" (не входит в его allow-list
+    # done/undone/postpone/delete) и отдавал 404 вместо загрузки фото.
+    # aiohttp матчит маршруты в порядке регистрации, не по специфичности.
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/photo", handle_task_photo_upload)
     app.router.add_get("/dashboard/{token}/tasks/{task_id}/photo/{photo_id}", handle_task_photo_get)
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/photo/{photo_id}/delete", handle_task_photo_delete)
+    app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)
     app.router.add_get("/dashboard/{token}/avatar/{user_id}", handle_avatar)
     app.router.add_get("/dashboard/{token}/history", handle_history)
