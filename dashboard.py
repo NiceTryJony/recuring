@@ -847,7 +847,10 @@ TASKS_PAGE = """<!DOCTYPE html>
 /* Карусель фото: viewport шириной ровно 3 кадра, остальные уезжают за
    overflow-x и достаются scroll-snap'ом по клику на стрелки — без JS-таймера
    и зацикливания, пользователь листает сам. */
-.task-photos-wrap {{ position: relative; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); }}
+.task-photos-wrap {{
+  position: relative; margin-top: 12px; margin-bottom: 14px; padding-top: 10px;
+  padding-left: 30px; padding-right: 30px; border-top: 1px solid var(--rule);
+}}
 .task-photos {{
   display: flex; gap: 6px; overflow-x: auto; scroll-snap-type: x mandatory;
   width: calc(3 * 96px + 2 * 6px); max-width: 100%;
@@ -855,21 +858,39 @@ TASKS_PAGE = """<!DOCTYPE html>
 }}
 .task-photos::-webkit-scrollbar {{ display: none; }}
 .task-photo {{ position: relative; width: 96px; height: 96px; border-radius: var(--radius-sm); overflow: hidden;
-    border: 1px solid var(--card-edge); flex-shrink: 0; scroll-snap-align: start; }}
+    border: 1px solid var(--card-edge); flex-shrink: 0; scroll-snap-align: start; cursor: pointer; }}
 .task-photo img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
 .task-photo form {{ position: absolute; top: 4px; right: 4px; line-height: 0; }}
 .photo-del-btn {{ width: 20px; height: 20px; border-radius: 50%; border: none; background: rgba(43, 35, 23, 0.65);
     color: var(--card); font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }}
 .photo-del-btn:active {{ background: var(--stamp-deep); }}
+/* Стрелки вынесены в собственные 30px-поля слева/справа (padding на .task-photos-wrap
+   выше) — не наезжают на крайние фото и на крестики удаления. */
 .photo-nav {{
   position: absolute; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; border-radius: 50%;
   border: 1px solid var(--card-edge); background: var(--card); color: var(--ink); font-size: 16px;
   line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
   box-shadow: var(--shadow); padding: 0;
 }}
-.photo-nav-prev {{ left: -10px; }}
-.photo-nav-next {{ right: -10px; }}
+.photo-nav-prev {{ left: 0; }}
+.photo-nav-next {{ right: 0; }}
 .photo-nav:active {{ background: var(--card-edge); }}
+/* Полноэкранный просмотр фото — скрыт (display:none) до .open, тап по фону
+   или крестику закрывает. Картинка вписывается в экран с сохранением пропорций,
+   никакого внешнего JS/библиотек. */
+.photo-lightbox {{
+  display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(20, 27, 23, 0.92);
+  align-items: center; justify-content: center; padding: var(--space-4);
+}}
+.photo-lightbox.open {{ display: flex; }}
+.photo-lightbox img {{ max-width: 100%; max-height: 100%; border-radius: var(--radius-sm);
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5); }}
+.photo-lightbox-close {{
+  position: absolute; top: max(var(--space-4), env(safe-area-inset-top)); right: var(--space-4);
+  width: 36px; height: 36px; border-radius: 50%; border: none; background: rgba(246, 239, 221, 0.15);
+  color: var(--paper); font-size: 18px; cursor: pointer; line-height: 1;
+}}
+.photo-lightbox-close:active {{ background: rgba(246, 239, 221, 0.3); }}
 .photo-upload-form {{ margin-top: 10px; }}
 .photo-upload-btn {{ display: inline-flex; align-items: center; gap: 4px; font-size: 0.82rem; color: var(--ink-soft);
     font-family: var(--font-display); font-style: italic; cursor: pointer; }}
@@ -1037,11 +1058,17 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
     if not photos:
         return ""
     track_id = f"ph-track-{task_id}"
+    lightbox_id = f"ph-lb-{task_id}"
     items = []
+    lightbox_imgs = []
     for p in photos:
-        items.append(f"""<div class="task-photo">
-<img src="/dashboard/{token}/tasks/{task_id}/photo/{p['id']}" alt="" loading="lazy">
-<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo/{p['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_photo"])}')">
+        src = f"/dashboard/{token}/tasks/{task_id}/photo/{p['id']}"
+        # Тап по превью открывает лайтбокс той же картинкой по полному размеру
+        # (тот же /photo/{id}, без доп. запроса) — крестик удаления свой
+        # обработчик клика не теряет благодаря stopPropagation.
+        items.append(f"""<div class="task-photo" onclick="document.getElementById('{lightbox_id}').querySelector('img').src='{src}';document.getElementById('{lightbox_id}').classList.add('open')">
+<img src="{src}" alt="" loading="lazy">
+<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo/{p['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_photo"])}')" onclick="event.stopPropagation()">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="photo-del-btn" aria-label="delete photo">✕</button>
 </form>
@@ -1056,10 +1083,18 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
 <button type="button" class="photo-nav photo-nav-next" aria-label="next"
   onclick="document.getElementById('{track_id}').scrollBy({{left:{PHOTO_SLOT_WIDTH},behavior:'smooth'}})">›</button>"""
 
+    # Лайтбокс — один оверлей на задачу, пустой до клика по превью (src
+    # проставляется JS'ом выше). Закрывается кликом по фону или крестику.
+    lightbox_html = f"""<div class="photo-lightbox" id="{lightbox_id}" onclick="this.classList.remove('open')">
+<button type="button" class="photo-lightbox-close" aria-label="close" onclick="document.getElementById('{lightbox_id}').classList.remove('open')">✕</button>
+<img src="" alt="" onclick="event.stopPropagation()">
+</div>"""
+
     return f"""<div class="task-photos-wrap">
 <div class="task-photos" id="{track_id}">{"".join(items)}</div>
 {arrows_html}
-</div>"""
+</div>
+{lightbox_html}"""
 
 
 def _render_upload_form(token: str, task_id: int, csrf: str, texts: dict, photo_count: int) -> str:
