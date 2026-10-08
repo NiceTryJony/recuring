@@ -287,6 +287,152 @@ async def _fetch_and_compress_photo(tg_user_id: int) -> tuple[bytes, str] | None
         return None
 
 
+# ---------- фото задач ----------
+TASK_PHOTO_MAX_SIDE = 1280
+TASK_PHOTO_JPEG_QUALITY = 85
+TASK_PHOTO_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # лимит на входящий файл ДО сжатия
+
+
+def compress_task_photo(raw: bytes) -> tuple[bytes, str] | None:
+    """Сжимает присланные байты (откуда угодно — с дашборда или из бота) до
+    JPEG разумного размера. Возвращает None, если это не декодируется как
+    изображение (битый файл, не тот content-type) — вызывающая сторона должна
+    явно отклонить загрузку в этом случае, а не падать с 500."""
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(raw))
+        img.load()  # форсируем декодирование сейчас, а не лениво при .save() —
+                     # иначе битый файл всплывёт позже менее понятной ошибкой
+        img = img.convert("RGB")
+        img.thumbnail((TASK_PHOTO_MAX_SIDE, TASK_PHOTO_MAX_SIDE))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=TASK_PHOTO_JPEG_QUALITY, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        logger.exception("Не удалось декодировать/сжать фото задачи")
+        return None
+
+
+async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/tasks/{task_id}/photo — загрузка фото с дашборда
+    через multipart-форму. Та же сессия+CSRF защита, что и у остальных действий
+    над задачей; лимит MAX_PHOTOS_PER_TASK проверяется здесь же (не в БД), так
+    что при гонке двух одновременных загрузок возможен разовый перелимит на 1 —
+    не считаем это проблемой для личного/семейного масштаба использования."""
+    token = request.match_info["token"]
+    try:
+        task_id = int(request.match_info["task_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, tg_user_id = owner
+    acting_user_id = _acting_user_id(owner_id, owner_type, tg_user_id)
+
+    task = await db.get_task(task_id)
+    if not task or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
+        return aioweb.Response(status=404)
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    reader = await request.multipart()
+    field = None
+    csrf_token = ""
+    file_bytes = b""
+    async for part in reader:
+        if part.name == "csrf":
+            csrf_token = (await part.read()).decode("utf-8", errors="ignore")
+        elif part.name == "photo":
+            field = part
+            # Читаем с ограничением, чтобы не раздувать память на огромном файле —
+            # читаем по чанку и обрываем, как только превысили лимит.
+            while True:
+                chunk = await part.read_chunk()
+                if not chunk:
+                    break
+                file_bytes += chunk
+                if len(file_bytes) > TASK_PHOTO_MAX_UPLOAD_BYTES:
+                    return aioweb.Response(status=413)
+
+    if not _verify_csrf(csrf_token, cookie):
+        return aioweb.Response(status=403)
+    if field is None or not file_bytes:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+
+    if await db.count_task_photos(task_id) >= db.MAX_PHOTOS_PER_TASK:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+
+    compressed = compress_task_photo(file_bytes)
+    if compressed is None:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=bad_photo"})
+    data, mime = compressed
+    await db.add_task_photo(task_id, data, mime, uploaded_by=acting_user_id)
+    await db.log_history(task_id, acting_user_id, task["title"], "photo_added")
+
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+
+
+async def handle_task_photo_get(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/tasks/{task_id}/photo/{photo_id} — отдаёт байты.
+    Как и у аватарок, доступ не завязан на сессию (обычный <img src>), но
+    привязан к валидному токену дашборда + проверке, что фото реально
+    принадлежит задаче этого владельца (иначе можно перебирать чужие photo_id)."""
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        return aioweb.Response(status=404)
+    try:
+        task_id = int(request.match_info["task_id"])
+        photo_id = int(request.match_info["photo_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    task = await db.get_task(task_id)
+    if not task or task["owner_id"] != settings["owner_id"] or task["owner_type"] != settings["owner_type"]:
+        return aioweb.Response(status=404)
+
+    photo = await db.get_task_photo(photo_id)
+    if not photo or photo["task_id"] != task_id:
+        return aioweb.Response(status=404)
+
+    return aioweb.Response(
+        body=photo["data"], content_type=photo["mime"],
+        headers={"Cache-Control": f"public, max-age={AVATAR_CACHE_SECONDS}"},
+    )
+
+
+async def handle_task_photo_delete(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/tasks/{task_id}/photo/{photo_id}/delete."""
+    token = request.match_info["token"]
+    try:
+        task_id = int(request.match_info["task_id"])
+        photo_id = int(request.match_info["photo_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, tg_user_id = owner
+    acting_user_id = _acting_user_id(owner_id, owner_type, tg_user_id)
+
+    task = await db.get_task(task_id)
+    if not task or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
+        return aioweb.Response(status=404)
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    await db.delete_task_photo(photo_id, task_id)
+    await db.log_history(task_id, acting_user_id, task["title"], "photo_removed")
+
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+
+
 async def handle_avatar(request: aioweb.Request) -> aioweb.Response:
     """GET /dashboard/{token}/avatar/{user_id} — отдаёт уже сжатую картинку из БД.
     Доступ не завязан на сессию (как и сами изображения в <img>), но токен
@@ -355,6 +501,11 @@ DASHBOARD_TEXTS = {
         "event_deleted": "🗑 удалил(а)",
         "event_rescheduled": "📅 перенёс(ла)",
         "btn_load_more": "Показать ещё",
+        "btn_add_photo": "Добавить фото",
+        "confirm_delete_photo": "Удалить фото?",
+        "event_photo_added": "📷 добавил(а) фото к",
+        "event_photo_removed": "🗑 удалил(а) фото у",
+        "error_bad_photo": "Не удалось обработать файл как изображение",
     },
     "en": {
         "html_lang": "en",
@@ -398,6 +549,11 @@ DASHBOARD_TEXTS = {
         "event_deleted": "🗑 deleted",
         "event_rescheduled": "📅 rescheduled",
         "btn_load_more": "Load more",
+        "btn_add_photo": "Add photo",
+        "confirm_delete_photo": "Delete this photo?",
+        "event_photo_added": "📷 added a photo to",
+        "event_photo_removed": "🗑 removed a photo from",
+        "error_bad_photo": "Couldn't process the file as an image",
     },
     "pl": {
         "html_lang": "pl",
@@ -441,6 +597,11 @@ DASHBOARD_TEXTS = {
         "event_deleted": "🗑 usunął(ęła)",
         "event_rescheduled": "📅 przełożył(a)",
         "btn_load_more": "Pokaż więcej",
+        "btn_add_photo": "Dodaj zdjęcie",
+        "confirm_delete_photo": "Usunąć zdjęcie?",
+        "event_photo_added": "📷 dodał(a) zdjęcie do",
+        "event_photo_removed": "🗑 usunął(ęła) zdjęcie z",
+        "error_bad_photo": "Nie udało się przetworzyć pliku jako obrazu",
     },
 }
 
@@ -683,6 +844,18 @@ TASKS_PAGE = """<!DOCTYPE html>
     font-family: var(--font-display); font-style: italic; }}
 .load-more:active {{ border-color: var(--stamp); color: var(--stamp); }}
 @media (max-width: 480px) {{ .new-task-form button {{ width: 100%; }} }}
+.task-photos {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
+.task-photo {{ position: relative; width: 64px; height: 64px; border-radius: var(--radius-sm); overflow: hidden;
+    border: 1px solid var(--card-edge); flex-shrink: 0; }}
+.task-photo img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
+.task-photo form {{ position: absolute; top: 2px; right: 2px; line-height: 0; }}
+.photo-del-btn {{ width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(43, 35, 23, 0.65);
+    color: var(--card); font-size: 11px; line-height: 1; cursor: pointer; padding: 0; }}
+.photo-del-btn:active {{ background: var(--stamp-deep); }}
+.photo-upload-form {{ margin-top: 8px; }}
+.photo-upload-btn {{ display: inline-flex; align-items: center; gap: 4px; font-size: 0.82rem; color: var(--ink-soft);
+    font-family: var(--font-display); font-style: italic; cursor: pointer; }}
+.photo-upload-btn input[type=file] {{ position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }}
 </style></head>
 <body>
 <h1>{heading}</h1>
@@ -832,9 +1005,42 @@ def _render_author(created_by: int | None, creator: dict | None, token: str) -> 
     return f'<div class="task-author">{avatar_html}<span>{escape(name)}</span></div>'
 
 
+def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, texts: dict) -> str:
+    """Галерея превьюшек под задачей. Сами байты не инлайнятся в HTML — каждая
+    картинка подтягивается браузером отдельным GET на /photo/{id} (кешируется),
+    здесь только теги <img> + форма удаления (крестик) поверх миниатюры."""
+    if not photos:
+        return ""
+    items = []
+    for p in photos:
+        items.append(f"""<div class="task-photo">
+<img src="/dashboard/{token}/tasks/{task_id}/photo/{p['id']}" alt="" loading="lazy">
+<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo/{p['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_photo"])}')">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit" class="photo-del-btn" aria-label="delete photo">✕</button>
+</form>
+</div>""")
+    return f'<div class="task-photos">{"".join(items)}</div>'
+
+
+def _render_upload_form(token: str, task_id: int, csrf: str, texts: dict, photo_count: int) -> str:
+    """Форма прикрепления фото — скрыта, когда лимит на задачу уже достигнут
+    (MAX_PHOTOS_PER_TASK), чтобы не провоцировать запрос, который сервер
+    всё равно отклонит."""
+    if photo_count >= db.MAX_PHOTOS_PER_TASK:
+        return ""
+    return f"""<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo" enctype="multipart/form-data" class="photo-upload-form">
+<input type="hidden" name="csrf" value="{csrf}">
+<label class="photo-upload-btn">📷 {escape(texts["btn_add_photo"])}
+<input type="file" name="photo" accept="image/*" onchange="this.form.requestSubmit()">
+</label>
+</form>"""
+
+
 def _render_task(
     task: dict, tz, lang: str, token: str, csrf: str,
     creator: dict | None = None, owner_type: str = "user",
+    photos: list[dict] | None = None,
 ) -> str:
     import datetime as dt
     texts = _dt(lang)
@@ -853,6 +1059,10 @@ def _render_task(
     # Автора показываем только в групповом дашборде — в личном он и так всегда
     # один и тот же человек, бейдж был бы бесполезным шумом.
     author_html = _render_author(task.get("created_by"), creator, token) if owner_type == "chat" else ""
+
+    photos = photos or []
+    photos_html = _render_photos(photos, token, task["id"], csrf, texts)
+    upload_html = _render_upload_form(token, task["id"], csrf, texts, len(photos))
 
     extra_actions = ""
     if not task["done"]:
@@ -888,6 +1098,8 @@ def _render_task(
 <div class="meta">📅 {local_due.strftime('%d.%m.%Y %H:%M')}{repeat_html}</div>
 {author_html}
 {tag_html}
+{photos_html}
+{upload_html}
 {extra_actions}
 </div>
 </div>"""
@@ -993,8 +1205,18 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         if owner_type == "chat":
             creator_ids = {t["created_by"] for t in tasks if t.get("created_by")}
             creators = await db.get_telegram_users(list(creator_ids))
+        # Фото каждой задачи — отдельным запросом на задачу (метаданные без
+        # байтов), не одним большим IN(...): список задач на дашборде обычно
+        # небольшой (до пары десятков), а db.get_task_photos_meta и так лёгкий
+        # индексированный SELECT по task_id.
+        photos_by_task = {
+            t["id"]: await db.get_task_photos_meta(t["id"]) for t in tasks
+        }
         tasks_html = "\n".join(
-            _render_task(t, tz, lang, token, csrf, creator=creators.get(t.get("created_by")), owner_type=owner_type)
+            _render_task(
+                t, tz, lang, token, csrf, creator=creators.get(t.get("created_by")), owner_type=owner_type,
+                photos=photos_by_task.get(t["id"]),
+            )
             for t in tasks
         )
 
@@ -1013,6 +1235,8 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     new_task_error_html = ""
     if request.query.get("error") == "empty_title":
         new_task_error_html = f'<div class="new-task-error">{escape(texts["error_empty_title"])}</div>'
+    elif request.query.get("error") == "bad_photo":
+        new_task_error_html = f'<div class="new-task-error">{escape(texts["error_bad_photo"])}</div>'
 
     # Виджет показываем только на групповом дашборде и только пока не знаем,
     # кто именно из участников сейчас смотрит страницу (вошли по общему паролю,
@@ -1177,5 +1401,8 @@ def register_dashboard_routes(app: aioweb.Application):
     app.router.add_post("/dashboard/{token}/telegram-auth", handle_telegram_auth)
     app.router.add_post("/dashboard/{token}/tasks/new", handle_task_create)
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)
+    app.router.add_post("/dashboard/{token}/tasks/{task_id}/photo", handle_task_photo_upload)
+    app.router.add_get("/dashboard/{token}/tasks/{task_id}/photo/{photo_id}", handle_task_photo_get)
+    app.router.add_post("/dashboard/{token}/tasks/{task_id}/photo/{photo_id}/delete", handle_task_photo_delete)
     app.router.add_get("/dashboard/{token}/avatar/{user_id}", handle_avatar)
     app.router.add_get("/dashboard/{token}/history", handle_history)

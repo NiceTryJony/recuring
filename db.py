@@ -220,6 +220,23 @@ async def init_db():
         await conn.execute("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS photo_data BYTEA")
         await conn.execute("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS photo_mime TEXT")
 
+        # Фото, прикреплённые к задачам (не аватарки) — отдельная таблица
+        # "один-ко-многим" на случай нескольких фото на задачу. Байты хранятся
+        # прямо в БД (как и telegram_users.photo_data) — показ не требует
+        # похода на Bot API/диск, а масштаб (до нескольких МБ на задачу,
+        # сжатых до JPEG) комфортен для Supabase free tier.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_photos (
+                id SERIAL PRIMARY KEY,
+                task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                data BYTEA NOT NULL,
+                mime TEXT NOT NULL,
+                uploaded_by BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_task_photos_task_id ON task_photos(task_id)")
+
 
 async def close_db():
     if _pool:
@@ -391,6 +408,69 @@ async def update_task(task_id: int, **fields):
         async with _pool.acquire() as conn:
             await conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = $1", task_id, *values)
     await _with_retry(_run)
+
+
+# ---------- фото задач ----------
+# Лимит числа фото на задачу — защита от раздувания БД через форму на
+# дашборде/бота; проверяется на вызывающей стороне (add_task_photo сам
+# лимит не знает, чтобы не плодить гонки — см. komментарий в dashboard.py/bot.py).
+MAX_PHOTOS_PER_TASK = 5
+
+
+async def add_task_photo(task_id: int, data: bytes, mime: str, uploaded_by: int | None = None) -> int:
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO task_photos (task_id, data, mime, uploaded_by) VALUES ($1, $2, $3, $4) RETURNING id",
+                task_id, data, mime, uploaded_by,
+            )
+            return row["id"]
+    return await _with_retry(_run)
+
+
+async def get_task_photo(photo_id: int) -> dict | None:
+    """Возвращает одно фото с байтами (для отдачи по GET) вместе с task_id —
+    чтобы вызывающая сторона могла проверить принадлежность задаче/владельцу
+    перед отдачей, не делая второй запрос."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM task_photos WHERE id = $1", photo_id)
+            return dict(row) if row else None
+    return await _with_retry(_run)
+
+
+async def get_task_photos_meta(task_id: int) -> list[dict]:
+    """Список фото задачи БЕЗ байтов (id, mime, created_at) — для рендера
+    превьюшек/галереи, где сами байты отдаются отдельным запросом на каждую
+    картинку через <img src=".../photo/{id}">, а не инлайнятся все разом."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, task_id, mime, uploaded_by, created_at FROM task_photos WHERE task_id = $1 ORDER BY created_at",
+                task_id,
+            )
+            return [dict(r) for r in rows]
+    return await _with_retry(_run)
+
+
+async def count_task_photos(task_id: int) -> int:
+    async def _run():
+        async with _pool.acquire() as conn:
+            return await conn.fetchval("SELECT COUNT(*) FROM task_photos WHERE task_id = $1", task_id)
+    return await _with_retry(_run)
+
+
+async def delete_task_photo(photo_id: int, task_id: int) -> bool:
+    """task_id передаётся явно и входит в WHERE — страховка от удаления чужого
+    фото по угаданному/перебранному id (вызывающая сторона и так должна
+    проверить владельца задачи, но лишняя защита в самом запросе не мешает)."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM task_photos WHERE id = $1 AND task_id = $2", photo_id, task_id
+            )
+            return result.endswith(" 1")
+    return await _with_retry(_run)
 
 
 # ---------- подзадачи ----------
