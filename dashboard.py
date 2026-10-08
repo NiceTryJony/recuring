@@ -895,6 +895,57 @@ TASKS_PAGE = """<!DOCTYPE html>
 .photo-upload-btn {{ display: inline-flex; align-items: center; gap: 4px; font-size: 0.82rem; color: var(--ink-soft);
     font-family: var(--font-display); font-style: italic; cursor: pointer; }}
 .photo-upload-btn input[type=file] {{ position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }}
+
+/* Панель выбора дня — адаптация карточки "Upcoming Meetings" с Uiverse под
+   крафт-палитру страницы. Раскрытие до месяца — нативный <details>, стрелка
+   поворачивается чистым CSS от [open], без единой строчки JS. */
+.day-picker {{ background: var(--card); border: 1px solid var(--card-edge); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3); }}
+.day-picker-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }}
+.day-picker-month {{ font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; color: var(--ink);
+    text-transform: capitalize; }}
+.day-today-link {{ color: var(--ink-soft); text-decoration: none; font-size: 0.85rem; border: 1px solid var(--card-edge);
+    border-radius: 999px; padding: 2px 9px; }}
+.day-today-link:active {{ background: var(--paper); }}
+
+.day-picker-summary {{ list-style: none; cursor: pointer; display: block; }}
+.day-picker-summary::-webkit-details-marker {{ display: none; }}
+.date-nav-container {{ background: var(--paper); border-radius: var(--radius-sm); padding: 10px 6px;
+    display: flex; justify-content: space-between; gap: 2px; }}
+.day-item {{ display: flex; flex-direction: column; align-items: center; text-decoration: none;
+    color: var(--ink); flex: 1; position: relative; padding-bottom: 6px; border-radius: var(--radius-sm); }}
+.day-number {{ font-size: 1.05rem; font-weight: 600; width: 34px; height: 26px; display: flex;
+    align-items: center; justify-content: center; border-radius: 13px; }}
+.day-name {{ font-size: 0.65rem; color: var(--ink-soft); margin-top: 2px; }}
+.day-item.day-active .day-number {{ background: var(--stamp); color: var(--card); }}
+.day-item.day-today:not(.day-active) .day-number {{ border: 1px solid var(--stamp); }}
+.day-dot {{ width: 4px; height: 4px; border-radius: 50%; background: var(--stamp); margin-top: 3px; }}
+.day-item.day-active .day-dot {{ background: transparent; }} /* подсветка и так есть — точка лишняя */
+
+/* Стрелка-индикатор раскрытия — отдельный декоративный треугольник под
+   рядом недели, поворачивается через [open] на <details>. */
+.day-picker-expand {{ position: relative; }}
+.day-picker-expand > summary {{ padding-bottom: 14px; }}
+.day-picker-expand > summary::after {{
+  content: ""; position: absolute; left: 50%; bottom: -2px; transform: translateX(-50%) rotate(0deg);
+  width: 9px; height: 9px; border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft);
+  transform-origin: center; transition: transform 0.2s ease;
+}}
+.day-picker-expand[open] > summary::after {{ transform: translateX(-50%) rotate(-135deg); bottom: 2px; }}
+
+.day-picker-month-grid {{ margin-top: 10px; }}
+.day-picker-dow-row, .day-picker-month-cells {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }}
+.day-dow-label {{ text-align: center; font-size: 0.62rem; color: var(--ink-soft); padding-bottom: 4px; }}
+.day-item-month .day-number {{ width: 28px; height: 24px; font-size: 0.9rem; }}
+.day-item-month .day-name {{ display: none; }}
+.day-empty {{ visibility: hidden; }}
+
+.indicator-container {{ display: flex; justify-content: space-between; position: relative; padding: 0 20px;
+    margin-top: 10px; }}
+.indicator-dot {{ width: 6px; height: 6px; border-radius: 50%; background: var(--card-edge); position: relative; z-index: 2; }}
+.indicator-dot.indicator-active {{ background: var(--stamp); }}
+.indicator-line {{ position: absolute; top: 50%; left: 20px; right: 20px; height: 1px;
+    border-top: 1.5px dashed var(--card-edge); z-index: 1; }}
 </style></head>
 <body>
 <h1>{heading}</h1>
@@ -907,6 +958,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 <input type="datetime-local" name="due_at" required>
 <button type="submit">{btn_add}</button>
 </form>
+{day_picker_html}
 {tasks_html}
 {chart_html}
 </body></html>"""
@@ -1025,6 +1077,92 @@ async def handle_history(request: aioweb.Request) -> aioweb.Response:
         **{k: v for k, v in texts.items() if k != "repeat"},
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+_RU_MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня",
+              "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+_EN_MONTHS = ["January", "February", "March", "April", "May", "June",
+              "July", "August", "September", "October", "November", "December"]
+_PL_MONTHS = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca",
+              "lipca", "sierpnia", "września", "października", "listopada", "grudnia"]
+_MONTH_NAMES = {"ru": _RU_MONTHS, "en": _EN_MONTHS, "pl": _PL_MONTHS}
+
+_RU_DOW = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+_EN_DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_PL_DOW = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"]
+_DOW_NAMES = {"ru": _RU_DOW, "en": _EN_DOW, "pl": _PL_DOW}
+
+
+def _render_day_picker(selected: "dt.date", today: "dt.date", lang: str, token: str, task_days: set,
+                        filter_active: bool = True) -> str:
+    """Панель выбора дня дашборда (фильтр по due_at), в стиле карточки
+    'Upcoming Meetings' с Uiverse: неделя вокруг selected + стрелка вниз,
+    раскрывающая блок до полного месяца. Раскрытие — чистый HTML
+    <details>/<summary> (без JS): браузер сам переключает видимость и
+    поворот стрелки по CSS от атрибута [open], сервер ничего не считает
+    по клику — вся навигация это обычные ссылки с ?date=YYYY-MM-DD.
+    task_days — set дат (date), на которые есть хотя бы одна задача, для
+    точек-индикаторов под числами (как у dot-индикаторов в оригинале)."""
+    import datetime as dt
+    import calendar as cal
+
+    month_name = _MONTH_NAMES[lang][selected.month - 1]
+    dow_names = _DOW_NAMES[lang]
+
+    # Неделя (Пн-Вс), в которую попадает selected — тот же принцип, что и в
+    # оригинальном компоненте (ряд дней вокруг активного).
+    week_start = selected - dt.timedelta(days=selected.weekday())
+    week_days = [week_start + dt.timedelta(days=i) for i in range(7)]
+
+    def _day_link(d: "dt.date", extra_class: str = "") -> str:
+        cls = "day-item"
+        if filter_active and d == selected:
+            cls += " day-active"
+        if d == today and not (filter_active and d == selected):
+            cls += " day-today"
+        dot = '<span class="day-dot"></span>' if d in task_days else ""
+        return f"""<a class="{cls} {extra_class}" href="/dashboard/{token}?date={d.isoformat()}">
+<div class="day-number">{d.day}</div>
+<div class="day-name">{dow_names[d.weekday()]}</div>
+{dot}
+</a>"""
+
+    week_html = "".join(_day_link(d) for d in week_days)
+    week_dots = "".join(
+        f'<div class="indicator-dot{" indicator-active" if (filter_active and d == selected) else ""}"></div>'
+        for d in week_days
+    )
+
+    # Полный месяц selected — те же ссылки-дни, сеткой 7 колонок, с пустыми
+    # ячейками в начале/конце для выравнивания по дню недели.
+    _, days_in_month = cal.monthrange(selected.year, selected.month)
+    first_of_month = selected.replace(day=1)
+    lead_empty = first_of_month.weekday()  # 0=Пн
+    month_cells = ['<div class="day-empty"></div>'] * lead_empty
+    for day_num in range(1, days_in_month + 1):
+        month_cells.append(_day_link(first_of_month.replace(day=day_num), "day-item-month"))
+    month_html = "".join(month_cells)
+
+    # Ссылка сброса видна всегда, когда фильтр активен (вернуться к полному
+    # списку задач) — а не только когда выбранный день не сегодня.
+    reset_html = f'<a class="day-today-link" href="/dashboard/{token}">↺</a>' if filter_active else ""
+
+    return f"""<div class="day-picker">
+<div class="day-picker-header">
+<span class="day-picker-month">{month_name} {selected.year}</span>
+{reset_html}
+</div>
+<details class="day-picker-expand">
+<summary class="day-picker-summary">
+<div class="date-nav-container">{week_html}</div>
+</summary>
+<div class="day-picker-month-grid">
+<div class="day-picker-dow-row">{"".join(f'<div class="day-dow-label">{n}</div>' for n in dow_names)}</div>
+<div class="day-picker-month-cells">{month_html}</div>
+</div>
+</details>
+<div class="indicator-container"><div class="indicator-line"></div>{week_dots}</div>
+</div>"""
 
 
 def _render_author(created_by: int | None, creator: dict | None, token: str) -> str:
@@ -1271,7 +1409,33 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
 
     csrf = _csrf_token(cookie)
 
-    tasks = await db.get_tasks(owner_id, owner_type, include_done=True)
+    import datetime as dt
+    today = dt.datetime.now(tz).date()
+    raw_date = request.query.get("date", "")
+    selected_date = today
+    filter_active = bool(raw_date)
+    if raw_date:
+        try:
+            selected_date = dt.date.fromisoformat(raw_date)
+        except ValueError:
+            selected_date, filter_active = today, False  # битый параметр — тихо откатываемся на "все задачи"
+
+    all_tasks = await db.get_tasks(owner_id, owner_type, include_done=True)
+    # task_days — для точек-индикаторов под числами панели: на какие дни
+    # вообще есть задачи. Считаем по полному списку, иначе индикаторы видели
+    # бы только дни внутри уже отфильтрованной недели/месяца.
+    task_days = {t["due_at"].astimezone(tz).date() for t in all_tasks}
+    # Панель — это ФИЛЬТР, не обязательный режим: без ?date= в URL дашборд
+    # ведёт себя как раньше (показывает все задачи), а выбор дня в панели
+    # добавляет ?date=... и сужает список до одного дня. Так ссылка дашборда
+    # без параметров (например, уже сохранённая в Telegram) не меняет
+    # поведения для тех, кто панелью не пользуется.
+    tasks = [t for t in all_tasks if t["due_at"].astimezone(tz).date() == selected_date] if filter_active else all_tasks
+
+    day_picker_html = _render_day_picker(
+        selected_date if filter_active else today, today, lang, token, task_days, filter_active=filter_active
+    )
+
     if not tasks:
         tasks_html = f'<div class="empty">{escape(texts["empty"])}</div>'
     else:
@@ -1325,6 +1489,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     page = TASKS_PAGE.format(
         tasks_html=tasks_html, chart_html=chart_html, heading=heading, nav_html=nav_html,
         token=token, csrf=csrf, new_task_error=new_task_error_html, tg_widget_html=tg_widget_html,
+        day_picker_html=day_picker_html,
         **{k: v for k, v in texts.items() if k not in ("heading",)},
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
