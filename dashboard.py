@@ -844,15 +844,33 @@ TASKS_PAGE = """<!DOCTYPE html>
     font-family: var(--font-display); font-style: italic; }}
 .load-more:active {{ border-color: var(--stamp); color: var(--stamp); }}
 @media (max-width: 480px) {{ .new-task-form button {{ width: 100%; }} }}
-.task-photos {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
-.task-photo {{ position: relative; width: 64px; height: 64px; border-radius: var(--radius-sm); overflow: hidden;
-    border: 1px solid var(--card-edge); flex-shrink: 0; }}
+/* Карусель фото: viewport шириной ровно 3 кадра, остальные уезжают за
+   overflow-x и достаются scroll-snap'ом по клику на стрелки — без JS-таймера
+   и зацикливания, пользователь листает сам. */
+.task-photos-wrap {{ position: relative; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); }}
+.task-photos {{
+  display: flex; gap: 6px; overflow-x: auto; scroll-snap-type: x mandatory;
+  width: calc(3 * 96px + 2 * 6px); max-width: 100%;
+  scrollbar-width: none; -ms-overflow-style: none;
+}}
+.task-photos::-webkit-scrollbar {{ display: none; }}
+.task-photo {{ position: relative; width: 96px; height: 96px; border-radius: var(--radius-sm); overflow: hidden;
+    border: 1px solid var(--card-edge); flex-shrink: 0; scroll-snap-align: start; }}
 .task-photo img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
-.task-photo form {{ position: absolute; top: 2px; right: 2px; line-height: 0; }}
-.photo-del-btn {{ width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(43, 35, 23, 0.65);
-    color: var(--card); font-size: 11px; line-height: 1; cursor: pointer; padding: 0; }}
+.task-photo form {{ position: absolute; top: 4px; right: 4px; line-height: 0; }}
+.photo-del-btn {{ width: 20px; height: 20px; border-radius: 50%; border: none; background: rgba(43, 35, 23, 0.65);
+    color: var(--card); font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }}
 .photo-del-btn:active {{ background: var(--stamp-deep); }}
-.photo-upload-form {{ margin-top: 8px; }}
+.photo-nav {{
+  position: absolute; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--card-edge); background: var(--card); color: var(--ink); font-size: 16px;
+  line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow); padding: 0;
+}}
+.photo-nav-prev {{ left: -10px; }}
+.photo-nav-next {{ right: -10px; }}
+.photo-nav:active {{ background: var(--card-edge); }}
+.photo-upload-form {{ margin-top: 10px; }}
 .photo-upload-btn {{ display: inline-flex; align-items: center; gap: 4px; font-size: 0.82rem; color: var(--ink-soft);
     font-family: var(--font-display); font-style: italic; cursor: pointer; }}
 .photo-upload-btn input[type=file] {{ position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }}
@@ -1005,12 +1023,20 @@ def _render_author(created_by: int | None, creator: dict | None, token: str) -> 
     return f'<div class="task-author">{avatar_html}<span>{escape(name)}</span></div>'
 
 
+PHOTO_SLOT_WIDTH = 96  # px — ширина одного кадра карусели, используется и в CSS, и в JS-прокрутке стрелками
+
+
 def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, texts: dict) -> str:
-    """Галерея превьюшек под задачей. Сами байты не инлайнятся в HTML — каждая
-    картинка подтягивается браузером отдельным GET на /photo/{id} (кешируется),
-    здесь только теги <img> + форма удаления (крестик) поверх миниатюры."""
+    """Карусель фото под задачей: показывает до 3 кадров разом (viewport шириной
+    3*PHOTO_SLOT_WIDTH), остальные скрыты за горизонтальным scroll-snap —
+    пользователь листает сам через стрелки (JS просто двигает scrollLeft на
+    один кадр, без автопрокрутки и анимации зацикливания). Стрелки рисуются,
+    только если фото больше 3 — незачем показывать управление, которое нечем
+    листать. Сами байты не инлайнятся — каждая картинка подтягивается
+    отдельным GET на /photo/{id} (кешируется браузером)."""
     if not photos:
         return ""
+    track_id = f"ph-track-{task_id}"
     items = []
     for p in photos:
         items.append(f"""<div class="task-photo">
@@ -1020,7 +1046,20 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
 <button type="submit" class="photo-del-btn" aria-label="delete photo">✕</button>
 </form>
 </div>""")
-    return f'<div class="task-photos">{"".join(items)}</div>'
+
+    arrows_html = ""
+    if len(photos) > 3:
+        # scrollBy на фиксированный шаг (один кадр) — явное, предсказуемое
+        # перемещение по клику, никакого авто-таймера/зацикливания.
+        arrows_html = f"""<button type="button" class="photo-nav photo-nav-prev" aria-label="prev"
+  onclick="document.getElementById('{track_id}').scrollBy({{left:-{PHOTO_SLOT_WIDTH},behavior:'smooth'}})">‹</button>
+<button type="button" class="photo-nav photo-nav-next" aria-label="next"
+  onclick="document.getElementById('{track_id}').scrollBy({{left:{PHOTO_SLOT_WIDTH},behavior:'smooth'}})">›</button>"""
+
+    return f"""<div class="task-photos-wrap">
+<div class="task-photos" id="{track_id}">{"".join(items)}</div>
+{arrows_html}
+</div>"""
 
 
 def _render_upload_form(token: str, task_id: int, csrf: str, texts: dict, photo_count: int) -> str:
