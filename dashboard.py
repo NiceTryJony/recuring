@@ -686,38 +686,55 @@ def _dt(lang: str) -> dict:
 # задвоены, как и в остальных шаблонах этого файла.
 SHARED_CSS = """
 :root {{
-  /* "Index card on a desk" — cream card stock on a deep bottle-green desk,
-     a brick-red stamp-ink accent for actions/overdue, ink-green for done.
-     Picked to read as a ledger/logbook (this dashboard IS a log of who did
-     what), not another dark-SaaS-with-one-accent-color screen. */
-  --bg-0: #141b17;
-  --bg-1: #1d2922;
-  --card: #f6efdd;
-  --card-edge: #e6d9b8;
-  --ink: #2b2317;
-  --ink-soft: #6e6250;
-  --paper: #e9e3d2;
-  --paper-soft: #93a093;
-  --stamp: #a8392c;
-  --stamp-deep: #7e2a20;
-  --ok: #3f6b4e;
-  --ok-deep: #2d4e38;
-  --rule: rgba(43, 35, 23, 0.16);
-  --rule-dark: rgba(233, 227, 210, 0.12);
-  --shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 14px 28px -16px rgba(0, 0, 0, 0.6);
-  --radius: 10px;
-  --radius-sm: 6px;
+  /* "Тёмное стекло" — матовые полупрозрачные панели (backdrop-filter) над
+     почти чёрным фоном с двумя приглушёнными цветными пятнами (медно-янтарным
+     и глубоким изумрудным — НЕ фиолетово-голубой градиент, это сочетание
+     сейчас слишком узнаваемо как "дефолт ИИ-лендинга"). Заголовки — Fraunces
+     (курсивная антиква с характерными засечками) вместо геометрического
+     гротеска на каждом углу — ещё один сознательный уход от шаблонного вида.
+     backdrop-filter навешен ТОЛЬКО на крупные панели-контейнеры (карточки
+     задач/событий, форма логина, панель дней) — на мелких элементах (кружки
+     чекбоксов, стрелки фото, аватары) его нет: это и держит рендер лёгким на
+     телефоне (у каждого blur-слоя своя цена для композитора), и визуально
+     мелкий элемент всё равно не читается как "стекло" на таком размере.
+     Токены (имена переменных) не менялись — поменялись их значения, плюс
+     один новый --on-accent (непрозрачный цвет текста/иконок поверх залитых
+     акцентом элементов — var(--card) для этой роли больше не годится, он
+     теперь полупрозрачный). */
+  --bg-0: #0b0a0d;
+  --bg-1: #1a140f;
+  --card: rgba(255, 255, 255, 0.055);
+  --card-edge: rgba(255, 255, 255, 0.12);
+  --ink: #f4efe6;
+  --ink-soft: rgba(244, 239, 230, 0.6);
+  --paper: #f4efe6;
+  --paper-soft: rgba(244, 239, 230, 0.56);
+  --stamp: #d97a26;
+  --stamp-deep: #b8631a;
+  --ok: #14a87e;
+  --ok-deep: #0d8565;
+  --on-accent: #fbf5ea;
+  --rule: rgba(255, 255, 255, 0.14);
+  --rule-dark: rgba(255, 255, 255, 0.22);
+  --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 24px 48px -26px rgba(0, 0, 0, 0.75);
+  --glass-blur: blur(18px) saturate(150%);
+  --radius: 20px;
+  --radius-sm: 12px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 28px;
-  --font-display: "Spectral", Georgia, "Times New Roman", serif;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
   --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }}
 * {{ box-sizing: border-box; }}
+html {{ background: var(--bg-0); }}
 body {{
   font-family: var(--font-body);
   background:
-    radial-gradient(ellipse 900px 500px at 50% -10%, var(--bg-1) 0%, var(--bg-0) 65%);
+    radial-gradient(640px 420px at 12% -6%, rgba(217, 122, 38, 0.22), transparent 60%),
+    radial-gradient(560px 460px at 108% 18%, rgba(20, 168, 126, 0.16), transparent 62%),
+    radial-gradient(900px 700px at 50% 115%, rgba(217, 122, 38, 0.08), transparent 70%),
+    var(--bg-0);
   background-attachment: fixed;
   color: var(--paper); margin: 0;
   padding: var(--space-4);
@@ -725,10 +742,20 @@ body {{
   padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
   max-width: 640px; margin-left: auto; margin-right: auto;
   -webkit-font-smoothing: antialiased;
+  position: relative;
 }}
+/* Тонкое зерно поверх фона — убирает "идеально гладкий цифровой градиент",
+   из-за которого плоские тёмные интерфейсы и читаются как сгенерированные.
+   Один statичный SVG-шум через data-URI, без JS и без перерисовки. */
+body::before {{
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  opacity: 0.045; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}}
+body > * {{ position: relative; z-index: 1; }}
 h1 {{
   font-family: var(--font-display); font-weight: 600; font-style: italic;
-  font-size: 1.55rem; margin: 0 0 var(--space-4); letter-spacing: -0.01em;
+  font-size: 1.6rem; margin: 0 0 var(--space-4); letter-spacing: -0.01em;
   color: var(--paper);
 }}
 button {{ font-family: inherit; -webkit-tap-highlight-color: transparent; transition: transform 0.1s ease; }}
@@ -747,7 +774,16 @@ button:focus-visible, input:focus-visible, a:focus-visible {{
   background: var(--card); color: var(--ink);
   border-radius: var(--radius); box-shadow: var(--shadow);
   border: 1px solid var(--card-edge);
+  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
   animation: fade-up 0.3s ease both;
+}}
+/* Браузеры без backdrop-filter (редкость, но есть) получают сплошную тёмную
+   панель вместо почти прозрачного фона — иначе текст на --ink (светлый)
+   лёг бы прямо на фоновые пятна без разделения. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {{
+  .task, .event, .chart-block, .tg-widget-banner, .new-task-form, .day-picker, #login-form {{
+    background: #1c1812;
+  }}
 }}
 {stagger_rules}
 """
@@ -770,12 +806,13 @@ LOGIN_PAGE = """<!DOCTYPE html>
 <title>{login_title}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>""" + SHARED_CSS + """
 body {{ display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
 form {{
   background: var(--card); color: var(--ink); padding: 2rem 1.75rem;
   border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--card-edge);
+  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
   width: 290px; animation: fade-up 0.3s ease both;
 }}
 input[type=password] {{
@@ -786,14 +823,14 @@ input[type=password] {{
 input[type=password]:focus {{ outline: none; border-bottom-color: var(--stamp); }}
 button[type=submit] {{
   width: 100%; padding: 11px; border-radius: var(--radius-sm); border: none;
-  background: var(--stamp); color: var(--card); font-weight: 600; cursor: pointer; font-size: 0.95rem;
+  background: var(--stamp); color: var(--on-accent); font-weight: 600; cursor: pointer; font-size: 0.95rem;
 }}
 button[type=submit]:active {{ background: var(--stamp-deep); }}
 .error {{ color: var(--stamp); font-size: 0.85rem; margin-top: 10px; font-style: italic; font-family: var(--font-display); }}
 h2 {{ font-family: var(--font-display); font-style: italic; font-weight: 600; margin: 0 0 1.1rem; font-size: 1.35rem; color: var(--ink); }}
 </style></head>
 <body>
-<form method="post">
+<form method="post" id="login-form">
 <h2>{login_heading}</h2>
 <input type="password" name="password" placeholder="{password_placeholder}" autofocus>
 <button type="submit">{btn_login}</button>
@@ -830,11 +867,11 @@ TASKS_PAGE = """<!DOCTYPE html>
 <title>{page_title}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>""" + SHARED_CSS + """
 .task {{ padding: var(--space-4); margin-bottom: var(--space-3);
         display: flex; gap: var(--space-3); align-items: flex-start; }}
-.task.done {{ background: #ece3cd; }}
+.task.done {{ background: rgba(20, 168, 126, 0.1); border-color: rgba(20, 168, 126, 0.3); }}
 .task.done .meta {{ color: var(--ink-soft); opacity: 0.8; }}
 .task.overdue .meta {{ color: var(--stamp); }}
 .task form {{ margin: 0; line-height: 0; }}
@@ -851,7 +888,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 .task.done .check-btn {{ background: var(--ok); border-color: var(--ok); }}
 .task.done .check-btn::after {{
   content: ""; position: absolute; left: 8px; top: 4px; width: 6px; height: 11px;
-  border: solid var(--card); border-width: 0 2px 2px 0;
+  border: solid var(--on-accent); border-width: 0 2px 2px 0;
   transform: rotate(40deg) scale(0); transform-origin: bottom left;
   animation: check-draw 0.3s ease forwards 0.05s;
 }}
@@ -889,13 +926,13 @@ TASKS_PAGE = """<!DOCTYPE html>
 .desc-form {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }}
 .desc-form textarea {{
   width: 100%; padding: 8px; border: 1px solid var(--rule); border-radius: var(--radius-sm);
-  background: var(--paper); color: var(--ink); font-family: var(--font-body); font-size: 0.9rem;
+  background: rgba(0, 0, 0, 0.22); color: var(--ink); font-family: var(--font-body); font-size: 0.9rem;
   box-sizing: border-box; resize: vertical; min-height: 44px;
 }}
 .desc-form textarea:focus {{ outline: none; border-color: var(--stamp); }}
 .desc-form button {{
   align-self: flex-start; padding: 7px 14px; border-radius: var(--radius-sm); border: none;
-  background: var(--paper-soft); color: var(--ink); font-size: 0.82rem; font-weight: 600; cursor: pointer;
+  background: var(--card-edge); color: var(--ink); font-size: 0.82rem; font-weight: 600; cursor: pointer;
 }}
 .desc-form button:active {{ background: var(--card-edge); }}
 /* Подзадачи — тот же язык анимации, что и у главного чекбокса задачи
@@ -913,7 +950,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 .subtask-row.done .subtask-check {{ background: var(--ok); border-color: var(--ok); }}
 .subtask-row.done .subtask-check::after {{
   content: ""; position: absolute; left: 5px; top: 2px; width: 4px; height: 8px;
-  border: solid var(--card); border-width: 0 1.5px 1.5px 0;
+  border: solid var(--on-accent); border-width: 0 1.5px 1.5px 0;
   transform: rotate(40deg) scale(0); transform-origin: bottom left;
   animation: check-draw 0.3s ease forwards 0.05s;
 }}
@@ -941,7 +978,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 .subtask-add-form input[type=text]::placeholder {{ color: var(--ink-soft); }}
 .subtask-add-form button {{
   flex-shrink: 0; padding: 6px 12px; border-radius: var(--radius-sm); border: none;
-  background: var(--paper-soft); color: var(--ink); font-size: 0.8rem; font-weight: 600; cursor: pointer;
+  background: var(--card-edge); color: var(--ink); font-size: 0.8rem; font-weight: 600; cursor: pointer;
 }}
 .subtask-add-form button:active {{ background: var(--card-edge); }}
 .task-actions {{ display: flex; gap: 16px; margin-top: 10px; }}
@@ -956,7 +993,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 .task-author {{ display: flex; align-items: center; gap: 6px; margin-top: 8px;
                font-size: 0.8rem; color: var(--ink-soft); }}
 .avatar {{ width: 20px; height: 20px; border-radius: 50%; object-fit: cover;
-          background: var(--card-edge); border: 1.5px solid var(--card); outline: 1px solid var(--rule);
+          background: var(--card-edge); border: 1.5px solid var(--on-accent); outline: 1px solid var(--rule);
           flex-shrink: 0; }}
 .avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; }}
 .empty {{ color: var(--paper-soft); text-align: center; padding: 3rem 1rem; font-family: var(--font-display); font-style: italic; }}
@@ -991,7 +1028,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 .new-task-form input:focus {{ outline: none; border-bottom-color: var(--stamp); }}
 .new-task-form button {{
   padding: 10px 16px; border-radius: var(--radius-sm); border: none; background: var(--stamp);
-  color: var(--card); font-weight: 600; cursor: pointer; flex-shrink: 0;
+  color: var(--on-accent); font-weight: 600; cursor: pointer; flex-shrink: 0;
 }}
 .new-task-form button:active {{ background: var(--stamp-deep); }}
 .new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-style: italic; font-family: var(--font-display); }}
@@ -1028,7 +1065,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 .task-photo img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
 .task-photo form {{ position: absolute; top: 4px; right: 4px; line-height: 0; }}
 .photo-del-btn {{ width: 20px; height: 20px; border-radius: 50%; border: none; background: rgba(43, 35, 23, 0.65);
-    color: var(--card); font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }}
+    color: var(--on-accent); font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }}
 .photo-del-btn:active {{ background: var(--stamp-deep); }}
 /* Стрелки вынесены в собственные 30px-поля слева/справа (padding на .task-photos-wrap
    выше) — не наезжают на крайние фото и на крестики удаления. */
@@ -1066,24 +1103,25 @@ TASKS_PAGE = """<!DOCTYPE html>
    крафт-палитру страницы. Раскрытие до месяца — нативный <details>, стрелка
    поворачивается чистым CSS от [open], без единой строчки JS. */
 .day-picker {{ background: var(--card); border: 1px solid var(--card-edge); border-radius: var(--radius);
-    box-shadow: var(--shadow); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3); }}
+    box-shadow: var(--shadow); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }}
 .day-picker-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }}
 .day-picker-month {{ font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; color: var(--ink);
     text-transform: capitalize; }}
 .day-today-link {{ color: var(--ink-soft); text-decoration: none; font-size: 0.85rem; border: 1px solid var(--card-edge);
     border-radius: 999px; padding: 2px 9px; }}
-.day-today-link:active {{ background: var(--paper); }}
+.day-today-link:active {{ background: rgba(0, 0, 0, 0.22); }}
 
 .day-picker-summary {{ list-style: none; cursor: pointer; display: block; }}
 .day-picker-summary::-webkit-details-marker {{ display: none; }}
-.date-nav-container {{ background: var(--paper); border-radius: var(--radius-sm); padding: 10px 6px;
+.date-nav-container {{ background: rgba(0, 0, 0, 0.2); border-radius: var(--radius-sm); padding: 10px 6px;
     display: flex; justify-content: space-between; gap: 2px; }}
 .day-item {{ display: flex; flex-direction: column; align-items: center; text-decoration: none;
     color: var(--ink); flex: 1; position: relative; padding-bottom: 6px; border-radius: var(--radius-sm); }}
 .day-number {{ font-size: 1.05rem; font-weight: 600; width: 34px; height: 26px; display: flex;
     align-items: center; justify-content: center; border-radius: 13px; }}
 .day-name {{ font-size: 0.65rem; color: var(--ink-soft); margin-top: 2px; }}
-.day-item.day-active .day-number {{ background: var(--stamp); color: var(--card); }}
+.day-item.day-active .day-number {{ background: var(--stamp); color: var(--on-accent); }}
 .day-item.day-today:not(.day-active) .day-number {{ border: 1px solid var(--stamp); }}
 .day-dot {{ width: 4px; height: 4px; border-radius: 50%; background: var(--stamp); margin-top: 3px; }}
 .day-item.day-active .day-dot {{ background: transparent; }} /* подсветка и так есть — точка лишняя */
@@ -1137,7 +1175,7 @@ HISTORY_PAGE = """<!DOCTYPE html>
 <title>{history_page_title}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>""" + SHARED_CSS + """
 .event {{ padding: 0.85rem 1rem; margin-bottom: 0.6rem; display: flex; gap: 0.65rem; align-items: center; }}
 .event-body {{ flex: 1; min-width: 0; }}
@@ -1145,7 +1183,7 @@ HISTORY_PAGE = """<!DOCTYPE html>
 .event-line .ev-title {{ font-weight: 600; font-family: var(--font-display); }}
 .event-time {{ color: var(--ink-soft); font-size: 0.78rem; margin-top: 2px; }}
 .avatar {{ width: 28px; height: 28px; border-radius: 50%; object-fit: cover;
-          background: var(--card-edge); border: 1.5px solid var(--card); outline: 1px solid var(--rule); flex-shrink: 0; }}
+          background: var(--card-edge); border: 1.5px solid var(--on-accent); outline: 1px solid var(--rule); flex-shrink: 0; }}
 .avatar-placeholder {{ display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem; }}
 .empty {{ color: var(--paper-soft); text-align: center; padding: 3rem 1rem; font-family: var(--font-display); font-style: italic; }}
 .load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px dashed var(--rule-dark);
@@ -1252,7 +1290,7 @@ TEMPLATES_PAGE = """<!DOCTYPE html>
 <title>{templates_page_title}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>""" + SHARED_CSS + """
 .task {{ padding: var(--space-4); margin-bottom: var(--space-3);
         display: flex; gap: var(--space-3); align-items: flex-start; }}
@@ -1280,7 +1318,7 @@ TEMPLATES_PAGE = """<!DOCTYPE html>
 .new-task-form input:focus {{ outline: none; border-bottom-color: var(--stamp); }}
 .new-task-form button {{
   padding: 10px 16px; border-radius: var(--radius-sm); border: none; background: var(--stamp);
-  color: var(--card); font-weight: 600; cursor: pointer; flex-shrink: 0;
+  color: var(--on-accent); font-weight: 600; cursor: pointer; flex-shrink: 0;
 }}
 .new-task-form button:active {{ background: var(--stamp-deep); }}
 .new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-style: italic; font-family: var(--font-display); }}
