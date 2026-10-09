@@ -125,6 +125,275 @@ ORDINAL_WORD = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th"}
 WEEKDAY_NAMES_RU = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 
 
+# ---------- шаблоны задач ----------
+# Встроенные шаблоны — hardcode с переводом по языку (НЕ хранятся в БД, в
+# отличие от пользовательских — см. db.task_templates): один шаблон = одна
+# задача (title + время дня + смещение в днях от момента применения +
+# repeat/remind/tag). day_offset: 0 = сегодня, 1 = завтра. Если время дня уже
+# прошло для day_offset=0, apply_template сам сдвигает на следующий день —
+# так "Полить цветы 19:00" не создаёт задачу в прошлом, если применили в 20:00.
+BUILTIN_TEMPLATES = [
+    {
+        "key": "wake_up",
+        "title": {"ru": "Подъём", "en": "Wake up", "pl": "Pobudka"},
+        "time_of_day": "07:00", "day_offset": 0, "repeat": "daily", "remind": "0",
+        "tag": {"ru": "рутина", "en": "routine", "pl": "rutyna"},
+    },
+    {
+        "key": "workout",
+        "title": {"ru": "Тренировка", "en": "Workout", "pl": "Trening"},
+        "time_of_day": "19:00", "day_offset": 0, "repeat": "weekdays", "remind": "1h",
+        "tag": {"ru": "спорт", "en": "fitness", "pl": "sport"},
+    },
+    {
+        "key": "study_session",
+        "title": {"ru": "Сессия учёбы", "en": "Study session", "pl": "Sesja nauki"},
+        "time_of_day": "10:00", "day_offset": 0, "repeat": "none", "remind": "1h",
+        "tag": {"ru": "учёба", "en": "study", "pl": "nauka"},
+    },
+    {
+        "key": "homework_deadline",
+        "title": {"ru": "Сдать домашнее задание", "en": "Submit homework", "pl": "Oddać pracę domową"},
+        "time_of_day": "23:00", "day_offset": 1, "repeat": "none", "remind": "1d",
+        "tag": {"ru": "учёба", "en": "study", "pl": "nauka"},
+    },
+    {
+        "key": "exam_prep",
+        "title": {"ru": "Начать подготовку к экзамену", "en": "Start exam prep", "pl": "Zacząć naukę do egzaminu"},
+        "time_of_day": "09:00", "day_offset": 0, "repeat": "none", "remind": "3d",
+        "tag": {"ru": "учёба", "en": "study", "pl": "nauka"},
+    },
+    {
+        "key": "weekly_cleaning",
+        "title": {"ru": "Уборка по дому", "en": "House cleaning", "pl": "Sprzątanie domu"},
+        "time_of_day": "11:00", "day_offset": 0, "repeat": "weekly", "remind": "0",
+        "tag": {"ru": "дом", "en": "home", "pl": "dom"},
+    },
+    {
+        "key": "groceries",
+        "title": {"ru": "Купить продукты", "en": "Buy groceries", "pl": "Zrobić zakupy spożywcze"},
+        "time_of_day": "18:00", "day_offset": 0, "repeat": "weekly", "remind": "0",
+        "tag": {"ru": "дом", "en": "home", "pl": "dom"},
+    },
+    {
+        "key": "pay_bills",
+        "title": {"ru": "Оплатить счета", "en": "Pay bills", "pl": "Opłacić rachunki"},
+        "time_of_day": "10:00", "day_offset": 0, "repeat": "monthly", "remind": "1d",
+        "tag": {"ru": "финансы", "en": "finance", "pl": "finanse"},
+    },
+    {
+        "key": "water_plants",
+        "title": {"ru": "Полить цветы", "en": "Water the plants", "pl": "Podlać kwiaty"},
+        "time_of_day": "19:00", "day_offset": 0, "repeat": "weekly", "remind": "0",
+        "tag": {"ru": "дом", "en": "home", "pl": "dom"},
+    },
+    {
+        "key": "family_call",
+        "title": {"ru": "Позвонить семье", "en": "Call family", "pl": "Zadzwonić do rodziny"},
+        "time_of_day": "20:00", "day_offset": 0, "repeat": "weekly", "remind": "0",
+        "tag": {"ru": "семья", "en": "family", "pl": "rodzina"},
+    },
+]
+
+
+def builtin_templates_for_lang(lang: str) -> list[dict]:
+    """Разворачивает BUILTIN_TEMPLATES под конкретный язык — title/tag
+    подставляются по lang (с фолбэком на ru, если вдруг для языка не
+    заведён перевод конкретного шаблона), остальные поля общие."""
+    out = []
+    for tpl in BUILTIN_TEMPLATES:
+        out.append({
+            "key": tpl["key"],
+            "title": tpl["title"].get(lang, tpl["title"]["ru"]),
+            "time_of_day": tpl["time_of_day"],
+            "day_offset": tpl["day_offset"],
+            "repeat": tpl["repeat"],
+            "remind": tpl["remind"],
+            "tag": tpl["tag"].get(lang, tpl["tag"]["ru"]) if tpl.get("tag") else None,
+        })
+    return out
+
+
+def _resolve_template_due_at(time_of_day: str, day_offset: int, tz: ZoneInfo) -> datetime:
+    """Превращает 'HH:MM' + смещение в днях в конкретный due_at (UTC-aware
+    datetime), относительно МОМЕНТА ПРИМЕНЕНИЯ шаблона, не момента его
+    создания — тот же шаблон, применённый сегодня и через неделю, должен
+    каждый раз дать актуальную дату. Если day_offset=0 и время уже прошло
+    сегодня, сдвигаем на завтра — иначе кнопка "применить" создавала бы
+    задачу в прошлом, которая либо тут же считалась просроченной, либо (для
+    repeat='none') вообще не имела смысла."""
+    hour, minute = (int(p) for p in time_of_day.split(":"))
+    now_local = datetime.now(tz)
+    candidate_date = now_local.date() + timedelta(days=day_offset)
+    candidate = datetime.combine(candidate_date, dtime(hour, minute), tzinfo=tz)
+    if day_offset == 0 and candidate <= now_local:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(ZoneInfo("UTC"))
+
+
+async def apply_template(
+    tpl: dict, owner_id: int, owner_type: str, tz: ZoneInfo, actor_id: int | None = None,
+) -> int:
+    """Единая точка применения ЛЮБОГО шаблона (built-in или пользовательского —
+    оба приводятся к одной форме словаря с title/time_of_day/day_offset/
+    repeat/remind/tag до вызова) — создаёт реальную задачу и планирует её
+    так же, как обычное /add. Возвращает task_id."""
+    due_at = _resolve_template_due_at(tpl["time_of_day"], tpl["day_offset"], tz)
+    task_id = await db.add_task(
+        owner_id=owner_id, owner_type=owner_type, title=tpl["title"], due_at=due_at,
+        repeat=tpl["repeat"], remind=tpl["remind"], tag=tpl.get("tag"),
+        remind_until_done=tpl.get("remind_until_done", False), created_by=actor_id,
+    )
+    await db.log_history(task_id, actor_id, tpl["title"], "created")
+    schedule_task(task_id, owner_id, owner_type, due_at, tpl["repeat"], tpl["remind"], tz,
+                  remind_until_done=tpl.get("remind_until_done", False))
+    return task_id
+
+
+class SaveTemplate(StatesGroup):
+    title = State()
+    time_of_day = State()
+    day_offset = State()
+
+
+def templates_kb(lang: str, custom_templates: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for tpl in builtin_templates_for_lang(lang):
+        rows.append([InlineKeyboardButton(text=tpl["title"], callback_data=f"tplapply_builtin_{tpl['key']}")])
+    for tpl in custom_templates:
+        rows.append([
+            InlineKeyboardButton(text=tpl["title"], callback_data=f"tplapply_custom_{tpl['id']}"),
+            InlineKeyboardButton(text=t(lang, "btn_delete_template"), callback_data=f"tpldel_{tpl['id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn_my_templates"), callback_data="tplnew")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(Command("templates"))
+async def templates_cmd(message: Message):
+    owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    custom = await db.get_templates(owner_id, owner_type)
+    text = f"{t(lang, 'templates_title')}\n\n{t(lang, 'templates_hint')}"
+    await message.answer(text, reply_markup=templates_kb(lang, custom))
+
+
+@dp.callback_query(F.data.startswith("tplapply_builtin_"))
+async def template_apply_builtin(call: CallbackQuery):
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    tz = await owner_tz(owner_id, owner_type)
+    key = call.data[len("tplapply_builtin_"):]
+    tpl = next((t_ for t_ in builtin_templates_for_lang(lang) if t_["key"] == key), None)
+    if tpl is None:
+        await call.answer()
+        return
+    await apply_template(tpl, owner_id, owner_type, tz, actor_id=call.from_user.id)
+    local_str = _resolve_template_due_at(tpl["time_of_day"], tpl["day_offset"], tz).astimezone(tz).strftime("%d.%m.%Y %H:%M")
+    await call.message.answer(t(lang, "template_applied", title=tpl["title"], date=local_str))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("tplapply_custom_"))
+async def template_apply_custom(call: CallbackQuery):
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    tz = await owner_tz(owner_id, owner_type)
+    template_id = int(call.data[len("tplapply_custom_"):])
+    tpl_row = await db.get_template(template_id)
+    # Проверка владения — тот же принцип, что и у задач: шаблон должен
+    # принадлежать именно этому owner (личка или эта группа), иначе кто-то
+    # угадавший/подобравший id мог бы применить чужой приватный шаблон.
+    if tpl_row is None or tpl_row["owner_id"] != owner_id or tpl_row["owner_type"] != owner_type:
+        await call.answer()
+        return
+    await apply_template(tpl_row, owner_id, owner_type, tz, actor_id=call.from_user.id)
+    local_str = _resolve_template_due_at(tpl_row["time_of_day"], tpl_row["day_offset"], tz).astimezone(tz).strftime("%d.%m.%Y %H:%M")
+    await call.message.answer(t(lang, "template_applied", title=tpl_row["title"], date=local_str))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("tpldel_"))
+async def template_delete(call: CallbackQuery):
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    template_id = int(call.data[len("tpldel_"):])
+    await db.delete_template(template_id, owner_id, owner_type)
+    custom = await db.get_templates(owner_id, owner_type)
+    text = f"{t(lang, 'templates_title')}\n\n{t(lang, 'templates_hint')}"
+    try:
+        await call.message.edit_text(text, reply_markup=templates_kb(lang, custom))
+    except TelegramBadRequest:
+        pass
+    await call.answer(t(lang, "template_deleted"))
+
+
+@dp.callback_query(F.data == "tplnew")
+async def template_new_start(call: CallbackQuery, state: FSMContext):
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    count = await db.count_templates(owner_id, owner_type)
+    if count >= db.MAX_TEMPLATES_PER_OWNER:
+        await call.answer(t(lang, "template_limit_reached", n=db.MAX_TEMPLATES_PER_OWNER), show_alert=True)
+        return
+    await state.set_state(SaveTemplate.title)
+    await state.update_data(owner_id=owner_id, owner_type=owner_type)
+    await call.message.answer(t(lang, "template_save_prompt"))
+    await call.answer()
+
+
+@dp.message(SaveTemplate.title)
+async def template_new_title(message: Message, state: FSMContext):
+    data = await state.get_data()
+    lang = await owner_lang(data["owner_id"], data["owner_type"])
+    title = (message.text or "").strip()
+    if not title or title.startswith("/"):
+        await message.answer(t(lang, "cancelled"))
+        await state.clear()
+        return
+    await state.update_data(title=title[:200])
+    await state.set_state(SaveTemplate.time_of_day)
+    await message.answer(t(lang, "template_save_time_prompt"))
+
+
+@dp.message(SaveTemplate.time_of_day)
+async def template_new_time(message: Message, state: FSMContext):
+    data = await state.get_data()
+    lang = await owner_lang(data["owner_id"], data["owner_type"])
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        await message.answer(t(lang, "cancelled"))
+        await state.clear()
+        return
+    parsed = _parse_hh_mm(text)
+    if parsed is None:
+        await message.answer(t(lang, "morning_time_invalid"))  # тот же формат ЧЧ:ММ, тот же текст подсказки
+        return
+    hour, minute = parsed
+    await state.update_data(time_of_day=f"{hour:02d}:{minute:02d}")
+    await state.set_state(SaveTemplate.day_offset)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t(lang, "btn_offset_today"), callback_data="tploffset_0"),
+        InlineKeyboardButton(text=t(lang, "btn_offset_tomorrow"), callback_data="tploffset_1"),
+    ]])
+    await message.answer(t(lang, "template_save_offset_prompt"), reply_markup=kb)
+
+
+@dp.callback_query(SaveTemplate.day_offset, F.data.startswith("tploffset_"))
+async def template_new_offset(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    owner_id, owner_type = data["owner_id"], data["owner_type"]
+    lang = await owner_lang(owner_id, owner_type)
+    day_offset = int(call.data[len("tploffset_"):])
+    await db.add_template(
+        owner_id=owner_id, owner_type=owner_type, title=data["title"],
+        time_of_day=data["time_of_day"], day_offset=day_offset, created_by=call.from_user.id,
+    )
+    await state.clear()
+    await call.message.edit_text(t(lang, "template_saved", title=data["title"]))
+    await call.answer()
+
+
 class AddTask(StatesGroup):
     title = State()
     date = State()
@@ -617,6 +886,9 @@ async def _apply_timezone(owner_id: int, owner_type: str, tz_name: str, target_m
     # только /timezone в личном чате с ботом переставляет её на новый пояс.
     if owner_type == "user":
         schedule_daily_summary(owner_id, new_tz)
+        morning = await db.get_morning_summary_settings(owner_id)
+        if morning and morning["morning_summary_enabled"]:
+            schedule_morning_summary(owner_id, new_tz, morning["morning_summary_hour"], morning["morning_summary_minute"])
     # cron-джобы повторяющихся задач привязаны к поясу на момент создания — без
     # перепланирования после /timezone они продолжали бы срабатывать по старому времени.
     for task in await db.get_tasks(owner_id, owner_type):
@@ -661,6 +933,57 @@ async def _apply_quiet(owner_id: int, owner_type: str, quiet: tuple[dtime, dtime
     invalidate_settings(owner_id, owner_type)
     start, end = _fmt_quiet(quiet)
     await target_message.answer(t(lang, "quiet_set", start=start, end=end))
+
+
+def _parse_hh_mm(text: str) -> tuple[int, int] | None:
+    """Разбор 'ЧЧ:ММ' в (hour, minute) или None при невалидном вводе."""
+    text = text.strip()
+    if ":" not in text:
+        return None
+    h_str, _, m_str = text.partition(":")
+    if not (h_str.isdigit() and m_str.isdigit()):
+        return None
+    hour, minute = int(h_str), int(m_str)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour, minute
+
+
+@dp.message(Command("morning"))
+async def cmd_morning(message: Message):
+    """Утренняя сводка — ВСЕГДА личная настройка человека (user_id), даже если
+    команда вызвана в групповом чате: в отличие от большинства команд бота
+    здесь нет resolve_owner(chat, ...) — сводка одна на пользователя и не
+    привязана к тому, откуда её включили (см. send_morning_summary в
+    bot.py, которая и так объединяет личку + все группы в одно сообщение)."""
+    user_id = message.from_user.id
+    lang = await owner_lang(user_id, "user")
+    arg = message.text.split(maxsplit=1)[1].strip() if len(message.text.split(maxsplit=1)) > 1 else ""
+
+    if not arg:
+        settings = await db.get_morning_summary_settings(user_id)
+        if settings and settings["morning_summary_enabled"]:
+            time_str = f"{settings['morning_summary_hour']:02d}:{settings['morning_summary_minute']:02d}"
+            await message.answer(t(lang, "morning_status_on", time=time_str))
+        else:
+            await message.answer(t(lang, "morning_status_off"))
+        return
+
+    if arg.lower() in {"off", "выкл", "выключить", "wyłącz", "wylacz"}:
+        await db.set_morning_summary(user_id, enabled=False)
+        unschedule_morning_summary(user_id)
+        await message.answer(t(lang, "morning_off"))
+        return
+
+    parsed = _parse_hh_mm(arg)
+    if parsed is None:
+        await message.answer(t(lang, "morning_time_invalid"))
+        return
+    hour, minute = parsed
+    await db.set_morning_summary(user_id, enabled=True, hour=hour, minute=minute)
+    tz = await owner_tz(user_id, "user")
+    schedule_morning_summary(user_id, tz, hour, minute)
+    await message.answer(t(lang, "morning_on", time=f"{hour:02d}:{minute:02d}"))
 
 
 @dp.message(Command("quiet"))
@@ -879,8 +1202,49 @@ async def _finalize_add_task(state: FSMContext, tag: str | None, target_message:
         schedule_daily_summary(actor_id, actor_tz)
 
     local_str = to_local(due_at, tz).strftime("%d.%m.%Y %H:%M")
-    await target_message.answer(t(lang, "task_added", title=data["title"], date=local_str))
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t(lang, "btn_save_as_template"), callback_data=f"tplfromtask_{task_id}"),
+    ]])
+    await target_message.answer(t(lang, "task_added", title=data["title"], date=local_str), reply_markup=kb)
     await state.clear()
+
+
+@dp.callback_query(F.data.startswith("tplfromtask_"))
+async def template_from_task(call: CallbackQuery):
+    """Быстрое сохранение только что созданной задачи как шаблона — без
+    повторного ввода title/time/offset вручную через /templates. time_of_day
+    и day_offset считаем от due_at задачи ОТНОСИТЕЛЬНО МОМЕНТА НАЖАТИЯ кнопки
+    (а не момента создания задачи) — так шаблон честно описывает "через
+    сколько дней от сегодня", если человек нажал кнопку не сразу."""
+    owner_id, owner_type = await resolve_owner(call.message.chat, call.from_user.id)
+    lang = await owner_lang(owner_id, owner_type)
+    task_id = int(call.data[len("tplfromtask_"):])
+    task = await db.get_task(task_id)
+    # Та же проверка владения, что и у tplapply_custom/tpldel — угаданный
+    # чужой task_id не должен давать сохранить его как свой шаблон.
+    if task is None or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
+        await call.answer()
+        return
+    count = await db.count_templates(owner_id, owner_type)
+    if count >= db.MAX_TEMPLATES_PER_OWNER:
+        await call.answer(t(lang, "template_limit_reached", n=db.MAX_TEMPLATES_PER_OWNER), show_alert=True)
+        return
+    tz = await owner_tz(owner_id, owner_type)
+    due_local = to_local(task["due_at"], tz)
+    day_offset = max(0, (due_local.date() - datetime.now(tz).date()).days)
+    time_of_day = due_local.strftime("%H:%M")
+    await db.add_template(
+        owner_id=owner_id, owner_type=owner_type, title=task["title"],
+        time_of_day=time_of_day, day_offset=day_offset,
+        repeat=task["repeat"], remind=task["remind"], tag=task["tag"],
+        remind_until_done=task["remind_until_done"], created_by=call.from_user.id,
+    )
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    await call.message.answer(t(lang, "template_saved_from_task", title=task["title"]))
+    await call.answer()
 
 
 # ---------- список задач ----------
@@ -1323,6 +1687,14 @@ async def _render_history_text(user_id: int, owner_id: int, owner_type: str, lan
     rows = await db.get_history_stats(user_id, days, tz.key)
     tot = totals(rows)
     lines = [t(lang, "stats_title", days=days), "", t(lang, "stats_totals", **tot)]
+
+    try:
+        rate = await db.get_completion_rate(owner_id, owner_type, days, tz.key)
+        if rate["total"] > 0:
+            lines.append(t(lang, "stats_completion_rate", **rate))
+    except Exception:
+        logger.exception("Не удалось посчитать %% выполнения owner=%s/%s", owner_type, owner_id)
+
     if days <= 7:
         weekdays = t(lang, "weekdays_short").split(",")
         lines.append("")
@@ -2143,6 +2515,105 @@ def schedule_daily_summary(user_id: int, tz: ZoneInfo):
     )
 
 
+# ---------- утренняя сводка ----------
+DEFAULT_MORNING_HOUR = 8
+DEFAULT_MORNING_MINUTE = 0
+
+
+async def _morning_section_tasks(owner_id: int, owner_type: str, tz: ZoneInfo, lang: str) -> str:
+    """Список задач на СЕГОДНЯ (по локальной дате owner'а) одной готовой
+    HTML-строкой (уже с переводом строки на каждой), отсортированных по
+    времени. Используется и для личного контекста, и для каждой группы."""
+    try:
+        tasks = await db.get_tasks(owner_id, owner_type, include_done=False)
+    except Exception:
+        logger.exception("Не удалось получить задачи для morning_summary owner=%s/%s", owner_type, owner_id)
+        return t(lang, "morning_summary_empty_section")
+
+    today = datetime.now(tz).date()
+    today_tasks = [task for task in tasks if to_local(task["due_at"], tz).date() == today]
+    today_tasks.sort(key=lambda task: task["due_at"])
+
+    if not today_tasks:
+        return t(lang, "morning_summary_empty_section")
+
+    lines = []
+    for task in today_tasks:
+        local_time = to_local(task["due_at"], tz).strftime("%H:%M")
+        lines.append(t(lang, "morning_summary_task_line", time=local_time, title=html.escape(task["title"])))
+    return "".join(lines)
+
+
+async def send_morning_summary(user_id: int):
+    """Утренняя сводка — список задач на сегодня (не статистика, в отличие от
+    вечерней), той же объединённой структурой: личные задачи + секция на
+    каждую группу, где состоит пользователь. Независимая от вечерней джоба —
+    своё время, своя настройка morning_summary_enabled в user_settings."""
+    lang = await owner_lang(user_id, "user")
+    tz = await owner_tz(user_id, "user")
+
+    sections = []
+    personal_tasks = await _morning_section_tasks(user_id, "user", tz, lang)
+    sections.append(t(lang, "morning_summary_section_personal", tasks_list=personal_tasks))
+
+    try:
+        chat_ids = await db.get_chats_for_user(user_id)
+    except Exception:
+        logger.exception("Не удалось получить список групп user_id=%s для morning_summary", user_id)
+        chat_ids = []
+
+    any_chat_tasks = False
+    for chat_id in chat_ids:
+        chat_tasks = await _morning_section_tasks(chat_id, "chat", tz, lang)
+        if chat_tasks != t(lang, "morning_summary_empty_section"):
+            any_chat_tasks = True
+        try:
+            chat = await bot.get_chat(chat_id)
+            chat_title = chat.title or t(lang, "daily_summary_chat_fallback")
+        except Exception:
+            logger.info("Не удалось получить title чата %s для morning_summary user_id=%s", chat_id, user_id)
+            chat_title = t(lang, "daily_summary_chat_fallback")
+        sections.append(t(lang, "morning_summary_section_chat", chat_title=html.escape(chat_title), tasks_list=chat_tasks))
+
+    # Если вообще нигде ничего нет на сегодня — одно короткое сообщение вместо
+    # пустых секций подряд (меньше шума в 8 утра, когда и так всё свободно).
+    personal_empty = personal_tasks == t(lang, "morning_summary_empty_section")
+    if personal_empty and not any_chat_tasks:
+        text = t(lang, "morning_summary_nothing")
+    else:
+        text = t(lang, "morning_summary_header") + "".join(sections)
+
+    # Тихий час может легитимно перекрывать утреннее время (например, тихий
+    # час "22:00-09:00", а сводка настроена на 8:00) — та же логика, что и у
+    # вечерней: не откладываем (сводка полезна именно утром), но шлём беззвучно.
+    try:
+        silent = await _quiet_end_utc(user_id, "user") is not None
+    except Exception:
+        logger.exception("Не удалось вычислить тихий час user_id=%s для утренней сводки, шлю не беззвучно", user_id)
+        silent = False
+
+    try:
+        await bot.send_message(user_id, text, parse_mode="HTML", disable_notification=silent)
+    except TelegramForbiddenError:
+        logger.info("Юзер %s заблокировал бота, пропускаю morning_summary", user_id)
+    except Exception:
+        logger.exception("Не удалось отправить morning_summary user_id=%s", user_id)
+
+
+def schedule_morning_summary(user_id: int, tz: ZoneInfo, hour: int, minute: int):
+    scheduler.add_job(
+        send_morning_summary, CronTrigger(hour=hour, minute=minute, timezone=tz),
+        args=[user_id], id=f"morningsummary_{user_id}", replace_existing=True
+    )
+
+
+def unschedule_morning_summary(user_id: int):
+    try:
+        scheduler.remove_job(f"morningsummary_{user_id}")
+    except JobLookupError:
+        pass  # джобы и не было (ещё не включали) — не ошибка
+
+
 async def restore_jobs():
     """Восстанавливает джобы при старте процесса (после редеплоя/рестарта).
     Если дедлайн уже прошёл сегодня, а бот был офлайн — досылает уведомление сразу
@@ -2187,6 +2658,16 @@ async def restore_jobs():
             tz = DEFAULT_TZ
         schedule_daily_summary(user_id, tz)
 
+    # Утренняя сводка — отдельный, более узкий список: только те, кто явно
+    # включил её через /morning (morning_summary_enabled = TRUE), а не все
+    # известные пользователи, в отличие от вечерней.
+    for row in await db.get_morning_summary_recipients():
+        try:
+            tz = await owner_tz(row["user_id"], "user")
+        except Exception:
+            tz = DEFAULT_TZ
+        schedule_morning_summary(row["user_id"], tz, row["morning_summary_hour"], row["morning_summary_minute"])
+
 
 # ---------- меню команд Telegram (кнопка "/") ----------
 # Telegram сам выбирает нужный набор по language_code КЛИЕНТА пользователя
@@ -2204,13 +2685,15 @@ _COMMAND_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "export": {"ru": "Выгрузить задачи в CSV", "en": "Export tasks to CSV", "pl": "Eksportuj zadania do CSV"},
     "timezone": {"ru": "Сменить часовой пояс", "en": "Change timezone", "pl": "Zmień strefę czasową"},
     "quiet": {"ru": "Тихий час (без уведомлений)", "en": "Quiet hours (no notifications)", "pl": "Cisza nocna (bez powiadomień)"},
+    "morning": {"ru": "Утренняя сводка задач на день", "en": "Morning summary of today's tasks", "pl": "Poranne podsumowanie zadań na dziś"},
+    "templates": {"ru": "Шаблоны задач", "en": "Task templates", "pl": "Szablony zadań"},
     "lang": {"ru": "Сменить язык бота", "en": "Change bot language", "pl": "Zmień język bota"},
     "dashboard": {"ru": "Веб-страница со списком задач", "en": "Web page with your tasks", "pl": "Strona z listą zadań"},
     "cancel": {"ru": "Отменить текущее действие", "en": "Cancel current action", "pl": "Anuluj bieżącą czynność"},
     "help": {"ru": "Все команды и что они делают", "en": "All commands explained", "pl": "Wszystkie komendy — opis"},
 }
 # Порядок в меню — как в /help, а не алфавитный (Telegram сохраняет порядок списка)
-_COMMAND_ORDER = ["add", "list", "find", "tags", "history", "export", "timezone", "quiet", "lang", "dashboard", "cancel", "help"]
+_COMMAND_ORDER = ["add", "templates", "list", "find", "tags", "history", "export", "timezone", "quiet", "morning", "lang", "dashboard", "cancel", "help"]
 
 
 async def setup_bot_commands():

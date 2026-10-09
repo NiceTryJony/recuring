@@ -13,6 +13,7 @@ TEXTS = {
                          "/help — все команды",
         "help_full": "📖 Все команды:\n\n"
                      "/add — добавить новую задачу (название, дата, повтор, напоминание)\n"
+                     "/templates — шаблоны задач: готовые наборы и свои, создание в один клик\n"
                      "/list — список твоих задач с фильтром и сортировкой\n"
                      "/find — найти задачу по части названия\n"
                      "/tags — показать задачи, сгруппированные по тегу\n"
@@ -20,6 +21,7 @@ TEXTS = {
                      "/export — выгрузить все задачи в CSV-файл\n"
                      "/timezone — сменить часовой пояс\n"
                      "/quiet — тихий час: в это время уведомления не приходят\n"
+                     "/morning — утренняя сводка: список задач на день (своё время, отдельно от вечерней сводки)\n"
                      "/lang — сменить язык бота\n"
                      "/dashboard — получить ссылку на веб-страницу со списком задач\n"
                      "/cancel — отменить текущее действие (например, добавление задачи)\n"
@@ -87,6 +89,39 @@ TEXTS = {
                           "{overdue_line}{stuck_line}",
         "daily_summary_combined_footer": "{streak_line}\n<i>Бот работает нормально.</i>",
         "daily_summary_chat_fallback": "Группа",
+        # Утренняя сводка — список задач на сегодня (не статистика, в отличие
+        # от вечерней). Та же объединённая структура: личные + секция на группу.
+        "morning_summary_header": "☀️ Доброе утро! Вот что на сегодня:\n",
+        "morning_summary_section_personal": "\n<b>Личные задачи</b>\n{tasks_list}",
+        "morning_summary_section_chat": "\n<b>{chat_title}</b>\n{tasks_list}",
+        "morning_summary_task_line": "• {time} — {title}\n",
+        "morning_summary_empty_section": "Задач на сегодня нет 🎉\n",
+        "morning_summary_nothing": "☀️ Доброе утро! На сегодня задач нигде нет — можно выдохнуть 🎉",
+        "morning_on": "☀️ Утренняя сводка включена, буду присылать список задач на день в {time}.",
+        "morning_off": "Утренняя сводка выключена.",
+        "morning_status_on": "☀️ Утренняя сводка: включена, в {time}\nЧтобы изменить время: /morning ЧЧ:ММ\nЧтобы выключить: /morning off",
+        "morning_status_off": "☀️ Утренняя сводка выключена.\nЧтобы включить: /morning ЧЧ:ММ (например /morning 08:00)",
+        "morning_time_invalid": "Не понял время. Формат: /morning ЧЧ:ММ, например /morning 08:30",
+        # ---------- шаблоны задач ----------
+        "templates_title": "📋 Шаблоны задач",
+        "templates_builtin_header": "Готовые наборы:",
+        "templates_custom_header": "Твои шаблоны:",
+        "templates_no_custom": "У тебя пока нет своих шаблонов.",
+        "templates_hint": "Нажми на шаблон, чтобы сразу создать задачу.\nЧтобы сохранить новый свой шаблон — используй /add, а на последнем шаге нажми «Сохранить как шаблон».",
+        "btn_my_templates": "➕ Создать свой шаблон",
+        "template_applied": "✅ Создано из шаблона: «{title}»\n📅 {date}",
+        "template_save_prompt": "Название шаблона? (или /cancel)",
+        "template_save_time_prompt": "Время дня для этого шаблона, в формате ЧЧ:ММ (например 08:00):",
+        "template_save_offset_prompt": "Когда создавать задачу — сегодня или завтра?",
+        "btn_offset_today": "Сегодня",
+        "btn_offset_tomorrow": "Завтра",
+        "template_saved": "✅ Шаблон «{title}» сохранён.",
+        "template_limit_reached": "Достигнут лимит шаблонов ({n}). Удали старый через /templates, чтобы добавить новый.",
+        "btn_save_as_template": "💾 Сохранить как шаблон",
+        "template_saved_from_task": "✅ Шаблон «{title}» сохранён — теперь доступен в /templates.",
+        "btn_delete_template": "🗑",
+        "template_deleted": "Шаблон удалён.",
+        "confirm_delete_template": "Удалить этот шаблон?",
         "btn_done": "Готово",
         "btn_task_done": "✅ Выполнено",
         "btn_task_undone": "↩️ Отменить выполнение",
@@ -133,6 +168,7 @@ TEXTS = {
         "history_mode_unknown": "Эта кнопка устарела, обновите список командой /history",
         "stats_title": "📊 Статистика за {days} дн.",
         "stats_totals": "➕ Создано: {created}\n✅ Выполнено: {done}\n🗑 Удалено: {deleted}",
+        "stats_completion_rate": "\n📈 Выполнено {percent}% задач со сроком в этот период ({done} из {total})",
         "streak_line": "🔥 Серия: {n} дн.\n",
         "weekdays_short": "Пн,Вт,Ср,Чт,Пт,Сб,Вс",
         "throttled": "Полегче 🙂 Подожди секунду между командами.",
@@ -149,6 +185,7 @@ TEXTS = {
                          "/help — all commands",
         "help_full": "📖 All commands:\n\n"
                      "/add — add a new task (title, date, repeat, reminder)\n"
+                     "/templates — task templates: ready-made sets and your own, create in one tap\n"
                      "/list — list your tasks with filter and sorting\n"
                      "/find — search for a task by part of its title\n"
                      "/tags — show tasks grouped by tag\n"
@@ -156,6 +193,7 @@ TEXTS = {
                      "/export — export all tasks as a CSV file\n"
                      "/timezone — change your timezone\n"
                      "/quiet — quiet hours: no notifications during this time\n"
+                     "/morning — morning summary: today's task list (own time, separate from the evening summary)\n"
                      "/lang — change the bot's language\n"
                      "/dashboard — get a link to the web page with your tasks\n"
                      "/cancel — cancel the current action (e.g. adding a task)\n"
@@ -220,6 +258,36 @@ TEXTS = {
                           "{overdue_line}{stuck_line}",
         "daily_summary_combined_footer": "{streak_line}\n<i>Bot is running fine.</i>",
         "daily_summary_chat_fallback": "Group",
+        "morning_summary_header": "☀️ Good morning! Here's today:\n",
+        "morning_summary_section_personal": "\n<b>Personal tasks</b>\n{tasks_list}",
+        "morning_summary_section_chat": "\n<b>{chat_title}</b>\n{tasks_list}",
+        "morning_summary_task_line": "• {time} — {title}\n",
+        "morning_summary_empty_section": "No tasks today 🎉\n",
+        "morning_summary_nothing": "☀️ Good morning! No tasks anywhere today — enjoy the day off 🎉",
+        "morning_on": "☀️ Morning summary enabled, I'll send today's task list at {time}.",
+        "morning_off": "Morning summary disabled.",
+        "morning_status_on": "☀️ Morning summary: on, at {time}\nTo change time: /morning HH:MM\nTo turn off: /morning off",
+        "morning_status_off": "☀️ Morning summary is off.\nTo turn on: /morning HH:MM (e.g. /morning 08:00)",
+        "morning_time_invalid": "Couldn't parse that time. Format: /morning HH:MM, e.g. /morning 08:30",
+        "templates_title": "📋 Task templates",
+        "templates_builtin_header": "Ready-made sets:",
+        "templates_custom_header": "Your templates:",
+        "templates_no_custom": "You don't have any custom templates yet.",
+        "templates_hint": "Tap a template to create a task right away.\nTo save a new custom template, use /add and tap \"Save as template\" on the last step.",
+        "btn_my_templates": "➕ Create your own template",
+        "template_applied": "✅ Created from template: \"{title}\"\n📅 {date}",
+        "template_save_prompt": "Template name? (or /cancel)",
+        "template_save_time_prompt": "Time of day for this template, in HH:MM format (e.g. 08:00):",
+        "template_save_offset_prompt": "When should the task be created — today or tomorrow?",
+        "btn_offset_today": "Today",
+        "btn_offset_tomorrow": "Tomorrow",
+        "template_saved": "✅ Template \"{title}\" saved.",
+        "template_limit_reached": "Template limit reached ({n}). Delete an old one via /templates to add a new one.",
+        "btn_save_as_template": "💾 Save as template",
+        "template_saved_from_task": "✅ Template \"{title}\" saved — available in /templates.",
+        "btn_delete_template": "🗑",
+        "template_deleted": "Template deleted.",
+        "confirm_delete_template": "Delete this template?",
         "btn_done": "Done",
         "btn_task_done": "✅ Done",
         "btn_task_undone": "↩️ Mark not done",
@@ -266,6 +334,7 @@ TEXTS = {
         "history_mode_unknown": "This button is outdated, refresh with /history",
         "stats_title": "📊 Stats for {days} days",
         "stats_totals": "➕ Created: {created}\n✅ Done: {done}\n🗑 Deleted: {deleted}",
+        "stats_completion_rate": "\n📈 Completed {percent}% of tasks due in this period ({done} of {total})",
         "streak_line": "🔥 Streak: {n} days\n",
         "weekdays_short": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
         "throttled": "Slow down 🙂 Wait a second between commands.",
@@ -282,6 +351,7 @@ TEXTS = {
                          "/help — wszystkie komendy",
         "help_full": "📖 Wszystkie komendy:\n\n"
                      "/add — dodaj nowe zadanie (nazwa, data, powtarzanie, przypomnienie)\n"
+                     "/templates — szablony zadań: gotowe zestawy i własne, tworzenie jednym kliknięciem\n"
                      "/list — lista Twoich zadań z filtrem i sortowaniem\n"
                      "/find — znajdź zadanie po części nazwy\n"
                      "/tags — pokaż zadania pogrupowane wg tagu\n"
@@ -289,6 +359,7 @@ TEXTS = {
                      "/export — wyeksportuj wszystkie zadania do pliku CSV\n"
                      "/timezone — zmień strefę czasową\n"
                      "/quiet — cisza nocna: w tym czasie nie przychodzą powiadomienia\n"
+                     "/morning — poranne podsumowanie: lista zadań na dziś (własny czas, niezależny od wieczornego)\n"
                      "/lang — zmień język bota\n"
                      "/dashboard — pobierz link do strony z listą Twoich zadań\n"
                      "/cancel — anuluj bieżącą czynność (np. dodawanie zadania)\n"
@@ -353,6 +424,36 @@ TEXTS = {
                           "{overdue_line}{stuck_line}",
         "daily_summary_combined_footer": "{streak_line}\n<i>Bot działa prawidłowo.</i>",
         "daily_summary_chat_fallback": "Grupa",
+        "morning_summary_header": "☀️ Dzień dobry! Oto plan na dziś:\n",
+        "morning_summary_section_personal": "\n<b>Zadania osobiste</b>\n{tasks_list}",
+        "morning_summary_section_chat": "\n<b>{chat_title}</b>\n{tasks_list}",
+        "morning_summary_task_line": "• {time} — {title}\n",
+        "morning_summary_empty_section": "Brak zadań na dziś 🎉\n",
+        "morning_summary_nothing": "☀️ Dzień dobry! Nigdzie nie ma dziś zadań — można odpocząć 🎉",
+        "morning_on": "☀️ Poranne podsumowanie włączone, będę wysyłać listę zadań na dzień o {time}.",
+        "morning_off": "Poranne podsumowanie wyłączone.",
+        "morning_status_on": "☀️ Poranne podsumowanie: włączone, o {time}\nAby zmienić czas: /morning GG:MM\nAby wyłączyć: /morning off",
+        "morning_status_off": "☀️ Poranne podsumowanie jest wyłączone.\nAby włączyć: /morning GG:MM (np. /morning 08:00)",
+        "morning_time_invalid": "Nie rozpoznano czasu. Format: /morning GG:MM, np. /morning 08:30",
+        "templates_title": "📋 Szablony zadań",
+        "templates_builtin_header": "Gotowe zestawy:",
+        "templates_custom_header": "Twoje szablony:",
+        "templates_no_custom": "Nie masz jeszcze własnych szablonów.",
+        "templates_hint": "Dotknij szablonu, aby od razu utworzyć zadanie.\nAby zapisać nowy własny szablon, użyj /add i na ostatnim kroku dotknij „Zapisz jako szablon”.",
+        "btn_my_templates": "➕ Utwórz własny szablon",
+        "template_applied": "✅ Utworzono z szablonu: „{title}”\n📅 {date}",
+        "template_save_prompt": "Nazwa szablonu? (lub /cancel)",
+        "template_save_time_prompt": "Godzina dla tego szablonu, w formacie GG:MM (np. 08:00):",
+        "template_save_offset_prompt": "Kiedy utworzyć zadanie — dziś czy jutro?",
+        "btn_offset_today": "Dziś",
+        "btn_offset_tomorrow": "Jutro",
+        "template_saved": "✅ Szablon „{title}” zapisany.",
+        "template_limit_reached": "Osiągnięto limit szablonów ({n}). Usuń stary przez /templates, aby dodać nowy.",
+        "btn_save_as_template": "💾 Zapisz jako szablon",
+        "template_saved_from_task": "✅ Szablon „{title}” zapisany — dostępny w /templates.",
+        "btn_delete_template": "🗑",
+        "template_deleted": "Szablon usunięty.",
+        "confirm_delete_template": "Usunąć ten szablon?",
         "btn_done": "Gotowe",
         "btn_task_done": "✅ Wykonane",
         "btn_task_undone": "↩️ Cofnij wykonanie",
@@ -399,6 +500,7 @@ TEXTS = {
         "history_mode_unknown": "Ten przycisk jest nieaktualny, odśwież poleceniem /history",
         "stats_title": "📊 Statystyki z {days} dni",
         "stats_totals": "➕ Utworzone: {created}\n✅ Wykonane: {done}\n🗑 Usunięte: {deleted}",
+        "stats_completion_rate": "\n📈 Wykonano {percent}% zadań z terminem w tym okresie ({done} z {total})",
         "streak_line": "🔥 Seria: {n} dni\n",
         "weekdays_short": "Pn,Wt,Śr,Cz,Pt,Sb,Nd",
         "throttled": "Spokojnie 🙂 Poczekaj chwilę między komendami.",

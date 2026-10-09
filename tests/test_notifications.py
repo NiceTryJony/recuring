@@ -176,6 +176,10 @@ def summary_env(env, monkeypatch):
     async def counts(owner_id, owner_type):
         return {"active": 2, "done_today": 1, "overdue": 0}
     monkeypatch.setattr(bot.db, "get_daily_summary_counts", counts)
+
+    async def chats_for_user(user_id):
+        return []
+    monkeypatch.setattr(bot.db, "get_chats_for_user", chats_for_user)
     return env
 
 
@@ -185,7 +189,7 @@ async def test_summary_includes_streak_line(summary_env, monkeypatch):
     async def done_days(user_id, tz_name, chat_id=None, limit=400):
         return [today, today - timedelta(days=1), today - timedelta(days=2)]
     monkeypatch.setattr(bot.db, "get_done_days", done_days)
-    await bot.send_daily_summary(1, "user")
+    await bot.send_daily_summary(1)
     assert "Серия: 3" in summary_env.sent[-1].text and summary_env.sent[-1].silent is False
 
 
@@ -193,7 +197,7 @@ async def test_summary_without_streak_has_no_streak_line(summary_env, monkeypatc
     async def done_days(*a, **kw):
         return []
     monkeypatch.setattr(bot.db, "get_done_days", done_days)
-    await bot.send_daily_summary(1, "user")
+    await bot.send_daily_summary(1)
     assert "Серия" not in summary_env.sent[-1].text
 
 
@@ -201,7 +205,7 @@ async def test_summary_survives_streak_failure(summary_env, monkeypatch):
     async def boom(*a, **kw):
         raise RuntimeError("db down")
     monkeypatch.setattr(bot.db, "get_done_days", boom)
-    await bot.send_daily_summary(1, "user")
+    await bot.send_daily_summary(1)
     assert len(summary_env.sent) == 1
 
 
@@ -210,7 +214,7 @@ async def test_summary_is_silent_during_quiet_hours(summary_env, monkeypatch):
         return []
     monkeypatch.setattr(bot.db, "get_done_days", done_days)
     summary_env.settings(summary_env.quiet_around_now(-1, 2))
-    await bot.send_daily_summary(1, "user")
+    await bot.send_daily_summary(1)
     assert summary_env.sent[-1].silent is True
 
 
