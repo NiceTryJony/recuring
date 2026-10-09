@@ -506,6 +506,21 @@ DASHBOARD_TEXTS = {
         "event_photo_added": "📷 добавил(а) фото к",
         "event_photo_removed": "🗑 удалил(а) фото у",
         "error_bad_photo": "Не удалось обработать файл как изображение",
+        "nav_templates": "📑 Шаблоны",
+        "templates_page_title": "Шаблоны — Task Reminder",
+        "templates_heading": "📑 Шаблоны задач",
+        "templates_empty": "Шаблонов пока нет.",
+        "btn_apply_template": "Создать задачу",
+        "btn_delete_template": "Удалить",
+        "confirm_delete_template": "Удалить шаблон?",
+        "template_offset_today": "сегодня",
+        "template_offset_tomorrow": "завтра",
+        "template_offset_days": "через {n} дн.",
+        "new_template_title_placeholder": "Название шаблона…",
+        "new_template_offset_label": "Смещение в днях (0 = сегодня)",
+        "btn_save_template": "Сохранить шаблон",
+        "error_empty_template_title": "Введите название шаблона",
+        "template_limit_reached": "Достигнут лимит шаблонов ({n}).",
     },
     "en": {
         "html_lang": "en",
@@ -554,6 +569,21 @@ DASHBOARD_TEXTS = {
         "event_photo_added": "📷 added a photo to",
         "event_photo_removed": "🗑 removed a photo from",
         "error_bad_photo": "Couldn't process the file as an image",
+        "nav_templates": "📑 Templates",
+        "templates_page_title": "Templates — Task Reminder",
+        "templates_heading": "📑 Task templates",
+        "templates_empty": "No templates yet.",
+        "btn_apply_template": "Create task",
+        "btn_delete_template": "Delete",
+        "confirm_delete_template": "Delete this template?",
+        "template_offset_today": "today",
+        "template_offset_tomorrow": "tomorrow",
+        "template_offset_days": "in {n} days",
+        "new_template_title_placeholder": "Template title…",
+        "new_template_offset_label": "Days offset (0 = today)",
+        "btn_save_template": "Save template",
+        "error_empty_template_title": "Enter a template title",
+        "template_limit_reached": "Template limit reached ({n}).",
     },
     "pl": {
         "html_lang": "pl",
@@ -602,6 +632,21 @@ DASHBOARD_TEXTS = {
         "event_photo_added": "📷 dodał(a) zdjęcie do",
         "event_photo_removed": "🗑 usunął(ęła) zdjęcie z",
         "error_bad_photo": "Nie udało się przetworzyć pliku jako obrazu",
+        "nav_templates": "📑 Szablony",
+        "templates_page_title": "Szablony — Task Reminder",
+        "templates_heading": "📑 Szablony zadań",
+        "templates_empty": "Brak szablonów.",
+        "btn_apply_template": "Utwórz zadanie",
+        "btn_delete_template": "Usuń",
+        "confirm_delete_template": "Usunąć szablon?",
+        "template_offset_today": "dzisiaj",
+        "template_offset_tomorrow": "jutro",
+        "template_offset_days": "za {n} dni",
+        "new_template_title_placeholder": "Nazwa szablonu…",
+        "new_template_offset_label": "Przesunięcie w dniach (0 = dzisiaj)",
+        "btn_save_template": "Zapisz szablon",
+        "error_empty_template_title": "Wpisz nazwę szablonu",
+        "template_limit_reached": "Osiągnięto limit szablonów ({n}).",
     },
 }
 
@@ -1079,6 +1124,257 @@ async def handle_history(request: aioweb.Request) -> aioweb.Response:
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
+TEMPLATES_PAGE = """<!DOCTYPE html>
+<html lang="{html_lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{templates_page_title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
+<style>""" + SHARED_CSS + """
+.task {{ padding: var(--space-4); margin-bottom: var(--space-3);
+        display: flex; gap: var(--space-3); align-items: flex-start; }}
+.task-body {{ flex: 1; min-width: 0; }}
+.title {{ font-family: var(--font-display); font-weight: 600; font-size: 1.08rem; color: var(--ink); }}
+.meta {{ color: var(--ink-soft); font-size: 0.85rem; margin-top: 4px; }}
+.task-actions {{ display: flex; gap: 16px; margin-top: 10px; }}
+.task-actions button {{
+  background: none; border: none; color: var(--ink-soft); font-size: 0.82rem;
+  font-family: var(--font-display); font-style: italic; cursor: pointer; padding: 0;
+  transition: color 0.15s ease;
+}}
+.task-actions button:active {{ color: var(--stamp); }}
+.task-actions .del-btn:active {{ color: var(--stamp-deep); }}
+.empty {{ color: var(--paper-soft); text-align: center; padding: 3rem 1rem; font-family: var(--font-display); font-style: italic; }}
+.nav-link {{ display: inline-block; color: var(--paper-soft); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4);
+    font-family: var(--font-display); font-style: italic; margin-right: var(--space-3); }}
+.new-task-form {{ display: flex; flex-direction: column; gap: 10px; padding: var(--space-4); margin-top: var(--space-4); }}
+.new-task-form input[type=text], .new-task-form input[type=time], .new-task-form input[type=number] {{
+  width: 100%; padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
+  background: transparent; color: var(--ink); font-family: var(--font-body); font-size: 1rem; box-sizing: border-box;
+}}
+.new-task-form input::placeholder {{ color: var(--ink-soft); }}
+.new-task-form label {{ font-size: 0.8rem; color: var(--ink-soft); }}
+.new-task-form input:focus {{ outline: none; border-bottom-color: var(--stamp); }}
+.new-task-form button {{
+  padding: 10px 16px; border-radius: var(--radius-sm); border: none; background: var(--stamp);
+  color: var(--card); font-weight: 600; cursor: pointer; flex-shrink: 0;
+}}
+.new-task-form button:active {{ background: var(--stamp-deep); }}
+.new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-style: italic; font-family: var(--font-display); }}
+@media (max-width: 480px) {{ .new-task-form button {{ width: 100%; }} }}
+</style></head>
+<body>
+<a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
+<h1>{templates_heading}</h1>
+{new_template_error}
+{templates_html}
+<form class="new-task-form" method="post" action="/dashboard/{token}/templates/new">
+<input type="hidden" name="csrf" value="{csrf}">
+<input type="text" name="title" placeholder="{new_template_title_placeholder}" maxlength="200" required>
+<label>{new_template_offset_label}</label>
+<input type="time" name="time_of_day" required>
+<input type="number" name="day_offset" min="0" max="365" value="0" required>
+<button type="submit">{btn_save_template}</button>
+</form>
+</body></html>"""
+
+
+def _fmt_template_offset(day_offset: int, lang: str) -> str:
+    texts = _dt(lang)
+    if day_offset == 0:
+        return texts["template_offset_today"]
+    if day_offset == 1:
+        return texts["template_offset_tomorrow"]
+    return texts["template_offset_days"].format(n=day_offset)
+
+
+def _render_template_row(tpl: dict, lang: str, token: str, csrf: str) -> str:
+    texts = _dt(lang)
+    meta = f'{escape(tpl["time_of_day"])} · {escape(_fmt_template_offset(tpl["day_offset"], lang))}'
+    return f"""<div class="task">
+<div class="task-body">
+<div class="title">{escape(tpl["title"])}</div>
+<div class="meta">{meta}</div>
+<div class="task-actions">
+<form method="post" action="/dashboard/{token}/templates/{tpl['id']}/apply">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit">{escape(texts["btn_apply_template"])}</button>
+</form>
+<form method="post" action="/dashboard/{token}/templates/{tpl['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_template"])}')">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit" class="del-btn">{escape(texts["btn_delete_template"])}</button>
+</form>
+</div>
+</div>
+</div>"""
+
+
+def _resolve_template_due_at(time_of_day: str, day_offset: int, tz) -> datetime:
+    """Та же логика, что и в bot.py:_resolve_template_due_at — датой
+    отталкиваемся от момента ПРИМЕНЕНИЯ шаблона (сейчас), не от момента его
+    создания. Продублировано здесь (а не импортировано из bot.py), потому что
+    bot.py сам импортирует dashboard — обратный импорт создал бы цикл."""
+    from datetime import time as dtime
+    hour, minute = (int(p) for p in time_of_day.split(":"))
+    now_local = datetime.now(tz)
+    candidate_date = now_local.date() + timedelta(days=day_offset)
+    candidate = datetime.combine(candidate_date, dtime(hour, minute), tzinfo=tz)
+    if day_offset == 0 and candidate <= now_local:
+        candidate += timedelta(days=1)
+    from zoneinfo import ZoneInfo
+    return candidate.astimezone(ZoneInfo("UTC"))
+
+
+async def handle_templates_page(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/templates — список своих шаблонов + форма
+    создания нового. Доступно и личному, и групповому владельцу (в отличие
+    от /history) — см. комментарий у nav_links в handle_dashboard."""
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        return aioweb.Response(text=_dt("ru")["not_found"], status=404)
+
+    owner_id = settings["owner_id"]
+    owner_type = settings["owner_type"]
+    lang = settings.get("language", "ru")
+    texts = _dt(lang)
+
+    cookie = request.cookies.get(f"session_{token}")
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
+    if session is None or (session[0], session[1]) != (owner_id, owner_type):
+        return aioweb.Response(text=LOGIN_PAGE.format(error="", **texts), content_type="text/html")
+
+    csrf = _csrf_token(cookie)
+    templates = await db.get_templates(owner_id, owner_type)
+    if not templates:
+        templates_html = f'<div class="empty">{escape(texts["templates_empty"])}</div>'
+    else:
+        templates_html = "\n".join(_render_template_row(tpl, lang, token, csrf) for tpl in templates)
+
+    new_template_error = ""
+    err = request.query.get("error")
+    if err == "empty_title":
+        new_template_error = f'<div class="new-task-error">{escape(texts["error_empty_template_title"])}</div>'
+    elif err == "limit":
+        new_template_error = (
+            f'<div class="new-task-error">'
+            f'{escape(texts["template_limit_reached"].format(n=db.MAX_TEMPLATES_PER_OWNER))}</div>'
+        )
+
+    page = TEMPLATES_PAGE.format(
+        token=token, csrf=csrf, templates_html=templates_html, new_template_error=new_template_error,
+        **{k: v for k, v in texts.items() if k != "repeat"},
+    )
+    return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def handle_template_create(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/templates/new."""
+    token = request.match_info["token"]
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, _tg_user_id = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    title = data.get("title", "").strip()
+    if not title:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}/templates?error=empty_title"})
+
+    if await db.count_templates(owner_id, owner_type) >= db.MAX_TEMPLATES_PER_OWNER:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}/templates?error=limit"})
+
+    time_of_day_raw = data.get("time_of_day", "")
+    try:
+        hour, minute = (int(p) for p in time_of_day_raw.split(":")[:2])
+        time_of_day = f"{hour:02d}:{minute:02d}"
+    except (ValueError, AttributeError):
+        time_of_day = "09:00"
+
+    try:
+        day_offset = max(0, min(365, int(data.get("day_offset", "0"))))
+    except ValueError:
+        day_offset = 0
+
+    await db.add_template(
+        owner_id=owner_id, owner_type=owner_type, title=title[:200],
+        time_of_day=time_of_day, day_offset=day_offset,
+    )
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}/templates"})
+
+
+async def handle_template_apply(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/templates/{template_id}/apply — создаёт задачу
+    из шаблона прямо с дашборда. Как и у handle_task_create, задача создаётся
+    без планирования в APScheduler бота (дашборд — отдельный веб-процесс без
+    доступа к его scheduler'у) — ровно то же ограничение, что и у обычного
+    добавления задачи с дашборда."""
+    token = request.match_info["token"]
+    try:
+        template_id = int(request.match_info["template_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, tg_user_id = owner
+    acting_user_id = _acting_user_id(owner_id, owner_type, tg_user_id)
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    tpl = await db.get_template(template_id)
+    if not tpl or tpl["owner_id"] != owner_id or tpl["owner_type"] != owner_type:
+        return aioweb.Response(status=404)
+
+    settings = await db.get_owner_by_dashboard_token(token)
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(settings["timezone"])
+    except Exception:
+        tz = ZoneInfo("UTC")
+
+    due_at = _resolve_template_due_at(tpl["time_of_day"], tpl["day_offset"], tz)
+    task_id = await db.add_task(
+        owner_id, owner_type, tpl["title"], due_at, tpl["repeat"], tpl["remind"],
+        tag=tpl.get("tag"), remind_until_done=tpl.get("remind_until_done", False), created_by=acting_user_id,
+    )
+    await db.log_history(task_id, acting_user_id, tpl["title"], "created")
+
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+
+
+async def handle_template_delete(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/templates/{template_id}/delete."""
+    token = request.match_info["token"]
+    try:
+        template_id = int(request.match_info["template_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, _tg_user_id = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    await db.delete_template(template_id, owner_id, owner_type)
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}/templates"})
+
+
 _RU_MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня",
               "июля", "августа", "сентября", "октября", "ноября", "декабря"]
 _EN_MONTHS = ["January", "February", "March", "April", "May", "June",
@@ -1466,10 +1762,13 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         chart_html = ""
 
     heading = texts["heading_chat"] if owner_type == "chat" else texts["heading"]
-    nav_html = (
-        f'<a class="nav-link" href="/dashboard/{token}/history">{escape(texts["nav_history"])}</a>'
-        if owner_type == "chat" else ""
-    )
+    # В отличие от истории (nav_history) — лента событий с авторами нужна
+    # только групповому дашборду (см. комментарий у handle_history) — шаблоны
+    # полезны и личному владельцу, поэтому ссылка показывается всегда.
+    nav_links = [f'<a class="nav-link" href="/dashboard/{token}/templates">{escape(texts["nav_templates"])}</a>']
+    if owner_type == "chat":
+        nav_links.append(f'<a class="nav-link" href="/dashboard/{token}/history">{escape(texts["nav_history"])}</a>')
+    nav_html = " ".join(nav_links)
     new_task_error_html = ""
     if request.query.get("error") == "empty_title":
         new_task_error_html = f'<div class="new-task-error">{escape(texts["error_empty_title"])}</div>'
@@ -1650,3 +1949,7 @@ def register_dashboard_routes(app: aioweb.Application):
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)
     app.router.add_get("/dashboard/{token}/avatar/{user_id}", handle_avatar)
     app.router.add_get("/dashboard/{token}/history", handle_history)
+    app.router.add_get("/dashboard/{token}/templates", handle_templates_page)
+    app.router.add_post("/dashboard/{token}/templates/new", handle_template_create)
+    app.router.add_post("/dashboard/{token}/templates/{template_id}/apply", handle_template_apply)
+    app.router.add_post("/dashboard/{token}/templates/{template_id}/delete", handle_template_delete)

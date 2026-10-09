@@ -220,6 +220,42 @@ async def init_db():
         await conn.execute("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS photo_data BYTEA")
         await conn.execute("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS photo_mime TEXT")
 
+        # Пользовательские шаблоны задач — один шаблон = одна задача (title +
+        # время дня + смещение в днях + repeat/remind/tag), применяется кнопкой,
+        # создавая реальную задачу с due_at, вычисленным от момента применения.
+        # Встроенные (built-in) шаблоны НЕ хранятся здесь — они hardcode в
+        # bot.py (templates.py) с переводом на лету по языку пользователя, см.
+        # комментарий у BUILTIN_TEMPLATES. owner_id/owner_type — те же, что у
+        # задач: личные шаблоны пользователя или общие шаблоны группы.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_templates (
+                id SERIAL PRIMARY KEY,
+                owner_id BIGINT NOT NULL,
+                owner_type TEXT NOT NULL DEFAULT 'user',
+                title TEXT NOT NULL,
+                time_of_day TEXT NOT NULL,
+                day_offset SMALLINT NOT NULL DEFAULT 0,
+                repeat TEXT NOT NULL DEFAULT 'none',
+                remind TEXT NOT NULL DEFAULT '0',
+                tag TEXT,
+                remind_until_done BOOLEAN NOT NULL DEFAULT FALSE,
+                created_by BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                sort_order INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_task_templates_owner ON task_templates(owner_id, owner_type)")
+
+        # Утренняя сводка — отдельное от вечерней время, личная настройка
+        # человека (не группы: сводка теперь всегда идёт по user_id, см.
+        # bot.py:send_daily_summary/send_morning_summary). Выключена по
+        # умолчанию — включается явно командой /morning, чтобы не начать
+        # неожиданно слать новый тип сообщений всем существующим пользователям
+        # бота сразу после деплоя этой фичи.
+        await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS morning_summary_enabled BOOLEAN NOT NULL DEFAULT FALSE")
+        await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS morning_summary_hour SMALLINT NOT NULL DEFAULT 8")
+        await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS morning_summary_minute SMALLINT NOT NULL DEFAULT 0")
+
         # Фото, прикреплённые к задачам (не аватарки) — отдельная таблица
         # "один-ко-многим" на случай нескольких фото на задачу. Байты хранятся
         # прямо в БД (как и telegram_users.photo_data) — показ не требует
@@ -579,6 +615,41 @@ async def get_history_stats(user_id: int | None, days: int, tz_name: str, chat_i
     return await _with_retry(_run)
 
 
+async def get_completion_rate(owner_id: int, owner_type: str, days: int, tz_name: str) -> dict:
+    """Честный % выполнения за период: доля задач, у которых due_at попал в
+    последние `days` календарных дней (в ЛОКАЛЬНОМ поясе), которые отмечены
+    done. В отличие от get_history_stats (считает СОБЫТИЯ created/done за
+    период — задача, созданная месяц назад и выполненная вчера, не попала бы
+    в 'created' вчерашнего дня, искажая процент), здесь смотрим на состояние
+    самих задач по их сроку, а не на историю событий — так "78% задач за
+    месяц" действительно означает "из задач со сроком в этом месяце 78%
+    закрыты", что и ожидает увидеть пользователь.
+    Повторяющиеся задачи (repeat != 'none') исключены из знаменателя: у них
+    одна строка в tasks с постоянно сдвигающимся due_at, а done неизменно
+    сбрасывается в FALSE после каждого цикла (см. планировщик в bot.py) — их
+    включение считало бы почти любую повторяющуюся задачу «невыполненной»
+    на момент снятия среза, искажая процент не в её пользу."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT
+                       COUNT(*) FILTER (WHERE repeat = 'none') AS total,
+                       COUNT(*) FILTER (WHERE repeat = 'none' AND done) AS done_count
+                   FROM tasks
+                   WHERE owner_id = $1 AND owner_type = $2
+                     AND due_at >= (date_trunc('day', now() AT TIME ZONE $3::text)
+                                    - ($4::int - 1) * interval '1 day') AT TIME ZONE $3::text
+                     AND due_at < (date_trunc('day', now() AT TIME ZONE $3::text)
+                                   + interval '1 day') AT TIME ZONE $3::text""",
+                owner_id, owner_type, tz_name, days,
+            )
+            total = row["total"] or 0
+            done_count = row["done_count"] or 0
+            percent = round(done_count / total * 100) if total > 0 else None
+            return {"total": total, "done": done_count, "percent": percent}
+    return await _with_retry(_run)
+
+
 async def get_event_feed(
     user_id: int | None, chat_id: int | None, limit: int = 30, offset: int = 0,
 ) -> list[dict]:
@@ -631,6 +702,21 @@ async def get_chat_members(chat_id: int) -> list[int]:
         async with _pool.acquire() as conn:
             rows = await conn.fetch("SELECT user_id FROM chat_members WHERE chat_id = $1", chat_id)
             return [r["user_id"] for r in rows]
+    return await _with_retry(_run)
+
+
+async def get_chats_for_user(user_id: int) -> list[int]:
+    """Обратный запрос к get_chat_members — в каких групповых чатах состоит
+    этот пользователь. Нужен для объединённой вечерней сводки: один человек
+    может быть участником нескольких групп + иметь личные задачи, и раньше
+    каждый owner (личка и каждая группа отдельно) слал СВОЮ сводку этому же
+    user_id — см. send_daily_summary в bot.py, где теперь джоба идёт по
+    user_id, а не по owner, и сама собирает все его контексты через эту
+    функцию."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("SELECT DISTINCT chat_id FROM chat_members WHERE user_id = $1", user_id)
+            return [r["chat_id"] for r in rows]
     return await _with_retry(_run)
 
 
@@ -844,6 +930,144 @@ async def get_all_known_owners() -> list[dict]:
             owners = [{"owner_id": r["user_id"], "owner_type": "user"} for r in user_rows]
             owners += [{"owner_id": r["chat_id"], "owner_type": "chat"} for r in chat_rows]
             return owners
+    return await _with_retry(_run)
+
+
+# ---------- шаблоны задач ----------
+MAX_TEMPLATES_PER_OWNER = 30  # защита от бесконтрольного роста — с запасом для семьи/группы
+
+
+async def add_template(
+    owner_id: int, owner_type: str, title: str, time_of_day: str, day_offset: int,
+    repeat: str = "none", remind: str = "0", tag: str | None = None,
+    remind_until_done: bool = False, created_by: int | None = None,
+) -> int:
+    async def _run():
+        async with _pool.acquire() as conn:
+            next_order = await conn.fetchval(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM task_templates WHERE owner_id = $1 AND owner_type = $2",
+                owner_id, owner_type,
+            )
+            row = await conn.fetchrow(
+                """INSERT INTO task_templates
+                       (owner_id, owner_type, title, time_of_day, day_offset, repeat, remind, tag,
+                        remind_until_done, created_by, sort_order)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id""",
+                owner_id, owner_type, title, time_of_day, day_offset, repeat, remind, tag,
+                remind_until_done, created_by, next_order,
+            )
+            return row["id"]
+    return await _with_retry(_run)
+
+
+async def count_templates(owner_id: int, owner_type: str) -> int:
+    async def _run():
+        async with _pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM task_templates WHERE owner_id = $1 AND owner_type = $2", owner_id, owner_type
+            )
+    return await _with_retry(_run)
+
+
+async def get_templates(owner_id: int, owner_type: str) -> list[dict]:
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM task_templates WHERE owner_id = $1 AND owner_type = $2 ORDER BY sort_order, id",
+                owner_id, owner_type,
+            )
+            return [dict(r) for r in rows]
+    return await _with_retry(_run)
+
+
+async def get_template(template_id: int) -> dict | None:
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM task_templates WHERE id = $1", template_id)
+            return dict(row) if row else None
+    return await _with_retry(_run)
+
+
+async def delete_template(template_id: int, owner_id: int, owner_type: str) -> bool:
+    """owner_id/owner_type в WHERE — та же страховка от удаления чужого шаблона
+    по угаданному id, что и у delete_task_photo."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM task_templates WHERE id = $1 AND owner_id = $2 AND owner_type = $3",
+                template_id, owner_id, owner_type,
+            )
+            return result.endswith(" 1")
+    return await _with_retry(_run)
+
+
+async def get_morning_summary_settings(user_id: int) -> dict | None:
+    """None, если у пользователя вообще нет записи в user_settings (ни разу
+    не писал боту) — вызывающая сторона трактует это как 'выключено'."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT morning_summary_enabled, morning_summary_hour, morning_summary_minute "
+                "FROM user_settings WHERE user_id = $1", user_id,
+            )
+            return dict(row) if row else None
+    return await _with_retry(_run)
+
+
+async def set_morning_summary(user_id: int, enabled: bool, hour: int | None = None, minute: int | None = None):
+    """Апсерт — та же логика, что у остальных user_settings-полей (запись
+    может ещё не существовать, если это первое касание пользователя к боту
+    через именно эту команду, хотя на практике /start уже должен был её
+    завести; ON CONFLICT подстраховывает от гонки/порядка вызовов)."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            if hour is not None and minute is not None:
+                await conn.execute(
+                    """INSERT INTO user_settings (user_id, morning_summary_enabled, morning_summary_hour, morning_summary_minute)
+                       VALUES ($1, $2, $3, $4)
+                       ON CONFLICT (user_id) DO UPDATE SET
+                           morning_summary_enabled = $2, morning_summary_hour = $3, morning_summary_minute = $4""",
+                    user_id, enabled, hour, minute,
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO user_settings (user_id, morning_summary_enabled)
+                       VALUES ($1, $2)
+                       ON CONFLICT (user_id) DO UPDATE SET morning_summary_enabled = $2""",
+                    user_id, enabled,
+                )
+    await _with_retry(_run)
+
+
+async def get_morning_summary_recipients() -> list[dict]:
+    """user_id + час/минута для всех, у кого утренняя сводка включена —
+    используется при restore_jobs() для восстановления джоб после рестарта."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, morning_summary_hour, morning_summary_minute "
+                "FROM user_settings WHERE morning_summary_enabled = TRUE"
+            )
+            return [dict(r) for r in rows]
+    return await _with_retry(_run)
+
+
+async def get_all_summary_recipients() -> list[int]:
+    """Все user_id, которым нужна вечерняя сводка: личные пользователи бота
+    (user_settings/owner задач) ПЛЮС участники групповых чатов (chat_members) —
+    второе нужно, потому что человек мог ни разу не писать боту в личку
+    (его просто добавили в группу), и тогда get_all_known_owners его бы не
+    нашёл вовсе, джоба сводки для него не создалась бы при restore_jobs."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT user_id FROM user_settings
+                UNION
+                SELECT DISTINCT owner_id FROM tasks WHERE owner_type = 'user'
+                UNION
+                SELECT DISTINCT user_id FROM chat_members
+            """)
+            return [r["user_id"] for r in rows]
     return await _with_retry(_run)
 
 
