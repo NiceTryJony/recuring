@@ -117,6 +117,10 @@ async def init_db():
         await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tag TEXT")
         await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ")
         await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_notified_at TIMESTAMPTZ")
+        # Развёрнутое описание задачи — опционально, заполняется и правится
+        # только с дашборда (раскрывающаяся карточка); бот пока создаёт задачи
+        # без него, но полноценно читает/показывает через get_task (SELECT *).
+        await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS description TEXT")
 
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS subtasks (
@@ -289,13 +293,14 @@ async def add_task(
     tag: str | None = None,
     remind_until_done: bool = False,
     created_by: int | None = None,
+    description: str | None = None,
 ) -> int:
     async def _run():
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(
-                """INSERT INTO tasks (owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done, created_by)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id""",
-                owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done, created_by
+                """INSERT INTO tasks (owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done, created_by, description)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id""",
+                owner_id, owner_type, title, due_at, repeat, remind, tag, remind_until_done, created_by, description
             )
             return row["id"]
     return await _with_retry(_run)
@@ -427,7 +432,7 @@ async def delete_task(task_id: int):
 # через имя колонки. Белый список — дешёвая страховка от этого класса багов.
 _UPDATABLE_TASK_FIELDS = {
     "title", "due_at", "repeat", "remind", "tag", "done", "done_at",
-    "last_notified_at", "remind_until_done",
+    "last_notified_at", "remind_until_done", "description",
 }
 
 

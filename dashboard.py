@@ -521,6 +521,14 @@ DASHBOARD_TEXTS = {
         "btn_save_template": "Сохранить шаблон",
         "error_empty_template_title": "Введите название шаблона",
         "template_limit_reached": "Достигнут лимит шаблонов ({n}).",
+        "new_description_placeholder": "Описание (необязательно)…",
+        "description_placeholder": "Добавить описание…",
+        "btn_save_description": "Сохранить",
+        "repeats_label": "🔁 Повторяется: {label}",
+        "no_repeat_label": "Не повторяется",
+        "new_subtask_placeholder": "Новый пункт…",
+        "btn_add_subtask": "Добавить",
+        "confirm_delete_subtask": "Удалить пункт?",
     },
     "en": {
         "html_lang": "en",
@@ -584,6 +592,14 @@ DASHBOARD_TEXTS = {
         "btn_save_template": "Save template",
         "error_empty_template_title": "Enter a template title",
         "template_limit_reached": "Template limit reached ({n}).",
+        "new_description_placeholder": "Description (optional)…",
+        "description_placeholder": "Add a description…",
+        "btn_save_description": "Save",
+        "repeats_label": "🔁 Repeats: {label}",
+        "no_repeat_label": "Doesn't repeat",
+        "new_subtask_placeholder": "New item…",
+        "btn_add_subtask": "Add",
+        "confirm_delete_subtask": "Delete this item?",
     },
     "pl": {
         "html_lang": "pl",
@@ -647,6 +663,14 @@ DASHBOARD_TEXTS = {
         "btn_save_template": "Zapisz szablon",
         "error_empty_template_title": "Wpisz nazwę szablonu",
         "template_limit_reached": "Osiągnięto limit szablonów ({n}).",
+        "new_description_placeholder": "Opis (opcjonalnie)…",
+        "description_placeholder": "Dodaj opis…",
+        "btn_save_description": "Zapisz",
+        "repeats_label": "🔁 Powtarza się: {label}",
+        "no_repeat_label": "Nie powtarza się",
+        "new_subtask_placeholder": "Nowy punkt…",
+        "btn_add_subtask": "Dodaj",
+        "confirm_delete_subtask": "Usunąć punkt?",
     },
 }
 
@@ -811,24 +835,115 @@ TASKS_PAGE = """<!DOCTYPE html>
 .task {{ padding: var(--space-4); margin-bottom: var(--space-3);
         display: flex; gap: var(--space-3); align-items: flex-start; }}
 .task.done {{ background: #ece3cd; }}
-.task.done .title {{ color: var(--ink-soft); text-decoration: line-through; text-decoration-color: var(--ok); text-decoration-thickness: 1.5px; }}
 .task.done .meta {{ color: var(--ink-soft); opacity: 0.8; }}
 .task.overdue .meta {{ color: var(--stamp); }}
 .task form {{ margin: 0; line-height: 0; }}
+/* Хит-область чекбокса увеличена невидимым ::before на ~44px (минимум для
+   уверенного тапа пальцем) без изменения видимого диаметра кружка — чистый
+   мобильный UX приём, 26px было бы мелковато под палец. */
 .check-btn {{
   width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--ink-soft);
   background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 2px; padding: 0;
   position: relative; transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }}
+.check-btn::before {{ content: ""; position: absolute; inset: -9px; }}
 .task.overdue .check-btn {{ border-color: var(--stamp); }}
 .task.done .check-btn {{ background: var(--ok); border-color: var(--ok); }}
 .task.done .check-btn::after {{
   content: ""; position: absolute; left: 8px; top: 4px; width: 6px; height: 11px;
-  border: solid var(--card); border-width: 0 2px 2px 0; transform: rotate(40deg);
+  border: solid var(--card); border-width: 0 2px 2px 0;
+  transform: rotate(40deg) scale(0); transform-origin: bottom left;
+  animation: check-draw 0.3s ease forwards 0.05s;
 }}
-.task-body {{ flex: 1; min-width: 0; }}
-.title {{ font-family: var(--font-display); font-weight: 600; font-size: 1.08rem; color: var(--ink); }}
+@keyframes check-draw {{ to {{ transform: rotate(40deg) scale(1); }} }}
+/* Карточка-раскрывашка: <details>/<summary> без единой строчки JS — тап по
+   заголовку/мете (summary) раскрывает описание и действия. Чекбокс живёт
+   вне <details> как отдельная форма, чтобы клик по нему не дублировал
+   toggle раскрытия. */
+.task-details {{ flex: 1; min-width: 0; }}
+.task-summary {{
+  list-style: none; cursor: pointer; display: block; position: relative;
+  padding-right: 22px; -webkit-tap-highlight-color: transparent;
+}}
+.task-summary::-webkit-details-marker {{ display: none; }}
+.task-summary::after {{
+  content: ""; position: absolute; right: 2px; top: 6px; width: 8px; height: 8px;
+  border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft);
+  transform: rotate(45deg); transition: transform 0.2s ease; transform-origin: center;
+}}
+.task-details[open] > .task-summary::after {{ transform: rotate(-135deg); top: 9px; }}
+.task-summary:focus-visible {{ outline: 2px solid var(--stamp); outline-offset: 2px; }}
+.title {{ font-family: var(--font-display); font-weight: 600; font-size: 1.08rem; color: var(--ink);
+         position: relative; display: inline-block; }}
+.task.done .title {{ color: var(--ink-soft); }}
+.task.done .title::after {{
+  content: ""; position: absolute; left: 0; top: 50%; height: 1.5px; width: 100%;
+  background: var(--ok); transform: scaleX(0); transform-origin: left;
+  animation: strike 0.35s ease forwards 0.1s;
+}}
+@keyframes strike {{ to {{ transform: scaleX(1); }} }}
 .meta {{ color: var(--ink-soft); font-size: 0.85rem; margin-top: 4px; }}
+.task-expanded {{ margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--rule); animation: fade-up 0.25s ease both; }}
+.repeat-info {{ color: var(--ink-soft); font-size: 0.85rem; margin-bottom: 8px; font-style: italic; font-family: var(--font-display); }}
+.description-text {{ color: var(--ink); font-size: 0.92rem; line-height: 1.45; margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }}
+.desc-form {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }}
+.desc-form textarea {{
+  width: 100%; padding: 8px; border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  background: var(--paper); color: var(--ink); font-family: var(--font-body); font-size: 0.9rem;
+  box-sizing: border-box; resize: vertical; min-height: 44px;
+}}
+.desc-form textarea:focus {{ outline: none; border-color: var(--stamp); }}
+.desc-form button {{
+  align-self: flex-start; padding: 7px 14px; border-radius: var(--radius-sm); border: none;
+  background: var(--paper-soft); color: var(--ink); font-size: 0.82rem; font-weight: 600; cursor: pointer;
+}}
+.desc-form button:active {{ background: var(--card-edge); }}
+/* Подзадачи — тот же язык анимации, что и у главного чекбокса задачи
+   (вырисовывающаяся галочка + бегущая линия-зачёркивание), только компактнее,
+   раз пунктов в списке обычно несколько. */
+.subtasks {{ display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }}
+.subtask-row {{ display: flex; align-items: center; gap: 8px; }}
+.subtask-row form {{ margin: 0; line-height: 0; }}
+.subtask-check {{
+  width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--ink-soft);
+  background: transparent; cursor: pointer; flex-shrink: 0; padding: 0; position: relative;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}}
+.subtask-check::before {{ content: ""; position: absolute; inset: -11px; }}
+.subtask-row.done .subtask-check {{ background: var(--ok); border-color: var(--ok); }}
+.subtask-row.done .subtask-check::after {{
+  content: ""; position: absolute; left: 5px; top: 2px; width: 4px; height: 8px;
+  border: solid var(--card); border-width: 0 1.5px 1.5px 0;
+  transform: rotate(40deg) scale(0); transform-origin: bottom left;
+  animation: check-draw 0.3s ease forwards 0.05s;
+}}
+.subtask-title {{
+  flex: 1; min-width: 0; font-size: 0.9rem; color: var(--ink); position: relative;
+  overflow-wrap: break-word;
+}}
+.subtask-row.done .subtask-title {{ color: var(--ink-soft); }}
+.subtask-row.done .subtask-title::after {{
+  content: ""; position: absolute; left: 0; top: 50%; height: 1.5px; width: 100%;
+  background: var(--ok); transform: scaleX(0); transform-origin: left;
+  animation: strike 0.35s ease forwards 0.1s;
+}}
+.subtask-del-btn {{
+  background: none; border: none; color: var(--ink-soft); font-size: 0.8rem; line-height: 1;
+  cursor: pointer; padding: 4px; flex-shrink: 0;
+}}
+.subtask-del-btn:active {{ color: var(--stamp-deep); }}
+.subtask-add-form {{ display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }}
+.subtask-add-form input[type=text] {{
+  flex: 1; min-width: 0; padding: 6px 2px; border: none; border-bottom: 1.5px solid var(--rule);
+  background: transparent; color: var(--ink); font-family: var(--font-body); font-size: 0.88rem;
+}}
+.subtask-add-form input[type=text]:focus {{ outline: none; border-bottom-color: var(--stamp); }}
+.subtask-add-form input[type=text]::placeholder {{ color: var(--ink-soft); }}
+.subtask-add-form button {{
+  flex-shrink: 0; padding: 6px 12px; border-radius: var(--radius-sm); border: none;
+  background: var(--paper-soft); color: var(--ink); font-size: 0.8rem; font-weight: 600; cursor: pointer;
+}}
+.subtask-add-form button:active {{ background: var(--card-edge); }}
 .task-actions {{ display: flex; gap: 16px; margin-top: 10px; }}
 .task-actions button {{
   background: none; border: none; color: var(--ink-soft); font-size: 0.82rem;
@@ -862,7 +977,13 @@ TASKS_PAGE = """<!DOCTYPE html>
   width: 100%; padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
   background: transparent; color: var(--ink); font-family: var(--font-body); font-size: 1rem; box-sizing: border-box;
 }}
-.new-task-form input[type=text]::placeholder {{ color: var(--ink-soft); }}
+.new-task-form input[type=text]::placeholder, .new-task-form textarea::placeholder {{ color: var(--ink-soft); }}
+.new-task-form textarea {{
+  width: 100%; padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
+  background: transparent; color: var(--ink); font-family: var(--font-body); font-size: 0.95rem;
+  box-sizing: border-box; resize: vertical; min-height: 44px;
+}}
+.new-task-form textarea:focus {{ outline: none; border-bottom-color: var(--stamp); }}
 .new-task-form input[type=datetime-local] {{
   padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
   background: transparent; color: var(--ink); font-family: var(--font-body); color-scheme: light; box-sizing: border-box;
@@ -1000,6 +1121,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 <form class="new-task-form" method="post" action="/dashboard/{token}/tasks/new">
 <input type="hidden" name="csrf" value="{csrf}">
 <input type="text" name="title" placeholder="{new_title_placeholder}" maxlength="200" required>
+<textarea name="description" placeholder="{new_description_placeholder}" maxlength="4000" rows="2"></textarea>
 <input type="datetime-local" name="due_at" required>
 <button type="submit">{btn_add}</button>
 </form>
@@ -1545,10 +1667,39 @@ def _render_upload_form(token: str, task_id: int, csrf: str, texts: dict, photo_
 </form>"""
 
 
+def _render_subtasks(subtasks: list[dict], token: str, task_id: int, csrf: str, texts: dict) -> str:
+    """Чек-лист подзадач внутри раскрытой карточки — раньше заводился только
+    из чата (FSM-диалог /subtasks в bot.py), теперь то же самое доступно и
+    с дашборда: свой toggle/delete/add на отдельных маршрутах, та же модель
+    данных (subtasks таблица, которую /subtasks в Telegram читает и пишет)."""
+    rows = []
+    for st in subtasks:
+        row_class = "subtask-row done" if st["done"] else "subtask-row"
+        rows.append(f"""<div class="{row_class}">
+<form method="post" action="/dashboard/{token}/subtasks/{st['id']}/toggle">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit" class="subtask-check" aria-label="toggle"></button>
+</form>
+<span class="subtask-title">{escape(st["title"])}</span>
+<form method="post" action="/dashboard/{token}/subtasks/{st['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_subtask"])}')">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit" class="subtask-del-btn" aria-label="delete">✕</button>
+</form>
+</div>""")
+    list_html = f'<div class="subtasks">{"".join(rows)}</div>' if rows else ""
+    add_form = f"""<form class="subtask-add-form" method="post" action="/dashboard/{token}/tasks/{task_id}/subtasks/new">
+<input type="hidden" name="csrf" value="{csrf}">
+<input type="text" name="title" placeholder="{escape(texts["new_subtask_placeholder"])}" maxlength="200" required>
+<button type="submit">{escape(texts["btn_add_subtask"])}</button>
+</form>"""
+    return list_html + add_form
+
+
 def _render_task(
     task: dict, tz, lang: str, token: str, csrf: str,
     creator: dict | None = None, owner_type: str = "user",
     photos: list[dict] | None = None,
+    subtasks: list[dict] | None = None,
 ) -> str:
     import datetime as dt
     texts = _dt(lang)
@@ -1562,7 +1713,15 @@ def _render_task(
 
     tag_html = f'<div class="tag">🏷 {escape(task["tag"])}</div>' if task.get("tag") else ""
     repeat_label = texts["repeat"].get(task["repeat"], task["repeat"])
-    repeat_html = f" · 🔁 {escape(repeat_label)}" if task["repeat"] != "none" and repeat_label else ""
+    # Короткий значок повтора — виден уже в свёрнутой шапке карточки (summary);
+    # полная формулировка ("🔁 Повторяется: раз в месяц") — только внутри,
+    # в .repeat-info, чтобы не раздувать и так плотную строку меты.
+    repeat_html = " · 🔁" if task["repeat"] != "none" and repeat_label else ""
+    repeat_info_html = (
+        f'<div class="repeat-info">{escape(texts["repeats_label"].format(label=repeat_label))}</div>'
+        if task["repeat"] != "none" and repeat_label
+        else f'<div class="repeat-info">{escape(texts["no_repeat_label"])}</div>'
+    )
     toggle_action = "undone" if task["done"] else "done"
     # Автора показываем только в групповом дашборде — в личном он и так всегда
     # один и тот же человек, бейдж был бы бесполезным шумом.
@@ -1571,6 +1730,15 @@ def _render_task(
     photos = photos or []
     photos_html = _render_photos(photos, token, task["id"], csrf, texts)
     upload_html = _render_upload_form(token, task["id"], csrf, texts, len(photos))
+
+    description = task.get("description") or ""
+    description_text_html = f'<p class="description-text">{escape(description)}</p>' if description else ""
+    desc_form_html = f"""<form class="desc-form" method="post" action="/dashboard/{token}/tasks/{task['id']}/edit">
+<input type="hidden" name="csrf" value="{csrf}">
+<textarea name="description" placeholder="{escape(texts["description_placeholder"])}" maxlength="4000" rows="2">{escape(description)}</textarea>
+<button type="submit">{escape(texts["btn_save_description"])}</button>
+</form>"""
+    subtasks_html = _render_subtasks(subtasks or [], token, task["id"], csrf, texts)
 
     extra_actions = ""
     if not task["done"]:
@@ -1596,20 +1764,28 @@ def _render_task(
 </form>
 </div>"""
 
-    return f"""<div class="{css_class}">
+    return f"""<div class="{css_class}" id="task-{task['id']}">
 <form method="post" action="/dashboard/{token}/tasks/{task['id']}/{toggle_action}">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="check-btn" aria-label="toggle"></button>
 </form>
-<div class="task-body">
+<details class="task-details">
+<summary class="task-summary">
 <div class="title">{escape(task["title"])}</div>
 <div class="meta">📅 {local_due.strftime('%d.%m.%Y %H:%M')}{repeat_html}</div>
-{author_html}
 {tag_html}
+</summary>
+<div class="task-expanded">
+{repeat_info_html}
+{author_html}
+{description_text_html}
+{desc_form_html}
+{subtasks_html}
 {photos_html}
 {upload_html}
 {extra_actions}
 </div>
+</details>
 </div>"""
 
 
@@ -1746,10 +1922,15 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         photos_by_task = {
             t["id"]: await db.get_task_photos_meta(t["id"]) for t in tasks
         }
+        # Подзадачи — тем же паттерном, что и фото: отдельный лёгкий запрос на
+        # задачу (SELECT ... WHERE task_id, с индексом), а не один общий IN(...).
+        subtasks_by_task = {
+            t["id"]: await db.get_subtasks(t["id"]) for t in tasks
+        }
         tasks_html = "\n".join(
             _render_task(
                 t, tz, lang, token, csrf, creator=creators.get(t.get("created_by")), owner_type=owner_type,
-                photos=photos_by_task.get(t["id"]),
+                photos=photos_by_task.get(t["id"]), subtasks=subtasks_by_task.get(t["id"]),
             )
             for t in tasks
         )
@@ -1855,6 +2036,7 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=403)
 
     title = data.get("title", "").strip()
+    description = data.get("description", "").strip() or None
     due_at_raw = data.get("due_at", "")
     if not title:
         return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=empty_title"})
@@ -1875,7 +2057,10 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
 
     # repeat/remind — обязательные позиционные параметры add_task; с дашборда задача
     # создаётся без повтора и с дефолтным напоминанием (то же, что ожидает остальной код).
-    task_id = await db.add_task(owner_id, owner_type, title, due_at, "none", "on_time", created_by=acting_user_id)
+    task_id = await db.add_task(
+        owner_id, owner_type, title, due_at, "none", "on_time",
+        created_by=acting_user_id, description=description,
+    )
     await db.log_history(task_id, acting_user_id, title, "created")
 
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
@@ -1933,6 +2118,131 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
 
+async def handle_task_edit(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/tasks/{task_id}/edit — сохранение описания
+    из раскрытой карточки задачи. Пустое поле очищает описание (NULL), а не
+    хранит пустую строку — так meta-блок карточки снова корректно решает
+    "показывать плейсхолдер или нет" по одному условию (task.get("description"))."""
+    token = request.match_info["token"]
+    try:
+        task_id = int(request.match_info["task_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, _tg_user_id = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    task = await db.get_task(task_id)
+    if not task or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
+        return aioweb.Response(status=404)
+
+    description = data.get("description", "").strip()[:4000] or None
+    await db.update_task(task_id, description=description)
+
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}#task-{task_id}"})
+
+
+async def _owned_subtask(subtask_id: int, owner_id: int, owner_type: str) -> dict | None:
+    """Тот же принцип, что и у bot.py:_authorize_subtask — подзадача сама по
+    себе владельца не хранит, поэтому владение проверяется через её task_id.
+    Возвращает подзадачу при успехе, иначе None."""
+    sub = await db.get_subtask(subtask_id)
+    if not sub:
+        return None
+    task = await db.get_task(sub["task_id"])
+    if not task or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
+        return None
+    return sub
+
+
+async def handle_subtask_create(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/tasks/{task_id}/subtasks/new."""
+    token = request.match_info["token"]
+    try:
+        task_id = int(request.match_info["task_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, _tg_user_id = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    task = await db.get_task(task_id)
+    if not task or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
+        return aioweb.Response(status=404)
+
+    title = data.get("title", "").strip()
+    if title:
+        await db.add_subtask(task_id, title[:200])
+
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}#task-{task_id}"})
+
+
+async def handle_subtask_toggle(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/subtasks/{subtask_id}/toggle."""
+    token = request.match_info["token"]
+    try:
+        subtask_id = int(request.match_info["subtask_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, _tg_user_id = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    sub = await _owned_subtask(subtask_id, owner_id, owner_type)
+    if sub is None:
+        return aioweb.Response(status=404)
+
+    await db.toggle_subtask(subtask_id)
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}#task-{sub['task_id']}"})
+
+
+async def handle_subtask_delete(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/subtasks/{subtask_id}/delete."""
+    token = request.match_info["token"]
+    try:
+        subtask_id = int(request.match_info["subtask_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    owner_id, owner_type, _tg_user_id = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    sub = await _owned_subtask(subtask_id, owner_id, owner_type)
+    if sub is None:
+        return aioweb.Response(status=404)
+
+    await db.delete_subtask(subtask_id)
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}#task-{sub['task_id']}"})
+
+
 def register_dashboard_routes(app: aioweb.Application):
     app.router.add_get("/dashboard/{token}", handle_dashboard)
     app.router.add_post("/dashboard/{token}", handle_dashboard)
@@ -1946,6 +2256,10 @@ def register_dashboard_routes(app: aioweb.Application):
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/photo", handle_task_photo_upload)
     app.router.add_get("/dashboard/{token}/tasks/{task_id}/photo/{photo_id}", handle_task_photo_get)
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/photo/{photo_id}/delete", handle_task_photo_delete)
+    app.router.add_post("/dashboard/{token}/tasks/{task_id}/edit", handle_task_edit)
+    app.router.add_post("/dashboard/{token}/tasks/{task_id}/subtasks/new", handle_subtask_create)
+    app.router.add_post("/dashboard/{token}/subtasks/{subtask_id}/toggle", handle_subtask_toggle)
+    app.router.add_post("/dashboard/{token}/subtasks/{subtask_id}/delete", handle_subtask_delete)
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)
     app.router.add_get("/dashboard/{token}/avatar/{user_id}", handle_avatar)
     app.router.add_get("/dashboard/{token}/history", handle_history)
