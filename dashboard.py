@@ -524,6 +524,8 @@ DASHBOARD_TEXTS = {
         "new_description_placeholder": "Описание (необязательно)…",
         "description_placeholder": "Добавить описание…",
         "btn_save_description": "Сохранить",
+        "edit_description_label": "✏️ Изменить описание",
+        "add_description_label": "✏️ Добавить описание",
         "repeats_label": "🔁 Повторяется: {label}",
         "no_repeat_label": "Не повторяется",
         "new_subtask_placeholder": "Новый пункт…",
@@ -595,6 +597,8 @@ DASHBOARD_TEXTS = {
         "new_description_placeholder": "Description (optional)…",
         "description_placeholder": "Add a description…",
         "btn_save_description": "Save",
+        "edit_description_label": "✏️ Edit description",
+        "add_description_label": "✏️ Add description",
         "repeats_label": "🔁 Repeats: {label}",
         "no_repeat_label": "Doesn't repeat",
         "new_subtask_placeholder": "New item…",
@@ -666,6 +670,8 @@ DASHBOARD_TEXTS = {
         "new_description_placeholder": "Opis (opcjonalnie)…",
         "description_placeholder": "Dodaj opis…",
         "btn_save_description": "Zapisz",
+        "edit_description_label": "✏️ Edytuj opis",
+        "add_description_label": "✏️ Dodaj opis",
         "repeats_label": "🔁 Powtarza się: {label}",
         "no_repeat_label": "Nie powtarza się",
         "new_subtask_placeholder": "Nowy punkt…",
@@ -717,7 +723,7 @@ SHARED_CSS = """
   --rule: rgba(255, 255, 255, 0.14);
   --rule-dark: rgba(255, 255, 255, 0.22);
   --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 24px 48px -26px rgba(0, 0, 0, 0.75);
-  --glass-blur: blur(18px) saturate(150%);
+  --glass-blur: blur(14px) saturate(130%);
   --radius: 20px;
   --radius-sm: 12px;
   --space-3: 12px;
@@ -730,12 +736,18 @@ SHARED_CSS = """
 html {{ background: var(--bg-0); }}
 body {{
   font-family: var(--font-body);
+  /* background-attachment: fixed было главным убийцей производительности
+     в паре с backdrop-filter — на каждый кадр скролла браузер обязан
+     пересчитывать блюр заново, потому что "фиксированный" фон формально
+     движется относительно скроллящегося контента. Заменено статичным
+     градиентом (не двигается на коротких страницах вроде этой, а на
+     длинных просто мягко уезжает вместе с контентом — не критично визуально,
+     зато дешёво для рендера). */
   background:
     radial-gradient(640px 420px at 12% -6%, rgba(217, 122, 38, 0.22), transparent 60%),
     radial-gradient(560px 460px at 108% 18%, rgba(20, 168, 126, 0.16), transparent 62%),
     radial-gradient(900px 700px at 50% 115%, rgba(217, 122, 38, 0.08), transparent 70%),
     var(--bg-0);
-  background-attachment: fixed;
   color: var(--paper); margin: 0;
   padding: var(--space-4);
   padding-top: max(var(--space-4), env(safe-area-inset-top));
@@ -774,8 +786,27 @@ button:focus-visible, input:focus-visible, a:focus-visible {{
   background: var(--card); color: var(--ink);
   border-radius: var(--radius); box-shadow: var(--shadow);
   border: 1px solid var(--card-edge);
-  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
   animation: fade-up 0.3s ease both;
+  transition: transform 0.25s cubic-bezier(.22,1,.36,1), box-shadow 0.25s ease, border-color 0.2s ease;
+}}
+/* content-visibility: браузер пропускает layout/paint карточек, которых
+   сейчас нет на экране (длинный список задач/истории) — почти бесплатное
+   ускорение первой отрисовки и скролла в Chrome/Edge; там, где свойство не
+   поддерживается (Safari), просто игнорируется, ничего не ломая. */
+.task, .event {{ content-visibility: auto; contain-intrinsic-size: 0 120px; }}
+/* Живой backdrop-filter — дорогая штука: на каждый кадр скролла браузер
+   пересчитывает блюр под элементом заново, а у .task/.event таких
+   элементов может быть десятки одновременно на экране — именно это и
+   тормозило страницу. Поэтому настоящее стекло (var(--glass-blur))
+   оставлено только на одиночных "херо" панелях — форма входа, форма
+   добавления задачи, график, баннер Telegram, панель дней: их на странице
+   всегда ровно одна-две штуки, цена блюра там фиксированная и небольшая.
+   У карточек списка — просто полупрозрачная заливка без блюра: на глаз,
+   в вертикальном списке разница почти незаметна (фон за карточкой и так
+   малоконтрастный), а разница в производительности на длинных списках —
+   огромная. */
+.chart-block, .tg-widget-banner, .new-task-form, .day-picker, #login-form {{
+  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
 }}
 /* Браузеры без backdrop-filter (редкость, но есть) получают сплошную тёмную
    панель вместо почти прозрачного фона — иначе текст на --ink (светлый)
@@ -784,6 +815,46 @@ button:focus-visible, input:focus-visible, a:focus-visible {{
   .task, .event, .chart-block, .tg-widget-banner, .new-task-form, .day-picker, #login-form {{
     background: #1c1812;
   }}
+}}
+/* Вся эта страница раньше жила только на :active (тач) — на мышке/трекпаде
+   ничего не реагировало на наведение и выглядело "мёртво". (hover: hover)
+   and (pointer: fine) — чтобы эти эффекты включались именно на ПК, а не
+   залипали на телефоне, где :hover срабатывает на тап и не снимается
+   сама собой до следующего касания. */
+@media (hover: hover) and (pointer: fine) {{
+  .task:hover, .event:hover {{
+    transform: translateY(-3px);
+    border-color: rgba(217, 122, 38, 0.35);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 28px 54px -24px rgba(0, 0, 0, 0.8);
+  }}
+  .task.done:hover, .event.done:hover {{ border-color: rgba(20, 168, 126, 0.4); }}
+  /* Блик, скользящий по карточке при наведении — узнаваемая "жидкостная"
+     деталь стекла, но дешёвая: это просто анимация background-position
+     одной уже существующей карточки под курсором, а не постоянный эффект
+     на всех карточках сразу. */
+  .task, .event {{
+    background-image: linear-gradient(115deg, transparent 20%, rgba(255, 255, 255, 0.07) 36%, transparent 52%);
+    background-size: 220% 100%; background-position: 120% 0; background-repeat: no-repeat;
+    transition: transform 0.25s cubic-bezier(.22,1,.36,1), box-shadow 0.25s ease, border-color 0.2s ease,
+                background-position 0.6s ease;
+  }}
+  .task:hover, .event:hover {{ background-position: -20% 0; }}
+  .task-summary:hover .title {{ color: var(--stamp); transition: color 0.15s ease; }}
+  .edit-toggle summary:hover {{ color: var(--stamp); }}
+  .task-photo:hover img {{ transform: scale(1.08); }}
+  .photo-nav:hover {{ border-color: var(--stamp); color: var(--stamp); }}
+  .photo-lightbox-close:hover {{ background: var(--stamp); }}
+  .check-btn:hover {{ border-color: var(--stamp); transform: scale(1.1); }}
+  .task.done .check-btn:hover, .task.overdue .check-btn:hover {{ transform: scale(1.1); }}
+  .subtask-check:hover {{ border-color: var(--stamp); }}
+  .nav-link:hover {{ opacity: 0.75; transform: translateX(2px); transition: opacity 0.15s ease, transform 0.15s ease; }}
+  button[type=submit]:hover, .desc-form button:hover, .subtask-add-form button:hover,
+  .new-task-form button:hover {{ filter: brightness(1.12); transition: filter 0.15s ease; }}
+  .task-actions button:hover {{ color: var(--stamp); }}
+  .task-actions .del-btn:hover {{ color: var(--stamp-deep); }}
+  .task-summary:hover::after {{ border-color: var(--stamp); }}
+  .chart-block:hover, .day-picker:hover {{ border-color: var(--card-edge); box-shadow: var(--shadow); }}
+  a.nav-link, button, .task-summary, .check-btn, .subtask-check {{ cursor: pointer; }}
 }}
 {stagger_rules}
 """
@@ -826,7 +897,7 @@ button[type=submit] {{
   background: var(--stamp); color: var(--on-accent); font-weight: 600; cursor: pointer; font-size: 0.95rem;
 }}
 button[type=submit]:active {{ background: var(--stamp-deep); }}
-.error {{ color: var(--stamp); font-size: 0.85rem; margin-top: 10px; font-style: italic; font-family: var(--font-display); }}
+.error {{ color: var(--stamp); font-size: 0.85rem; margin-top: 10px; font-family: var(--font-body); }}
 h2 {{ font-family: var(--font-display); font-style: italic; font-weight: 600; margin: 0 0 1.1rem; font-size: 1.35rem; color: var(--ink); }}
 </style></head>
 <body>
@@ -910,7 +981,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 }}
 .task-details[open] > .task-summary::after {{ transform: rotate(-135deg); top: 9px; }}
 .task-summary:focus-visible {{ outline: 2px solid var(--stamp); outline-offset: 2px; }}
-.title {{ font-family: var(--font-display); font-weight: 600; font-size: 1.08rem; color: var(--ink);
+.title {{ font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; line-height: 1.35; color: var(--ink);
          position: relative; display: inline-block; }}
 .task.done .title {{ color: var(--ink-soft); }}
 .task.done .title::after {{
@@ -920,10 +991,59 @@ TASKS_PAGE = """<!DOCTYPE html>
 }}
 @keyframes strike {{ to {{ transform: scaleX(1); }} }}
 .meta {{ color: var(--ink-soft); font-size: 0.85rem; margin-top: 4px; }}
-.task-expanded {{ margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--rule); animation: fade-up 0.25s ease both; }}
-.repeat-info {{ color: var(--ink-soft); font-size: 0.85rem; margin-bottom: 8px; font-style: italic; font-family: var(--font-display); }}
+/* Разделитель — мягкий градиент-растворение вместо пунктира: пунктир
+   читался как "бухгалтерская книга", а не как стекло. */
+.task-expanded {{
+  margin-top: 12px; padding-top: 13px; position: relative; transform-origin: top center;
+}}
+.task-expanded::before {{
+  content: ""; position: absolute; top: 0; left: -2px; right: -2px; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--rule) 15%, var(--rule) 85%, transparent);
+}}
+/* Долгое, многослойное появление содержимого карточки при раскрытии —
+   специально небыстрое (0.6с) и "дорогое" на вид: стекло "материализуется"
+   из блюра с лёгким приседанием по Y, а не просто мгновенно появляется.
+   Триггерится само по себе в поддерживающих браузерах, потому что контент
+   нативного <details> физически не существует в дереве рендера, пока он
+   закрыт, — в момент открытия браузер видит элемент как "только что
+   вставленный" и честно проигрывает его entrance-animation. Там, где это
+   не так (очень старые браузеры) — контент просто появляется мгновенно,
+   деградация без потери функциональности. */
+@keyframes glass-materialize {{
+  0%   {{ opacity: 0; transform: translateY(-16px) scale(0.95); filter: blur(12px); }}
+  55%  {{ opacity: 1; filter: blur(0); }}
+  100% {{ opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }}
+}}
+.task-expanded {{ animation: glass-materialize 0.65s cubic-bezier(.16,1,.3,1) both; }}
+/* Лёгкий каскад: содержимое внутри не вываливается одним куском, а
+   "досыпается" друг за другом с небольшой задержкой — тот самый
+   ощутимо-небыстрый, многоступенчатый эффект. */
+.task-expanded > * {{
+  animation: fade-up 0.45s cubic-bezier(.16,1,.3,1) both;
+  animation-delay: 0.12s;
+}}
+.task-expanded > *:nth-child(2) {{ animation-delay: 0.17s; }}
+.task-expanded > *:nth-child(3) {{ animation-delay: 0.22s; }}
+.task-expanded > *:nth-child(4) {{ animation-delay: 0.27s; }}
+.task-expanded > *:nth-child(5) {{ animation-delay: 0.32s; }}
+.task-expanded > *:nth-child(6) {{ animation-delay: 0.37s; }}
+.task-expanded > *:nth-child(n+7) {{ animation-delay: 0.4s; }}
+.repeat-chip, .tag {{
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 11px; border-radius: 999px; font-size: 0.78rem; font-weight: 600;
+  font-family: var(--font-body); font-style: normal; line-height: 1.4;
+}}
+.repeat-chip {{ color: var(--ink-soft); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--card-edge); margin-bottom: 10px; }}
 .description-text {{ color: var(--ink); font-size: 0.92rem; line-height: 1.45; margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }}
-.desc-form {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }}
+.edit-toggle {{ margin-bottom: 10px; }}
+.edit-toggle summary {{
+  list-style: none; cursor: pointer; display: inline-block; -webkit-tap-highlight-color: transparent;
+  color: var(--ink-soft); font-size: 0.82rem; font-family: var(--font-body);
+}}
+.edit-toggle summary::-webkit-details-marker {{ display: none; }}
+.edit-toggle[open] summary {{ color: var(--stamp); margin-bottom: 8px; }}
+.desc-form {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px;
+    animation: fade-up 0.35s cubic-bezier(.16,1,.3,1) both; }}
 .desc-form textarea {{
   width: 100%; padding: 8px; border: 1px solid var(--rule); border-radius: var(--radius-sm);
   background: rgba(0, 0, 0, 0.22); color: var(--ink); font-family: var(--font-body); font-size: 0.9rem;
@@ -984,12 +1104,12 @@ TASKS_PAGE = """<!DOCTYPE html>
 .task-actions {{ display: flex; gap: 16px; margin-top: 10px; }}
 .task-actions button {{
   background: none; border: none; color: var(--ink-soft); font-size: 0.82rem;
-  font-family: var(--font-display); font-style: italic; cursor: pointer; padding: 0;
+  font-family: var(--font-body); cursor: pointer; padding: 0;
   transition: color 0.15s ease;
 }}
 .task-actions button:active {{ color: var(--stamp); }}
 .task-actions .del-btn:active {{ color: var(--stamp-deep); }}
-.tag {{ display: inline-block; color: var(--stamp-deep); font-size: 0.78rem; font-weight: 600; margin-top: 6px; }}
+.tag {{ color: var(--stamp-deep); background: rgba(217, 122, 38, 0.14); border: 1px solid rgba(217, 122, 38, 0.3); margin-top: 6px; }}
 .task-author {{ display: flex; align-items: center; gap: 6px; margin-top: 8px;
                font-size: 0.8rem; color: var(--ink-soft); }}
 .avatar {{ width: 20px; height: 20px; border-radius: 50%; object-fit: cover;
@@ -1031,12 +1151,12 @@ TASKS_PAGE = """<!DOCTYPE html>
   color: var(--on-accent); font-weight: 600; cursor: pointer; flex-shrink: 0;
 }}
 .new-task-form button:active {{ background: var(--stamp-deep); }}
-.new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-style: italic; font-family: var(--font-display); }}
+.new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-family: var(--font-body); }}
 .tg-widget-banner {{ padding: 0.8rem 1rem; margin-bottom: var(--space-4);
     display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }}
-.tg-widget-banner span {{ font-size: 0.85rem; color: var(--ink-soft); font-style: italic; font-family: var(--font-display); }}
+.tg-widget-banner span {{ font-size: 0.85rem; color: var(--ink-soft); font-family: var(--font-body); }}
 .nav-link {{ display: inline-block; color: var(--paper-soft); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4);
-    font-family: var(--font-display); font-style: italic; }}
+    font-family: var(--font-body); }}
 .event {{ padding: 0.85rem 1rem; margin-bottom: 0.6rem; display: flex; gap: 0.65rem; align-items: center; }}
 .event-body {{ flex: 1; min-width: 0; }}
 .event-line {{ font-size: 0.92rem; color: var(--ink); }}
@@ -1044,7 +1164,7 @@ TASKS_PAGE = """<!DOCTYPE html>
 .event-time {{ color: var(--ink-soft); font-size: 0.78rem; margin-top: 2px; }}
 .load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px dashed var(--rule-dark);
     background: transparent; color: var(--paper-soft); text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box;
-    font-family: var(--font-display); font-style: italic; }}
+    font-family: var(--font-body); }}
 .load-more:active {{ border-color: var(--stamp); color: var(--stamp); }}
 @media (max-width: 480px) {{ .new-task-form button {{ width: 100%; }} }}
 /* Карусель фото: viewport шириной ровно 3 кадра, остальные уезжают за
@@ -1054,15 +1174,23 @@ TASKS_PAGE = """<!DOCTYPE html>
   position: relative; margin-top: 12px; margin-bottom: 14px; padding-top: 10px;
   padding-left: 30px; padding-right: 30px; border-top: 1px solid var(--rule);
 }}
+/* Одно фото: нет карусели — нет и стрелок, боковые поля под них не нужны,
+   а сам кадр растягивается на всю ширину карточки (см. .task-photo-hero). */
+.task-photos-wrap.hero {{ padding-left: 0; padding-right: 0; }}
+.task-photos-wrap.hero .task-photos {{ width: 100%; }}
 .task-photos {{
-  display: flex; gap: 6px; overflow-x: auto; scroll-snap-type: x mandatory;
-  width: calc(3 * 96px + 2 * 6px); max-width: 100%;
+  display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory;
+  width: calc(3 * 118px + 2 * 8px); max-width: 100%;
   scrollbar-width: none; -ms-overflow-style: none;
 }}
 .task-photos::-webkit-scrollbar {{ display: none; }}
-.task-photo {{ position: relative; width: 96px; height: 96px; border-radius: var(--radius-sm); overflow: hidden;
+.task-photo {{ position: relative; width: 118px; height: 118px; border-radius: var(--radius-sm); overflow: hidden;
     border: 1px solid var(--card-edge); flex-shrink: 0; scroll-snap-align: start; cursor: pointer; }}
-.task-photo img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
+.task-photo img {{ width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.3s ease; }}
+/* Одно фото — не мельчим в квадратик карусели, а показываем крупно во всю
+   ширину карточки: это и есть главный выигрыш в "насколько хорошо видно
+   фото" для самого частого случая (одно фото на задачу). */
+.task-photo.task-photo-hero {{ width: 100%; height: auto; aspect-ratio: 16 / 10; }}
 .task-photo form {{ position: absolute; top: 4px; right: 4px; line-height: 0; }}
 .photo-del-btn {{ width: 20px; height: 20px; border-radius: 50%; border: none; background: rgba(43, 35, 23, 0.65);
     color: var(--on-accent); font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }}
@@ -1082,21 +1210,27 @@ TASKS_PAGE = """<!DOCTYPE html>
    или крестику закрывает. Картинка вписывается в экран с сохранением пропорций,
    никакого внешнего JS/библиотек. */
 .photo-lightbox {{
-  display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(20, 27, 23, 0.92);
+  display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(7, 6, 8, 0.86);
+  backdrop-filter: blur(22px) saturate(120%); -webkit-backdrop-filter: blur(22px) saturate(120%);
   align-items: center; justify-content: center; padding: var(--space-4);
 }}
+/* Лайтбокс один на экране в любой момент — в отличие от блюра на карточках
+   списка, здесь backdrop-filter ничего не стоит с точки зрения
+   производительности (один элемент, не десятки). */
 .photo-lightbox.open {{ display: flex; }}
-.photo-lightbox img {{ max-width: 100%; max-height: 100%; border-radius: var(--radius-sm);
-    box-shadow: 0 20px 50px rgba(0,0,0,0.5); }}
+@keyframes lightbox-in {{ from {{ opacity: 0; transform: scale(0.94); }} to {{ opacity: 1; transform: scale(1); }} }}
+.photo-lightbox.open img {{ animation: lightbox-in 0.35s cubic-bezier(.16,1,.3,1) both; }}
+.photo-lightbox img {{ max-width: 100%; max-height: 100%; border-radius: var(--radius);
+    border: 1px solid var(--card-edge); box-shadow: 0 30px 70px -20px rgba(0,0,0,0.7); }}
 .photo-lightbox-close {{
   position: absolute; top: max(var(--space-4), env(safe-area-inset-top)); right: var(--space-4);
-  width: 36px; height: 36px; border-radius: 50%; border: none; background: rgba(246, 239, 221, 0.15);
-  color: var(--paper); font-size: 18px; cursor: pointer; line-height: 1;
+  width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--card-edge); background: var(--card-edge);
+  color: var(--on-accent); font-size: 18px; cursor: pointer; line-height: 1; transition: background 0.15s ease;
 }}
-.photo-lightbox-close:active {{ background: rgba(246, 239, 221, 0.3); }}
+.photo-lightbox-close:active {{ background: var(--stamp-deep); }}
 .photo-upload-form {{ margin-top: 10px; }}
 .photo-upload-btn {{ display: inline-flex; align-items: center; gap: 4px; font-size: 0.82rem; color: var(--ink-soft);
-    font-family: var(--font-display); font-style: italic; cursor: pointer; }}
+    font-family: var(--font-body); cursor: pointer; }}
 .photo-upload-btn input[type=file] {{ position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }}
 
 /* Панель выбора дня — адаптация карточки "Upcoming Meetings" с Uiverse под
@@ -1188,10 +1322,10 @@ HISTORY_PAGE = """<!DOCTYPE html>
 .empty {{ color: var(--paper-soft); text-align: center; padding: 3rem 1rem; font-family: var(--font-display); font-style: italic; }}
 .load-more {{ display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px dashed var(--rule-dark);
     background: transparent; color: var(--paper-soft); text-align: center; text-decoration: none; margin-top: 0.5rem; box-sizing: border-box;
-    font-family: var(--font-display); font-style: italic; }}
+    font-family: var(--font-body); }}
 .load-more:active {{ border-color: var(--stamp); color: var(--stamp); }}
 .nav-link {{ display: inline-block; color: var(--paper-soft); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4);
-    font-family: var(--font-display); font-style: italic; }}
+    font-family: var(--font-body); }}
 </style></head>
 <body>
 <a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
@@ -1295,19 +1429,19 @@ TEMPLATES_PAGE = """<!DOCTYPE html>
 .task {{ padding: var(--space-4); margin-bottom: var(--space-3);
         display: flex; gap: var(--space-3); align-items: flex-start; }}
 .task-body {{ flex: 1; min-width: 0; }}
-.title {{ font-family: var(--font-display); font-weight: 600; font-size: 1.08rem; color: var(--ink); }}
+.title {{ font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; line-height: 1.35; color: var(--ink); }}
 .meta {{ color: var(--ink-soft); font-size: 0.85rem; margin-top: 4px; }}
 .task-actions {{ display: flex; gap: 16px; margin-top: 10px; }}
 .task-actions button {{
   background: none; border: none; color: var(--ink-soft); font-size: 0.82rem;
-  font-family: var(--font-display); font-style: italic; cursor: pointer; padding: 0;
+  font-family: var(--font-body); cursor: pointer; padding: 0;
   transition: color 0.15s ease;
 }}
 .task-actions button:active {{ color: var(--stamp); }}
 .task-actions .del-btn:active {{ color: var(--stamp-deep); }}
 .empty {{ color: var(--paper-soft); text-align: center; padding: 3rem 1rem; font-family: var(--font-display); font-style: italic; }}
 .nav-link {{ display: inline-block; color: var(--paper-soft); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4);
-    font-family: var(--font-display); font-style: italic; margin-right: var(--space-3); }}
+    font-family: var(--font-body); margin-right: var(--space-3); }}
 .new-task-form {{ display: flex; flex-direction: column; gap: 10px; padding: var(--space-4); margin-top: var(--space-4); }}
 .new-task-form input[type=text], .new-task-form input[type=time], .new-task-form input[type=number] {{
   width: 100%; padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
@@ -1321,7 +1455,7 @@ TEMPLATES_PAGE = """<!DOCTYPE html>
   color: var(--on-accent); font-weight: 600; cursor: pointer; flex-shrink: 0;
 }}
 .new-task-form button:active {{ background: var(--stamp-deep); }}
-.new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-style: italic; font-family: var(--font-display); }}
+.new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-family: var(--font-body); }}
 @media (max-width: 480px) {{ .new-task-form button {{ width: 100%; }} }}
 </style></head>
 <body>
@@ -1638,29 +1772,31 @@ def _render_author(created_by: int | None, creator: dict | None, token: str) -> 
     return f'<div class="task-author">{avatar_html}<span>{escape(name)}</span></div>'
 
 
-PHOTO_SLOT_WIDTH = 96  # px — ширина одного кадра карусели, используется и в CSS, и в JS-прокрутке стрелками
+PHOTO_SLOT_WIDTH = 118  # px — ширина одного кадра карусели, используется и в CSS, и в JS-прокрутке стрелками (было 96 — фото было мелковато различимо, укрупнили)
 
 
 def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, texts: dict) -> str:
-    """Карусель фото под задачей: показывает до 3 кадров разом (viewport шириной
-    3*PHOTO_SLOT_WIDTH), остальные скрыты за горизонтальным scroll-snap —
-    пользователь листает сам через стрелки (JS просто двигает scrollLeft на
-    один кадр, без автопрокрутки и анимации зацикливания). Стрелки рисуются,
-    только если фото больше 3 — незачем показывать управление, которое нечем
-    листать. Сами байты не инлайнятся — каждая картинка подтягивается
-    отдельным GET на /photo/{id} (кешируется браузером)."""
+    """Карусель фото под задачей. Сначала самый частый случай — ОДНО фото —
+    рендерится крупно на всю ширину карточки (.task-photo-hero), а не
+    мелким квадратиком 118×118 из общей сетки: именно одно фото теряло
+    больше всего в читаемости при сжатии в квадрат. 2+ фото — прежняя
+    карусель (до 3 кадров разом, scroll-snap, стрелки только если фото
+    больше 3 — незачем рисовать управление, которым нечего листать). Сами
+    байты не инлайнятся — каждая картинка подтягивается отдельным GET на
+    /photo/{id} (кешируется браузером)."""
     if not photos:
         return ""
     track_id = f"ph-track-{task_id}"
     lightbox_id = f"ph-lb-{task_id}"
+    is_hero = len(photos) == 1
     items = []
-    lightbox_imgs = []
     for p in photos:
         src = f"/dashboard/{token}/tasks/{task_id}/photo/{p['id']}"
+        photo_class = "task-photo task-photo-hero" if is_hero else "task-photo"
         # Тап по превью открывает лайтбокс той же картинкой по полному размеру
         # (тот же /photo/{id}, без доп. запроса) — крестик удаления свой
         # обработчик клика не теряет благодаря stopPropagation.
-        items.append(f"""<div class="task-photo" onclick="document.getElementById('{lightbox_id}').querySelector('img').src='{src}';document.getElementById('{lightbox_id}').classList.add('open')">
+        items.append(f"""<div class="{photo_class}" onclick="document.getElementById('{lightbox_id}').querySelector('img').src='{src}';document.getElementById('{lightbox_id}').classList.add('open')">
 <img src="{src}" alt="" loading="lazy">
 <form method="post" action="/dashboard/{token}/tasks/{task_id}/photo/{p['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_photo"])}')" onclick="event.stopPropagation()">
 <input type="hidden" name="csrf" value="{csrf}">
@@ -1684,7 +1820,8 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
 <img src="" alt="" onclick="event.stopPropagation()">
 </div>"""
 
-    return f"""<div class="task-photos-wrap">
+    wrap_class = "task-photos-wrap hero" if is_hero else "task-photos-wrap"
+    return f"""<div class="{wrap_class}">
 <div class="task-photos" id="{track_id}">{"".join(items)}</div>
 {arrows_html}
 </div>
@@ -1756,9 +1893,9 @@ def _render_task(
     # в .repeat-info, чтобы не раздувать и так плотную строку меты.
     repeat_html = " · 🔁" if task["repeat"] != "none" and repeat_label else ""
     repeat_info_html = (
-        f'<div class="repeat-info">{escape(texts["repeats_label"].format(label=repeat_label))}</div>'
+        f'<div class="repeat-chip">{escape(texts["repeats_label"].format(label=repeat_label))}</div>'
         if task["repeat"] != "none" and repeat_label
-        else f'<div class="repeat-info">{escape(texts["no_repeat_label"])}</div>'
+        else f'<div class="repeat-chip">{escape(texts["no_repeat_label"])}</div>'
     )
     toggle_action = "undone" if task["done"] else "done"
     # Автора показываем только в групповом дашборде — в личном он и так всегда
@@ -1769,13 +1906,23 @@ def _render_task(
     photos_html = _render_photos(photos, token, task["id"], csrf, texts)
     upload_html = _render_upload_form(token, task["id"], csrf, texts, len(photos))
 
+    # Раньше текст описания дублировался: один раз как read-only абзац,
+    # сразу под ним — та же строка ещё раз в textarea формы редактирования.
+    # Теперь textarea спрятана во вложенный <details> ("✏️ Изменить
+    # описание") — по умолчанию виден только чистый текст, форма
+    # редактирования — отдельное осознанное действие, а не вечно открытая
+    # дублирующая копия.
     description = task.get("description") or ""
     description_text_html = f'<p class="description-text">{escape(description)}</p>' if description else ""
-    desc_form_html = f"""<form class="desc-form" method="post" action="/dashboard/{token}/tasks/{task['id']}/edit">
+    edit_label = texts["edit_description_label"] if description else texts["add_description_label"]
+    desc_form_html = f"""<details class="edit-toggle">
+<summary>{escape(edit_label)}</summary>
+<form class="desc-form" method="post" action="/dashboard/{token}/tasks/{task['id']}/edit">
 <input type="hidden" name="csrf" value="{csrf}">
 <textarea name="description" placeholder="{escape(texts["description_placeholder"])}" maxlength="4000" rows="2">{escape(description)}</textarea>
 <button type="submit">{escape(texts["btn_save_description"])}</button>
-</form>"""
+</form>
+</details>"""
     subtasks_html = _render_subtasks(subtasks or [], token, task["id"], csrf, texts)
 
     extra_actions = ""
