@@ -13,18 +13,28 @@ owner_id/owner_type, дальше вся логика страницы рабо�
 aiogram-зависимости в веб-слой — здесь свой маленький словарь DASHBOARD_TEXTS."""
 
 import asyncio
+import calendar as cal
+import datetime as dt
+import gzip
 import hashlib
 import hmac
+import io
 import logging
 import os
+import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from html import escape
+from zoneinfo import ZoneInfo
 
+import aiohttp
 from aiohttp import web as aioweb
+from PIL import Image
 
 import db
 from stats import compute_streak, daily_series
+
+UTC = ZoneInfo("UTC")
 
 logger = logging.getLogger(__name__)
 
@@ -54,19 +64,54 @@ _LOGIN_WINDOW_SECONDS = 15 * 60   # считаем неудачи за посл�
 _LOGIN_LOCKOUT_SECONDS = 10 * 60  # и блокируем на 10 минут после превышения
 
 
+# Сколько ПОСЛЕДНИХ адресов в X-Forwarded-For добавлено нашими собственными
+# прокси. Для Render это 1. Брать адрес нельзя из начала списка: прокси
+# ДОПИСЫВАЕТ адрес своего клиента в конец, поэтому левые элементы — это то,
+# что прислал сам клиент, т.е. полностью подконтрольные ему значения. Раньше
+# тут был fwd.split(",")[0] — и rate-limit на вход обходился простым
+# "X-Forwarded-For: <случайный IP>" в каждом запросе (ключ (token, ip) всякий
+# раз новый, лимит никогда не срабатывал).
+_TRUSTED_PROXY_COUNT = max(1, int(os.environ.get("TRUSTED_PROXY_COUNT", "1")))
+
+
 def _client_ip(request: aioweb.Request) -> str:
-    # Render (и большинство PaaS) кладёт реальный IP в X-Forwarded-For;
-    # первый адрес в списке — исходный клиент.
-    fwd = request.headers.get("X-Forwarded-For", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
+    if chain:
+        # len-N — адрес, который дописал самый внешний ДОВЕРЕННЫЙ прокси;
+        # max(..., 0) — если цепочка короче ожидаемой (запрос пришёл напрямую).
+        return chain[max(len(chain) - _TRUSTED_PROXY_COUNT, 0)]
     return request.remote or "unknown"
+
+
+_LOGIN_PRUNE_INTERVAL = 5 * 60
+_last_login_prune = 0.0
+
+
+def _prune_login_attempts(now: float):
+    """Раньше запись (token, ip) создавалась на КАЖДЫЙ POST и удалялась только
+    при успешном входе — словарь рос бесконечно (с подделкой X-Forwarded-For
+    это был дешёвый способ раздуть память процесса). Теперь устаревшие ключи
+    выметаются целиком, не чаще раза в _LOGIN_PRUNE_INTERVAL."""
+    global _last_login_prune
+    if now - _last_login_prune < _LOGIN_PRUNE_INTERVAL:
+        return
+    _last_login_prune = now
+    horizon = max(_LOGIN_WINDOW_SECONDS, _LOGIN_LOCKOUT_SECONDS)
+    for key, attempts in list(_LOGIN_ATTEMPTS.items()):
+        if not attempts or now - attempts[-1] > horizon:
+            del _LOGIN_ATTEMPTS[key]
 
 
 def _login_rate_limited(token: str, ip: str) -> bool:
     key = (token, ip)
     now = time.time()
+    _prune_login_attempts(now)
     attempts = [t for t in _LOGIN_ATTEMPTS.get(key, []) if now - t < _LOGIN_WINDOW_SECONDS]
+    if not attempts:
+        # Пустой список не храним вовсе — иначе один запрос с любым паролем
+        # оставлял после себя вечную запись в словаре.
+        _LOGIN_ATTEMPTS.pop(key, None)
+        return False
     _LOGIN_ATTEMPTS[key] = attempts
     if len(attempts) < _LOGIN_MAX_ATTEMPTS:
         return False
@@ -116,8 +161,13 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(legacy, stored)
 
 
-def _sign_session(owner_id: int, owner_type: str, token: str, tg_user_id: int = 0, password_version: int = 0) -> str:
-    """tg_user_id — личность реального Telegram-пользователя, известная только
+def _sign_session(owner_id: int, owner_type: str, tg_user_id: int = 0, password_version: int = 0) -> str:
+    """Привязка cookie к конкретному дашборду обеспечивается именем cookie
+    (session_<token>) и сверкой owner_id/owner_type с владельцем токена в
+    _require_session — поэтому сам токен в подпись не входит (раньше он был
+    параметром функции, но в payload не попадал, что только путало).
+
+    tg_user_id — личность реального Telegram-пользователя, известная только
     после входа через Telegram Login Widget (см. verify_telegram_login).
     0 значит "неизвестно" — так входят по обычному паролю на групповом
     дашборде, пока не прошли через виджет; для owner_type='user' сюда всегда
@@ -152,10 +202,14 @@ def _verify_session(cookie_value: str, current_password_version: int | None = No
         return None
 
 
-async def _require_session(request: aioweb.Request, token: str) -> tuple[int, str, int] | None:
+async def _require_session_full(request: aioweb.Request, token: str) -> tuple[dict, int, str, int] | None:
     """Общая проверка доступа для всех POST-действий (done/undone и т.д.): владелец
     дашборда должен существовать, а cookie — валидно расписываться именно на него.
-    Возвращает (owner_id, owner_type, tg_user_id) или None, если доступ запрещён."""
+    Возвращает (settings, owner_id, owner_type, tg_user_id) или None при отказе.
+
+    settings отдаём наружу, потому что половине обработчиков он нужен сразу
+    после проверки (timezone для due_at) — раньше они делали второй такой же
+    get_owner_by_dashboard_token, т.е. лишний SELECT на каждое действие."""
     settings = await db.get_owner_by_dashboard_token(token)
     if not settings:
         return None
@@ -167,7 +221,23 @@ async def _require_session(request: aioweb.Request, token: str) -> tuple[int, st
     owner_id, owner_type, tg_user_id = session
     if (owner_id, owner_type) != (settings["owner_id"], settings["owner_type"]):
         return None
-    return owner_id, owner_type, tg_user_id
+    return settings, owner_id, owner_type, tg_user_id
+
+
+async def _require_session(request: aioweb.Request, token: str) -> tuple[int, str, int] | None:
+    """Вариант для обработчиков, которым settings не нужен."""
+    full = await _require_session_full(request, token)
+    return None if full is None else full[1:]
+
+
+def _tz_of(settings: dict | None):
+    """Часовой пояс владельца с фолбэком на UTC — одна точка вместо четырёх
+    одинаковых try/except по файлу. ZoneInfo кеширует объекты по имени зоны,
+    так что повторные вызовы ничего не пересчитывают."""
+    try:
+        return ZoneInfo(settings["timezone"])
+    except Exception:
+        return UTC
 
 
 def _acting_user_id(owner_id: int, owner_type: str, tg_user_id: int) -> int:
@@ -179,6 +249,49 @@ def _acting_user_id(owner_id: int, owner_type: str, tg_user_id: int) -> int:
     if owner_type == "user":
         return owner_id
     return tg_user_id or owner_id
+
+
+# ---------- связь с планировщиком бота ----------
+# Дашборд работает в том же процессе, что и бот (bot.py вызывает
+# register_dashboard_routes на своём aiohttp-приложении), но импортировать
+# bot.py отсюда нельзя — он сам импортирует этот модуль, получился бы цикл.
+# Поэтому bot.py при старте отдаёт сюда две свои функции (schedule_task и
+# _remove_task_jobs) через set_scheduler_hooks. Без этого задача, созданная с
+# дашборда, вообще не попадала в APScheduler — напоминание по ней не
+# приходило до перезапуска процесса (restore_jobs), а удалённая с дашборда
+# задача наоборот оставляла после себя живые джобы.
+_schedule_task_hook = None
+_unschedule_task_hook = None
+
+
+def set_scheduler_hooks(schedule=None, unschedule=None):
+    global _schedule_task_hook, _unschedule_task_hook
+    _schedule_task_hook = schedule
+    _unschedule_task_hook = unschedule
+
+
+def _schedule_task(task_id: int, owner_id: int, owner_type: str, due_at: datetime,
+                   repeat: str, remind: str, tz, remind_until_done: bool = False):
+    """Хуки намеренно необязательны: тесты и запуск дашборда отдельным
+    процессом работают и без планировщика — тогда это no-op, как было раньше.
+    Сбой планирования не должен ронять уже выполненное действие в БД, поэтому
+    исключение только логируется."""
+    if _schedule_task_hook is None:
+        return
+    try:
+        _schedule_task_hook(task_id, owner_id, owner_type, due_at.astimezone(UTC),
+                            repeat, remind, tz, remind_until_done=remind_until_done)
+    except Exception:
+        logger.exception("Не удалось запланировать задачу %s, созданную с дашборда", task_id)
+
+
+def _unschedule_task(task_id: int):
+    if _unschedule_task_hook is None:
+        return
+    try:
+        _unschedule_task_hook(task_id)
+    except Exception:
+        logger.exception("Не удалось снять джобы задачи %s с дашборда", task_id)
 
 
 # ---------- CSRF ----------
@@ -242,7 +355,6 @@ AVATAR_JPEG_QUALITY = 82
 async def _fetch_and_compress_photo(tg_user_id: int) -> tuple[bytes, str] | None:
     if not BOT_TOKEN:
         return None
-    import aiohttp
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -274,8 +386,6 @@ async def _fetch_and_compress_photo(tg_user_id: int) -> tuple[bytes, str] | None
         return None
 
     try:
-        from PIL import Image
-        import io
         img = Image.open(io.BytesIO(raw))
         img = img.convert("RGB")
         img.thumbnail((AVATAR_MAX_SIDE, AVATAR_MAX_SIDE))
@@ -291,6 +401,15 @@ async def _fetch_and_compress_photo(tg_user_id: int) -> tuple[bytes, str] | None
 TASK_PHOTO_MAX_SIDE = 1280
 TASK_PHOTO_JPEG_QUALITY = 85
 TASK_PHOTO_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # лимит на входящий файл ДО сжатия
+# Превью. В ленте одно фото показывается во всю ширину карточки (на телефоне
+# это ~340 CSS-пикселей), а в карусели — вообще в 118px. Полный кадр на 1280px
+# весит в среднем 250-400 КБ: пять фото в одной задаче — это под два мегабайта
+# трафика ради картинок, которые физически не могут показать такую детализацию.
+# 560px по длинной стороне хватает и для крупного показа на retina-телефоне, а
+# весит такое превью примерно в пять раз меньше. Полный кадр остаётся и
+# отдаётся только по тапу — в лайтбоксе.
+TASK_PHOTO_THUMB_MAX_SIDE = 560
+TASK_PHOTO_THUMB_QUALITY = 76
 
 
 def compress_task_photo(raw: bytes) -> tuple[bytes, str] | None:
@@ -299,8 +418,6 @@ def compress_task_photo(raw: bytes) -> tuple[bytes, str] | None:
     изображение (битый файл, не тот content-type) — вызывающая сторона должна
     явно отклонить загрузку в этом случае, а не падать с 500."""
     try:
-        from PIL import Image
-        import io
         img = Image.open(io.BytesIO(raw))
         img.load()  # форсируем декодирование сейчас, а не лениво при .save() —
                      # иначе битый файл всплывёт позже менее понятной ошибкой
@@ -311,6 +428,23 @@ def compress_task_photo(raw: bytes) -> tuple[bytes, str] | None:
         return buf.getvalue(), "image/jpeg"
     except Exception:
         logger.exception("Не удалось декодировать/сжать фото задачи")
+        return None
+
+
+def make_task_photo_thumb(data: bytes) -> bytes | None:
+    """Делает превью из уже сжатого кадра (дешевле, чем из исходника). None —
+    если кадр не декодируется; вызывающая сторона тогда просто живёт без
+    превью и отдаёт полный файл, как раньше."""
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        img = img.convert("RGB")
+        img.thumbnail((TASK_PHOTO_THUMB_MAX_SIDE, TASK_PHOTO_THUMB_MAX_SIDE))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=TASK_PHOTO_THUMB_QUALITY, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        logger.exception("Не удалось сделать превью фото задачи")
         return None
 
 
@@ -338,14 +472,17 @@ async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
 
     cookie = request.cookies.get(f"session_{token}", "")
     reader = await request.multipart()
-    field = None
+    got_file = False
     csrf_token = ""
     file_bytes = b""
+    # CSRF проверяется ПОСЛЕ цикла — порядок частей в multipart роли не играет;
+    # читать байты до проверки безопасно, потому что сессия уже проверена выше,
+    # а объём ограничен TASK_PHOTO_MAX_UPLOAD_BYTES.
     async for part in reader:
         if part.name == "csrf":
             csrf_token = (await part.read()).decode("utf-8", errors="ignore")
         elif part.name == "photo":
-            field = part
+            got_file = True
             # Читаем с ограничением, чтобы не раздувать память на огромном файле —
             # читаем по чанку и обрываем, как только превысили лимит.
             while True:
@@ -358,7 +495,7 @@ async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
 
     if not _verify_csrf(csrf_token, cookie):
         return aioweb.Response(status=403)
-    if field is None or not file_bytes:
+    if not got_file or not file_bytes:
         return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
     if await db.count_task_photos(task_id) >= db.MAX_PHOTOS_PER_TASK:
@@ -368,14 +505,36 @@ async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
     if compressed is None:
         return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=bad_photo"})
     data, mime = compressed
-    await db.add_task_photo(task_id, data, mime, uploaded_by=acting_user_id)
+    # Превью считаем здесь же, а не при первом показе: сжатие уже произошло,
+    # картинка в памяти, лишних миллисекунд это почти не стоит.
+    thumb = await asyncio.to_thread(make_task_photo_thumb, data)
+    await db.add_task_photo(task_id, data, mime, uploaded_by=acting_user_id, thumb=thumb)
     await db.log_history(task_id, acting_user_id, task["title"], "photo_added")
 
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
 
+def _not_modified(request: aioweb.Request, etag: str) -> aioweb.Response | None:
+    """304 вместо повторной отдачи тех же байтов. max-age у картинок — час, и
+    раньше по его истечении телефон качал каждое фото целиком заново; теперь
+    при неизменившемся ETag ответ — пустой 304."""
+    if request.headers.get("If-None-Match") == etag:
+        return aioweb.Response(status=304, headers={"ETag": etag})
+    return None
+
+
+def _image_headers(etag: str) -> dict:
+    # private, а не public: доступ к картинке держится только на секретности
+    # токена дашборда, и промежуточному прокси кешировать её и отдавать
+    # кому-то ещё нельзя.
+    return {"Cache-Control": f"private, max-age={AVATAR_CACHE_SECONDS}", "ETag": etag}
+
+
 async def handle_task_photo_get(request: aioweb.Request) -> aioweb.Response:
     """GET /dashboard/{token}/tasks/{task_id}/photo/{photo_id} — отдаёт байты.
+    ?size=thumb отдаёт превью (его и просит лента), без параметра — полный
+    кадр (его просит лайтбокс по тапу).
+
     Как и у аватарок, доступ не завязан на сессию (обычный <img src>), но
     привязан к валидному токену дашборда + проверке, что фото реально
     принадлежит задаче этого владельца (иначе можно перебирать чужие photo_id)."""
@@ -393,14 +552,42 @@ async def handle_task_photo_get(request: aioweb.Request) -> aioweb.Response:
     if not task or task["owner_id"] != settings["owner_id"] or task["owner_type"] != settings["owner_type"]:
         return aioweb.Response(status=404)
 
+    want_thumb = request.query.get("size") == "thumb"
+    etag = f'"{photo_id}-{"t" if want_thumb else "f"}"'
+    cached = _not_modified(request, etag)
+    if cached is not None:
+        return cached
+
+    if want_thumb:
+        # Отдельный запрос без колонки data: превью весит десятки килобайт, а
+        # полный кадр — сотни, и тащить его из БД, чтобы отдать превью, — это
+        # ровно та же лишняя работа, только на стороне сервера.
+        row = await db.get_task_photo_thumb(photo_id)
+        if row is None or row[1] != task_id:
+            return aioweb.Response(status=404)
+        thumb = row[0]
+        if thumb is None:
+            # Фото загружено до появления превью (или пришло из бота) — делаем
+            # превью сейчас и сохраняем, чтобы следующий показ обошёлся без
+            # пересжатия. Только в этом случае и нужен полный кадр.
+            full = await db.get_task_photo(photo_id)
+            if not full or full["task_id"] != task_id:
+                return aioweb.Response(status=404)
+            thumb = await asyncio.to_thread(make_task_photo_thumb, full["data"])
+            if thumb:
+                await db.set_task_photo_thumb(photo_id, thumb)
+            else:
+                # Превью не сделалось (битый кадр) — отдаём как есть, лишь бы
+                # картинка показалась.
+                return aioweb.Response(body=full["data"], content_type=full["mime"],
+                                       headers=_image_headers(etag))
+        return aioweb.Response(body=thumb, content_type="image/jpeg", headers=_image_headers(etag))
+
     photo = await db.get_task_photo(photo_id)
     if not photo or photo["task_id"] != task_id:
         return aioweb.Response(status=404)
 
-    return aioweb.Response(
-        body=photo["data"], content_type=photo["mime"],
-        headers={"Cache-Control": f"public, max-age={AVATAR_CACHE_SECONDS}"},
-    )
+    return aioweb.Response(body=photo["data"], content_type=photo["mime"], headers=_image_headers(etag))
 
 
 async def handle_task_photo_delete(request: aioweb.Request) -> aioweb.Response:
@@ -446,14 +633,123 @@ async def handle_avatar(request: aioweb.Request) -> aioweb.Response:
     except ValueError:
         return aioweb.Response(status=404)
 
+    etag = f'"av{user_id}"'
+    cached = _not_modified(request, etag)
+    if cached is not None:
+        return cached
+
     photo = await db.get_telegram_user_photo(user_id)
     if not photo:
         return aioweb.Response(status=404)
     data, mime = photo
-    return aioweb.Response(
-        body=data, content_type=mime,
-        headers={"Cache-Control": f"public, max-age={AVATAR_CACHE_SECONDS}"},
-    )
+    return aioweb.Response(body=data, content_type=mime, headers=_image_headers(etag))
+
+
+# ---------- статика: CSS отдельным кешируемым файлом ----------
+# Раньше весь CSS (десять с лишним килобайт на каждой странице, а на странице
+# задач — больше тридцати) инлайнился в HTML и качался заново при КАЖДОМ
+# открытии и каждом редиректе после действия. Теперь он отдаётся отдельным
+# файлом с хешем в имени и годовым immutable-кешем: телефон скачивает его
+# один раз за всё время, а HTML страницы задач становится в разы меньше.
+_CSS_CACHE_SECONDS = 365 * 24 * 3600
+# имя файла -> (тело, ETag, предсжатое gzip-тело)
+_STATIC_CSS: dict[str, tuple[bytes, str, bytes]] = {}
+
+
+def _minify_css(css: str) -> str:
+    """Срезает комментарии и лишние пробелы. Комментарии в этом файле —
+    подробные и на русском (это ~3.5 КБ только в SHARED_CSS), читателю
+    исходника они нужны, телефону — нет."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    css = re.sub(r"\s+", " ", css)
+    css = re.sub(r"\s*([{};,])\s*", r"\1", css)
+    css = re.sub(r"(?<=[{;:,])\s+", "", css)
+    css = re.sub(r";}", "}", css)
+    return css.strip()
+
+
+def _publish_css(name: str, css: str) -> str:
+    """Регистрирует CSS как статический файл и возвращает его URL. Хеш в имени
+    делает кеш самоинвалидирующимся: правка стилей меняет URL, старый файл
+    браузеру можно держать вечно."""
+    # В исходнике фигурные скобки задвоены (CSS шёл через .format() вместе со
+    # страницей) — для отдельного файла раздваиваем их обратно.
+    body = _minify_css(css.replace("{{", "{").replace("}}", "}")).encode("utf-8")
+    digest = hashlib.sha256(body).hexdigest()[:12]
+    filename = f"{name}.{digest}.css"
+    # Содержимое статики не меняется за всё время жизни процесса, поэтому gzip
+    # считаем ровно один раз здесь, при импорте, с максимальным уровнем — а не
+    # заново на каждый запрос, как это делал бы общий middleware.
+    _STATIC_CSS[filename] = (body, f'"{digest}"', gzip.compress(body, 9))
+    return f"/dashboard/static/{filename}"
+
+
+def _stylesheets(name: str, page_css: str) -> str:
+    """Две таблицы стилей на страницу: общая база (одна для всех страниц — её
+    телефон скачивает единожды и переиспользует при переходах) и небольшой
+    блок конкретной страницы."""
+    return (f'<link rel="stylesheet" href="{_BASE_CSS_URL}">\n'
+            f'<link rel="stylesheet" href="{_publish_css(name, page_css)}">')
+
+
+async def handle_static_css(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/static/{filename} — CSS не приватен (ни одной крупицы
+    данных владельца в нём нет), поэтому отдаётся с public-кешем и без токена.
+    ETag — чтобы даже при принудительном обновлении страницы возвращался 304
+    с пустым телом, а не файл целиком."""
+    entry = _STATIC_CSS.get(request.match_info["filename"])
+    if entry is None:
+        return aioweb.Response(status=404)
+    body, etag, gz_body = entry
+    if request.headers.get("If-None-Match") == etag:
+        return aioweb.Response(status=304, headers={"ETag": etag})
+    headers = {"Cache-Control": f"public, max-age={_CSS_CACHE_SECONDS}, immutable",
+               "ETag": etag, "Vary": "Accept-Encoding"}
+    if "gzip" in request.headers.get("Accept-Encoding", "").lower():
+        headers["Content-Encoding"] = "gzip"
+        body = gz_body
+    return aioweb.Response(body=body, content_type="text/css", charset="utf-8", headers=headers)
+
+
+# ---------- сжатие ----------
+# aiohttp по умолчанию не сжимает ничего. HTML дашборда — это текст с огромной
+# долей повторов (однотипные карточки, одинаковые формы), он жмётся в 8-10 раз:
+# 48 КБ -> ~12 КБ на одной задаче и 116 КБ -> ~13 КБ на тридцати. На мобильной
+# сети это самая крупная экономия из всех возможных.
+_COMPRESS_MIN_BYTES = 700
+_COMPRESSIBLE_TYPES = ("text/html", "text/css", "application/json", "text/plain")
+
+
+@aioweb.middleware
+async def compression_middleware(request: aioweb.Request, handler):
+    resp = await handler(request)
+    try:
+        if (isinstance(resp, aioweb.Response)
+                and "Content-Encoding" not in resp.headers     # уже предсжато (статика)
+                and resp.content_type in _COMPRESSIBLE_TYPES
+                and (resp.content_length or 0) >= _COMPRESS_MIN_BYTES):
+            # Кодировку выбираем явно. Сам enable_compression() без аргумента
+            # перебирает ContentCoding в порядке объявления и выбрал бы
+            # "deflate" даже тому клиенту, который просит gzip; gzip же
+            # понимают абсолютно все и никакие прокси его не путают с
+            # raw-deflate.
+            accept = request.headers.get("Accept-Encoding", "").lower()
+            if "gzip" in accept:
+                resp.enable_compression(aioweb.ContentCoding.gzip)
+            elif "deflate" in accept:
+                resp.enable_compression(aioweb.ContentCoding.deflate)
+            else:
+                return resp
+            vary = resp.headers.get("Vary")
+            if not vary:
+                resp.headers["Vary"] = "Accept-Encoding"
+            elif "accept-encoding" not in vary.lower():
+                resp.headers["Vary"] = f"{vary}, Accept-Encoding"
+    except (AttributeError, TypeError):
+        # Потоковые/нестандартные ответы просто не сжимаем — отдать ответ
+        # важнее, чем сэкономить на нём байты.
+        pass
+    return resp
 
 
 # ---------- переводы ----------
@@ -489,6 +785,7 @@ DASHBOARD_TEXTS = {
         "new_title_placeholder": "Новая задача…",
         "btn_add": "Добавить",
         "error_empty_title": "Введите название задачи",
+        "error_bad_due_at": "Не удалось разобрать дату и время",
         "tg_widget_note": "Войдите через Telegram, чтобы действия записывались под вашим именем",
         "nav_history": "📜 История",
         "nav_back": "⬅️ К задачам",
@@ -562,6 +859,7 @@ DASHBOARD_TEXTS = {
         "new_title_placeholder": "New task…",
         "btn_add": "Add",
         "error_empty_title": "Enter a task title",
+        "error_bad_due_at": "Couldn't parse the date and time",
         "tg_widget_note": "Sign in with Telegram so actions are recorded under your name",
         "nav_history": "📜 History",
         "nav_back": "⬅️ Back to tasks",
@@ -635,6 +933,7 @@ DASHBOARD_TEXTS = {
         "new_title_placeholder": "Nowe zadanie…",
         "btn_add": "Dodaj",
         "error_empty_title": "Wpisz nazwę zadania",
+        "error_bad_due_at": "Nie udało się odczytać daty i godziny",
         "tg_widget_note": "Zaloguj się przez Telegram, aby działania zapisywały się pod twoim imieniem",
         "nav_history": "📜 Historia",
         "nav_back": "⬅️ Do zadań",
@@ -683,6 +982,45 @@ DASHBOARD_TEXTS = {
 
 def _dt(lang: str) -> dict:
     return DASHBOARD_TEXTS.get(lang, DASHBOARD_TEXTS["ru"])
+
+
+# Наборы текстов, пригодные для прямой передачи в str.format(**...): без
+# вложенного словаря "repeat" (он нужен только рендеру задач) и, во втором
+# варианте, без заголовков, которые handle_dashboard передаёт отдельным
+# аргументом. Раньше эти словари пересобирались на каждый рендер страницы —
+# теперь считаются один раз при импорте модуля.
+_TEXTS_FLAT = {
+    lang: {k: v for k, v in texts.items() if k != "repeat"}
+    for lang, texts in DASHBOARD_TEXTS.items()
+}
+_TEXTS_TASKS_PAGE = {
+    lang: {k: v for k, v in flat.items() if k not in ("heading", "heading_chat")}
+    for lang, flat in _TEXTS_FLAT.items()
+}
+
+
+def _dt_flat(lang: str) -> dict:
+    return _TEXTS_FLAT.get(lang, _TEXTS_FLAT["ru"])
+
+
+def _dt_tasks_page(lang: str) -> dict:
+    return _TEXTS_TASKS_PAGE.get(lang, _TEXTS_TASKS_PAGE["ru"])
+
+
+# Шрифты: было 11 отдельных начертаний (Fraunces 6 + Inter 5) — 11 файлов и
+# render-blocking CSS-запрос на сторонний домен перед первой отрисовкой. Стало
+# три вариативных файла по реально используемым диапазонам (Fraunces 600-700
+# прямой + 400-600 курсив, Inter 400-600), а сама таблица стилей грузится
+# неблокирующе: media="print" + onload переключает её на all, когда она
+# приехала. Текст виден сразу системным шрифтом и подменяется по display=swap,
+# не задерживая первый кадр.
+_FONT_CSS_URL = ("https://fonts.googleapis.com/css2?"
+                 "family=Fraunces:ital,wght@0,600..700;1,400..600&family=Inter:wght@400..600&display=swap")
+_FONT_HEAD = f"""<meta name="color-scheme" content="dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="{_FONT_CSS_URL}" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="{_FONT_CSS_URL}"></noscript>"""
 
 
 # Общие дизайн-токены и база — единый визуальный язык под Telegram (тёмная
@@ -770,6 +1108,10 @@ h1 {{
   font-size: 1.6rem; margin: 0 0 var(--space-4); letter-spacing: -0.01em;
   color: var(--paper);
 }}
+/* touch-action: manipulation отключает ожидание возможного двойного тапа
+   (double-tap to zoom) — на мобильных браузерах это снимает знаменитую
+   задержку ~300 мс между касанием и реакцией кнопки. */
+button, .task-summary, .day-picker-summary, a {{ touch-action: manipulation; }}
 button {{ font-family: inherit; -webkit-tap-highlight-color: transparent; transition: transform 0.1s ease; }}
 button:active {{ transform: scale(0.96); }}
 a {{ color: var(--stamp); }}
@@ -857,6 +1199,49 @@ button:focus-visible, input:focus-visible, a:focus-visible {{
   a.nav-link, button, .task-summary, .check-btn, .subtask-check {{ cursor: pointer; }}
 }}
 {stagger_rules}
+/* ---------- мобильный бюджет рендера ----------
+   Всё, что ниже, адресовано именно телефону. Три самые дорогие для
+   мобильного композитора вещи на этой странице:
+   1) backdrop-filter — каждый такой слой заставляет браузер заново читать
+      то, что под ним, и блюрить это на каждый кадр скролла. Радиус 14px на
+      мобильном GPU стоит заметно дороже 7px (цена блюра растёт с радиусом),
+      а на экране 360px разницы на глаз почти нет.
+   2) mix-blend-mode у зернового оверлея — блендинг фиксированного слоя во
+      всю высоту экрана пересчитывается при каждом кадре скролла. На телефоне
+      зерно и так неразличимо, поэтому там оно просто выключается.
+   3) staggered-анимация появления карточек — на слабом CPU 12 отложенных
+      анимаций заметно растягивают первую отрисовку; оставляем короткое
+      общее появление без каскада.
+   Ничего из этого не меняет вид страницы на настольном браузере. */
+@media (max-width: 700px) {{
+  :root {{ --glass-blur: blur(7px) saturate(120%); }}
+  body::before {{ display: none; }}
+  .task, .event, .chart-block, .tg-widget-banner, .new-task-form {{ animation-duration: 0.18s; }}
+  .task:nth-child(n), .event:nth-child(n) {{ animation-delay: 0s; }}
+  /* Тени дешевле считать с меньшим радиусом размытия: тень в 48px на
+     каждой карточке — это большая область перерисовки при скролле. */
+  :root {{ --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 14px 26px -18px rgba(0, 0, 0, 0.8); }}
+}}
+/* Экономия батареи и кадров для тех, кто попросил систему меньше двигать
+   картинку: блюр полностью снимаем (prefers-reduced-motion часто включают
+   как раз на слабых устройствах). */
+@media (prefers-reduced-motion: reduce) {{
+  :root {{ --glass-blur: none; }}
+  body::before {{ display: none; }}
+}}
+/* Лайтбокс блюрит фон во ВСЮ площадь экрана с радиусом 22px — на телефоне это
+   самый дорогой отдельный эффект на странице (и единственный, который виден
+   сразу после тапа, когда важна отзывчивость). Радиус режем, фон за счёт
+   этого делаем чуть плотнее — на глаз результат тот же. */
+@media (max-width: 700px) {{
+  .photo-lightbox {{
+    background: rgba(7, 6, 8, 0.94);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+  .photo-lightbox {{ background: rgba(7, 6, 8, 0.97); backdrop-filter: none; -webkit-backdrop-filter: none; }}
+}}
 """
 
 # Лёгкий stagger для первых карточек в списке — ощущение, что список
@@ -870,15 +1255,12 @@ _stagger_rules = "\n".join(
 )
 SHARED_CSS = SHARED_CSS.replace("{stagger_rules}", _stagger_rules)
 
+# Базовая таблица стилей — одна для всех страниц, поэтому при переходах
+# задачи -> история -> шаблоны она берётся из кеша, а не качается снова.
+_BASE_CSS_URL = _publish_css("base", SHARED_CSS)
 
-LOGIN_PAGE = """<!DOCTYPE html>
-<html lang="{html_lang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{login_title}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>""" + SHARED_CSS + """
+
+LOGIN_CSS = """
 body {{ display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
 form {{
   background: var(--card); color: var(--ink); padding: 2rem 1.75rem;
@@ -899,15 +1281,36 @@ button[type=submit] {{
 button[type=submit]:active {{ background: var(--stamp-deep); }}
 .error {{ color: var(--stamp); font-size: 0.85rem; margin-top: 10px; font-family: var(--font-body); }}
 h2 {{ font-family: var(--font-display); font-style: italic; font-weight: 600; margin: 0 0 1.1rem; font-size: 1.35rem; color: var(--ink); }}
-</style></head>
+"""
+
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="{html_lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{login_title}</title>
+""" + _FONT_HEAD + """
+<!--stylesheets-->
+</head>
 <body>
-<form method="post" id="login-form">
+<form method="post" action="{login_action}" id="login-form">
 <h2>{login_heading}</h2>
 <input type="password" name="password" placeholder="{password_placeholder}" autofocus>
 <button type="submit">{btn_login}</button>
 {error}
 </form>
 </body></html>"""
+
+
+def _login_response(token: str, lang: str, error_html: str = "", status: int = 200) -> aioweb.Response:
+    """Единая точка отдачи формы входа. Раньше четыре места собирали её
+    вручную, и у формы не было action — POST уходил на текущий URL, а для
+    /history и /templates POST-маршрута нет: пользователь, попавший сразу на
+    эти страницы, вводил пароль и получал 405 вместо входа."""
+    page = LOGIN_PAGE.format(
+        error=error_html, login_action=f"/dashboard/{token}", **_dt_flat(lang),
+    )
+    return aioweb.Response(text=page, content_type="text/html", status=status,
+                           headers={"Cache-Control": "no-store"})
 
 
 # Баннер с Telegram Login Widget: не блокирует доступ (все действия и так уже
@@ -932,14 +1335,7 @@ function onTelegramAuth(user) {{
 </div>"""
 
 
-TASKS_PAGE = """<!DOCTYPE html>
-<html lang="{html_lang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{page_title}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>""" + SHARED_CSS + """
+TASKS_CSS = """
 .task {{ padding: var(--space-4); margin-bottom: var(--space-3);
         display: flex; gap: var(--space-3); align-items: flex-start; }}
 .task.done {{ background: rgba(20, 168, 126, 0.1); border-color: rgba(20, 168, 126, 0.3); }}
@@ -1180,6 +1576,10 @@ TASKS_PAGE = """<!DOCTYPE html>
 .task-photos-wrap.hero .task-photos {{ width: 100%; }}
 .task-photos {{
   display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory;
+  /* Чтобы горизонтальный свайп по карусели не "перетекал" в скролл всей
+     страницы, когда карусель доехала до края — на телефоне это главный
+     источник ощущения "залипающего" скролла. */
+  overscroll-behavior-x: contain;
   width: calc(3 * 118px + 2 * 8px); max-width: 100%;
   scrollbar-width: none; -ms-overflow-style: none;
 }}
@@ -1284,7 +1684,16 @@ TASKS_PAGE = """<!DOCTYPE html>
 .indicator-dot.indicator-active {{ background: var(--stamp); }}
 .indicator-line {{ position: absolute; top: 50%; left: 20px; right: 20px; height: 1px;
     border-top: 1.5px dashed var(--card-edge); z-index: 1; }}
-</style></head>
+"""
+
+
+TASKS_PAGE = """<!DOCTYPE html>
+<html lang="{html_lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{page_title}</title>
+""" + _FONT_HEAD + """
+<!--stylesheets-->
+</head>
 <body>
 <h1>{heading}</h1>
 {nav_html}
@@ -1300,17 +1709,39 @@ TASKS_PAGE = """<!DOCTYPE html>
 {day_picker_html}
 {tasks_html}
 {chart_html}
+<!-- Один оверлей на всю страницу вместо отдельного на каждую задачу с фото,
+     и один делегированный обработчик вместо inline-onclick на каждом кадре:
+     меньше DOM-узлов, меньше HTML, меньше работы парсеру на телефоне.
+     Полный кадр (без ?size=thumb) запрашивается только здесь, по тапу. -->
+<div class="photo-lightbox" id="ph-lb">
+<button type="button" class="photo-lightbox-close" aria-label="close">✕</button>
+<!-- без src: пустой src="" некоторые браузеры трактуют как ссылку на саму
+     страницу и уходят за ней лишним запросом -->
+<img alt="">
+</div>
+<script>
+(function () {{
+  var lb = document.getElementById('ph-lb'), img = lb.querySelector('img');
+  function close() {{ lb.classList.remove('open'); img.removeAttribute('src'); }}
+  document.addEventListener('click', function (e) {{
+    var frame = e.target.closest('.task-photo');
+    // Клик по крестику удаления живёт внутри своей формы — лайтбокс не трогаем.
+    if (frame && !e.target.closest('form')) {{
+      img.src = frame.dataset.full;
+      lb.classList.add('open');
+    }} else if (e.target === lb || e.target.closest('.photo-lightbox-close')) {{
+      close();
+    }}
+  }});
+  document.addEventListener('keydown', function (e) {{
+    if (e.key === 'Escape') close();
+  }});
+}})();
+</script>
 </body></html>"""
 
 
-HISTORY_PAGE = """<!DOCTYPE html>
-<html lang="{html_lang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{history_page_title}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>""" + SHARED_CSS + """
+HISTORY_CSS = """
 .event {{ padding: 0.85rem 1rem; margin-bottom: 0.6rem; display: flex; gap: 0.65rem; align-items: center; }}
 .event-body {{ flex: 1; min-width: 0; }}
 .event-line {{ font-size: 0.92rem; color: var(--ink); }}
@@ -1326,7 +1757,16 @@ HISTORY_PAGE = """<!DOCTYPE html>
 .load-more:active {{ border-color: var(--stamp); color: var(--stamp); }}
 .nav-link {{ display: inline-block; color: var(--paper-soft); text-decoration: none; font-size: 0.85rem; margin-bottom: var(--space-4);
     font-family: var(--font-body); }}
-</style></head>
+"""
+
+
+HISTORY_PAGE = """<!DOCTYPE html>
+<html lang="{html_lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{history_page_title}</title>
+""" + _FONT_HEAD + """
+<!--stylesheets-->
+</head>
 <body>
 <a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
 <h1>{history_heading}</h1>
@@ -1345,7 +1785,8 @@ def _render_event(ev: dict, tz, lang: str, token: str, creator: dict | None) -> 
     else:
         name = f"id{actor_id}"
     if creator and creator.get("has_photo"):
-        avatar_html = f'<img class="avatar" src="/dashboard/{token}/avatar/{actor_id}" alt="">'
+        avatar_html = (f'<img class="avatar" src="/dashboard/{token}/avatar/{actor_id}" '
+                       f'alt="" loading="lazy" decoding="async">')
     else:
         avatar_html = '<span class="avatar avatar-placeholder">👤</span>'
     return f"""<div class="event">
@@ -1377,16 +1818,16 @@ async def handle_history(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=404)
 
     cookie = request.cookies.get(f"session_{token}")
-    session = _verify_session(cookie) if cookie else None
+    # current_password_version обязателен: без него смена пароля дашборда
+    # инвалидировала сессию на всех страницах, кроме этой, и утёкшая cookie
+    # продолжала читать ленту событий чата.
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
     if session is None or (session[0], session[1]) != (owner_id, owner_type):
         # Как и на главной странице — незалогиненный видит форму пароля.
-        return aioweb.Response(text=LOGIN_PAGE.format(error="", **texts), content_type="text/html")
+        return _login_response(token, lang)
 
-    from zoneinfo import ZoneInfo
-    try:
-        tz = ZoneInfo(settings["timezone"])
-    except Exception:
-        tz = ZoneInfo("UTC")
+    tz = _tz_of(settings)
 
     try:
         offset = max(0, int(request.query.get("offset", "0")))
@@ -1412,20 +1853,12 @@ async def handle_history(request: aioweb.Request) -> aioweb.Response:
         load_more_html = f'<a class="load-more" href="/dashboard/{token}/history?offset={next_offset}">{escape(texts["btn_load_more"])}</a>'
 
     page = HISTORY_PAGE.format(
-        token=token, events_html=events_html, load_more_html=load_more_html,
-        **{k: v for k, v in texts.items() if k != "repeat"},
+        token=token, events_html=events_html, load_more_html=load_more_html, **_dt_flat(lang),
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
-TEMPLATES_PAGE = """<!DOCTYPE html>
-<html lang="{html_lang}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{templates_page_title}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>""" + SHARED_CSS + """
+TEMPLATES_CSS = """
 .task {{ padding: var(--space-4); margin-bottom: var(--space-3);
         display: flex; gap: var(--space-3); align-items: flex-start; }}
 .task-body {{ flex: 1; min-width: 0; }}
@@ -1457,7 +1890,16 @@ TEMPLATES_PAGE = """<!DOCTYPE html>
 .new-task-form button:active {{ background: var(--stamp-deep); }}
 .new-task-error {{ color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-family: var(--font-body); }}
 @media (max-width: 480px) {{ .new-task-form button {{ width: 100%; }} }}
-</style></head>
+"""
+
+
+TEMPLATES_PAGE = """<!DOCTYPE html>
+<html lang="{html_lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{templates_page_title}</title>
+""" + _FONT_HEAD + """
+<!--stylesheets-->
+</head>
 <body>
 <a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
 <h1>{templates_heading}</h1>
@@ -1472,6 +1914,17 @@ TEMPLATES_PAGE = """<!DOCTYPE html>
 <button type="submit">{btn_save_template}</button>
 </form>
 </body></html>"""
+
+
+# Маркер <!--stylesheets--> в <head> каждого шаблона заменяем на реальные
+# <link>'и уже после того, как все блоки CSS определены: имя файла зависит от
+# хеша его содержимого, поэтому собрать ссылку раньше нельзя. Обработчики
+# трогают шаблоны только во время запроса, так что порядок здесь безопасен.
+LOGIN_PAGE = LOGIN_PAGE.replace("<!--stylesheets-->", _stylesheets("login", LOGIN_CSS))
+TASKS_PAGE = TASKS_PAGE.replace("<!--stylesheets-->", _stylesheets("tasks", TASKS_CSS))
+HISTORY_PAGE = HISTORY_PAGE.replace("<!--stylesheets-->", _stylesheets("history", HISTORY_CSS))
+TEMPLATES_PAGE = TEMPLATES_PAGE.replace("<!--stylesheets-->", _stylesheets("templates", TEMPLATES_CSS))
+assert "<!--stylesheets-->" not in TASKS_PAGE
 
 
 def _fmt_template_offset(day_offset: int, lang: str) -> str:
@@ -1509,15 +1962,13 @@ def _resolve_template_due_at(time_of_day: str, day_offset: int, tz) -> datetime:
     отталкиваемся от момента ПРИМЕНЕНИЯ шаблона (сейчас), не от момента его
     создания. Продублировано здесь (а не импортировано из bot.py), потому что
     bot.py сам импортирует dashboard — обратный импорт создал бы цикл."""
-    from datetime import time as dtime
     hour, minute = (int(p) for p in time_of_day.split(":"))
     now_local = datetime.now(tz)
     candidate_date = now_local.date() + timedelta(days=day_offset)
     candidate = datetime.combine(candidate_date, dtime(hour, minute), tzinfo=tz)
     if day_offset == 0 and candidate <= now_local:
         candidate += timedelta(days=1)
-    from zoneinfo import ZoneInfo
-    return candidate.astimezone(ZoneInfo("UTC"))
+    return candidate.astimezone(UTC)
 
 
 async def handle_templates_page(request: aioweb.Request) -> aioweb.Response:
@@ -1538,7 +1989,7 @@ async def handle_templates_page(request: aioweb.Request) -> aioweb.Response:
     pwd_version = settings.get("dashboard_password_version", 0)
     session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
     if session is None or (session[0], session[1]) != (owner_id, owner_type):
-        return aioweb.Response(text=LOGIN_PAGE.format(error="", **texts), content_type="text/html")
+        return _login_response(token, lang)
 
     csrf = _csrf_token(cookie)
     templates = await db.get_templates(owner_id, owner_type)
@@ -1558,8 +2009,8 @@ async def handle_templates_page(request: aioweb.Request) -> aioweb.Response:
         )
 
     page = TEMPLATES_PAGE.format(
-        token=token, csrf=csrf, templates_html=templates_html, new_template_error=new_template_error,
-        **{k: v for k, v in texts.items() if k != "repeat"},
+        token=token, csrf=csrf, templates_html=templates_html,
+        new_template_error=new_template_error, **_dt_flat(lang),
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
@@ -1615,10 +2066,10 @@ async def handle_template_apply(request: aioweb.Request) -> aioweb.Response:
     except ValueError:
         return aioweb.Response(status=404)
 
-    owner = await _require_session(request, token)
+    owner = await _require_session_full(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type, tg_user_id = owner
+    settings, owner_id, owner_type, tg_user_id = owner
     acting_user_id = _acting_user_id(owner_id, owner_type, tg_user_id)
 
     cookie = request.cookies.get(f"session_{token}", "")
@@ -1630,19 +2081,18 @@ async def handle_template_apply(request: aioweb.Request) -> aioweb.Response:
     if not tpl or tpl["owner_id"] != owner_id or tpl["owner_type"] != owner_type:
         return aioweb.Response(status=404)
 
-    settings = await db.get_owner_by_dashboard_token(token)
-    from zoneinfo import ZoneInfo
-    try:
-        tz = ZoneInfo(settings["timezone"])
-    except Exception:
-        tz = ZoneInfo("UTC")
-
+    tz = _tz_of(settings)
     due_at = _resolve_template_due_at(tpl["time_of_day"], tpl["day_offset"], tz)
+    remind_until_done = bool(tpl.get("remind_until_done", False))
     task_id = await db.add_task(
         owner_id, owner_type, tpl["title"], due_at, tpl["repeat"], tpl["remind"],
-        tag=tpl.get("tag"), remind_until_done=tpl.get("remind_until_done", False), created_by=acting_user_id,
+        tag=tpl.get("tag"), remind_until_done=remind_until_done, created_by=acting_user_id,
     )
     await db.log_history(task_id, acting_user_id, tpl["title"], "created")
+    # Планируем сразу: иначе задача из шаблона (в т.ч. повторяющаяся) молча
+    # не напоминала бы о себе до перезапуска процесса.
+    _schedule_task(task_id, owner_id, owner_type, due_at, tpl["repeat"], tpl["remind"], tz,
+                   remind_until_done=remind_until_done)
 
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
@@ -1683,6 +2133,16 @@ _PL_DOW = ["Pn", "Wt", "Śr", "Cz", "Pt", "Sb", "Nd"]
 _DOW_NAMES = {"ru": _RU_DOW, "en": _EN_DOW, "pl": _PL_DOW}
 
 
+def _months(lang: str) -> list[str]:
+    """Фолбэк на ru, как в _dt(): раньше незнакомый язык в БД давал KeyError
+    и 500 на главной странице вместо просто русских названий месяцев."""
+    return _MONTH_NAMES.get(lang, _RU_MONTHS)
+
+
+def _dows(lang: str) -> list[str]:
+    return _DOW_NAMES.get(lang, _RU_DOW)
+
+
 def _render_day_picker(selected: "dt.date", today: "dt.date", lang: str, token: str, task_days: set,
                         filter_active: bool = True) -> str:
     """Панель выбора дня дашборда (фильтр по due_at), в стиле карточки
@@ -1693,11 +2153,8 @@ def _render_day_picker(selected: "dt.date", today: "dt.date", lang: str, token: 
     по клику — вся навигация это обычные ссылки с ?date=YYYY-MM-DD.
     task_days — set дат (date), на которые есть хотя бы одна задача, для
     точек-индикаторов под числами (как у dot-индикаторов в оригинале)."""
-    import datetime as dt
-    import calendar as cal
-
-    month_name = _MONTH_NAMES[lang][selected.month - 1]
-    dow_names = _DOW_NAMES[lang]
+    month_name = _months(lang)[selected.month - 1]
+    dow_names = _dows(lang)
 
     # Неделя (Пн-Вс), в которую попадает selected — тот же принцип, что и в
     # оригинальном компоненте (ряд дней вокруг активного).
@@ -1766,7 +2223,8 @@ def _render_author(created_by: int | None, creator: dict | None, token: str) -> 
     else:
         name = f"id{created_by}"
     if creator and creator.get("has_photo"):
-        avatar_html = f'<img class="avatar" src="/dashboard/{token}/avatar/{created_by}" alt="">'
+        avatar_html = (f'<img class="avatar" src="/dashboard/{token}/avatar/{created_by}" '
+                       f'alt="" loading="lazy" decoding="async">')
     else:
         avatar_html = '<span class="avatar avatar-placeholder">👤</span>'
     return f'<div class="task-author">{avatar_html}<span>{escape(name)}</span></div>'
@@ -1781,24 +2239,28 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
     мелким квадратиком 118×118 из общей сетки: именно одно фото теряло
     больше всего в читаемости при сжатии в квадрат. 2+ фото — прежняя
     карусель (до 3 кадров разом, scroll-snap, стрелки только если фото
-    больше 3 — незачем рисовать управление, которым нечего листать). Сами
-    байты не инлайнятся — каждая картинка подтягивается отдельным GET на
-    /photo/{id} (кешируется браузером)."""
+    больше 3 — незачем рисовать управление, которым нечего листать).
+
+    В ленту идут ПРЕВЬЮ (?size=thumb) — полный кадр подтягивается только в
+    лайтбоксе по тапу. Лайтбокс на страницу один (см. PHOTO_LIGHTBOX в
+    TASKS_PAGE) и открывается делегированным обработчиком по data-full:
+    раньше на каждую задачу с фото рендерился свой оверлей плюс по
+    inline-onclick на каждом кадре."""
     if not photos:
         return ""
     track_id = f"ph-track-{task_id}"
-    lightbox_id = f"ph-lb-{task_id}"
     is_hero = len(photos) == 1
     items = []
     for p in photos:
         src = f"/dashboard/{token}/tasks/{task_id}/photo/{p['id']}"
         photo_class = "task-photo task-photo-hero" if is_hero else "task-photo"
-        # Тап по превью открывает лайтбокс той же картинкой по полному размеру
-        # (тот же /photo/{id}, без доп. запроса) — крестик удаления свой
-        # обработчик клика не теряет благодаря stopPropagation.
-        items.append(f"""<div class="{photo_class}" onclick="document.getElementById('{lightbox_id}').querySelector('img').src='{src}';document.getElementById('{lightbox_id}').classList.add('open')">
-<img src="{src}" alt="" loading="lazy">
-<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo/{p['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_photo"])}')" onclick="event.stopPropagation()">
+        # loading=lazy здесь особенно уместно: карточка свёрнута (<details>
+        # закрыт), и браузер вообще не тронет эти картинки, пока её не
+        # раскроют. decoding=async — чтобы декодирование JPEG не занимало
+        # главный поток в момент раскрытия.
+        items.append(f"""<div class="{photo_class}" data-full="{src}">
+<img src="{src}?size=thumb" alt="" loading="lazy" decoding="async" fetchpriority="low">
+<form method="post" action="{src}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_photo"])}')">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="photo-del-btn" aria-label="delete photo">✕</button>
 </form>
@@ -1813,19 +2275,11 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
 <button type="button" class="photo-nav photo-nav-next" aria-label="next"
   onclick="document.getElementById('{track_id}').scrollBy({{left:{PHOTO_SLOT_WIDTH},behavior:'smooth'}})">›</button>"""
 
-    # Лайтбокс — один оверлей на задачу, пустой до клика по превью (src
-    # проставляется JS'ом выше). Закрывается кликом по фону или крестику.
-    lightbox_html = f"""<div class="photo-lightbox" id="{lightbox_id}" onclick="this.classList.remove('open')">
-<button type="button" class="photo-lightbox-close" aria-label="close" onclick="document.getElementById('{lightbox_id}').classList.remove('open')">✕</button>
-<img src="" alt="" onclick="event.stopPropagation()">
-</div>"""
-
     wrap_class = "task-photos-wrap hero" if is_hero else "task-photos-wrap"
     return f"""<div class="{wrap_class}">
 <div class="task-photos" id="{track_id}">{"".join(items)}</div>
 {arrows_html}
-</div>
-{lightbox_html}"""
+</div>"""
 
 
 def _render_upload_form(token: str, task_id: int, csrf: str, texts: dict, photo_count: int) -> str:
@@ -1876,7 +2330,6 @@ def _render_task(
     photos: list[dict] | None = None,
     subtasks: list[dict] | None = None,
 ) -> str:
-    import datetime as dt
     texts = _dt(lang)
     local_due = task["due_at"].astimezone(tz)
     now = dt.datetime.now(tz)
@@ -2026,10 +2479,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         ip = _client_ip(request)
         if _login_rate_limited(token, ip):
             error_html = f'<div class="error">{escape(texts["error_too_many_attempts"])}</div>'
-            return aioweb.Response(
-                text=LOGIN_PAGE.format(error=error_html, **texts),
-                content_type="text/html", status=429,
-            )
+            return _login_response(token, lang, error_html, status=429)
 
         data = await request.post()
         password = data.get("password", "")
@@ -2039,7 +2489,8 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
             # owner_type='chat' это уточнится позже через виджет на самой
             # странице (см. handle_telegram_auth), без этого шага деградируем
             # на owner_id (chat_id) в истории, как было раньше.
-            session_value = _sign_session(owner_id, owner_type, token, password_version=settings.get("dashboard_password_version", 0))
+            session_value = _sign_session(owner_id, owner_type,
+                                          password_version=settings.get("dashboard_password_version", 0))
             resp = aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
             # Render терминирует TLS на прокси — схему берём из X-Forwarded-Proto
             is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
@@ -2049,24 +2500,15 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
 
         _record_failed_login(token, ip)
         error_html = f'<div class="error">{escape(texts["error_wrong_password"])}</div>'
-        return aioweb.Response(
-            text=LOGIN_PAGE.format(error=error_html, **texts),
-            content_type="text/html", status=401,
-        )
+        return _login_response(token, lang, error_html, status=401)
 
     if session is None or (session[0], session[1]) != (owner_id, owner_type):
-        return aioweb.Response(text=LOGIN_PAGE.format(error="", **texts), content_type="text/html")
+        return _login_response(token, lang)
     _, _, tg_user_id = session
 
-    from zoneinfo import ZoneInfo
-    try:
-        tz = ZoneInfo(settings["timezone"])
-    except Exception:
-        tz = ZoneInfo("UTC")
-
+    tz = _tz_of(settings)
     csrf = _csrf_token(cookie)
 
-    import datetime as dt
     today = dt.datetime.now(tz).date()
     raw_date = request.query.get("date", "")
     selected_date = today
@@ -2100,18 +2542,13 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         if owner_type == "chat":
             creator_ids = {t["created_by"] for t in tasks if t.get("created_by")}
             creators = await db.get_telegram_users(list(creator_ids))
-        # Фото каждой задачи — отдельным запросом на задачу (метаданные без
-        # байтов), не одним большим IN(...): список задач на дашборде обычно
-        # небольшой (до пары десятков), а db.get_task_photos_meta и так лёгкий
-        # индексированный SELECT по task_id.
-        photos_by_task = {
-            t["id"]: await db.get_task_photos_meta(t["id"]) for t in tasks
-        }
-        # Подзадачи — тем же паттерном, что и фото: отдельный лёгкий запрос на
-        # задачу (SELECT ... WHERE task_id, с индексом), а не один общий IN(...).
-        subtasks_by_task = {
-            t["id"]: await db.get_subtasks(t["id"]) for t in tasks
-        }
+        # Фото и подзадачи — ОДИН запрос на всю страницу каждый (WHERE task_id
+        # = ANY(...)), а не по запросу на задачу: раньше рендер стоил 2*N
+        # round-trip'ов к БД, и на двух десятках задач это была самая дорогая
+        # часть страницы.
+        task_ids = [t["id"] for t in tasks]
+        photos_by_task = await db.get_task_photos_meta_bulk(task_ids)
+        subtasks_by_task = await db.get_subtasks_bulk(task_ids)
         tasks_html = "\n".join(
             _render_task(
                 t, tz, lang, token, csrf, creator=creators.get(t.get("created_by")), owner_type=owner_type,
@@ -2140,6 +2577,8 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         new_task_error_html = f'<div class="new-task-error">{escape(texts["error_empty_title"])}</div>'
     elif request.query.get("error") == "bad_photo":
         new_task_error_html = f'<div class="new-task-error">{escape(texts["error_bad_photo"])}</div>'
+    elif request.query.get("error") == "bad_due_at":
+        new_task_error_html = f'<div class="new-task-error">{escape(texts["error_bad_due_at"])}</div>'
 
     # Виджет показываем только на групповом дашборде и только пока не знаем,
     # кто именно из участников сейчас смотрит страницу (вошли по общему паролю,
@@ -2154,8 +2593,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     page = TASKS_PAGE.format(
         tasks_html=tasks_html, chart_html=chart_html, heading=heading, nav_html=nav_html,
         token=token, csrf=csrf, new_task_error=new_task_error_html, tg_widget_html=tg_widget_html,
-        day_picker_html=day_picker_html,
-        **{k: v for k, v in texts.items() if k not in ("heading",)},
+        day_picker_html=day_picker_html, **_dt_tasks_page(lang),
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
@@ -2167,10 +2605,10 @@ async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
     дашбордом, чтобы история велась под правильным tg_user_id, а не chat_id."""
     token = request.match_info["token"]
 
-    owner = await _require_session(request, token)
+    owner = await _require_session_full(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type, _ = owner
+    settings, owner_id, owner_type, _ = owner
     if owner_type != "chat":
         # На личном дашборде identity и так известна — виджет там не нужен,
         # и подменять владельца чужим Telegram-логином нельзя.
@@ -2194,9 +2632,8 @@ async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
     photo_data, photo_mime = photo if photo else (None, None)
     await db.upsert_telegram_user(tg_user_id, payload.get("username"), payload.get("first_name"), photo_data, photo_mime)
 
-    settings = await db.get_owner_by_dashboard_token(token)
-    pwd_version = settings.get("dashboard_password_version", 0) if settings else 0
-    session_value = _sign_session(owner_id, owner_type, token, tg_user_id=tg_user_id, password_version=pwd_version)
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session_value = _sign_session(owner_id, owner_type, tg_user_id=tg_user_id, password_version=pwd_version)
     resp = aioweb.Response(status=200)
     is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
     resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
@@ -2204,15 +2641,34 @@ async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
     return resp
 
 
+def _parse_due_at(raw: str, tz) -> datetime | None:
+    """Разбор значения поля due_at (<input type="datetime-local">). Пустое
+    поле — это "сейчас" (поле необязательное), а вот нераспознанная строка
+    возвращает None: вызывающая сторона показывает ошибку вместо того, чтобы
+    молча поставить задачу на текущую минуту. Если браузер всё же прислал
+    смещение (не naive-строку), оно уважается и переводится в tz владельца, а
+    не затирается, как делал прежний .replace(tzinfo=tz)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return datetime.now(tz)
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
 async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
     """POST /dashboard/{token}/tasks/new — создание задачи прямо с дашборда.
     Та же защита, что и у остальных действий: сессия + CSRF."""
     token = request.match_info["token"]
 
-    owner = await _require_session(request, token)
+    owner = await _require_session_full(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type, tg_user_id = owner
+    settings, owner_id, owner_type, tg_user_id = owner
     acting_user_id = _acting_user_id(owner_id, owner_type, tg_user_id)
 
     cookie = request.cookies.get(f"session_{token}", "")
@@ -2222,23 +2678,15 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
 
     title = data.get("title", "").strip()
     description = data.get("description", "").strip() or None
-    due_at_raw = data.get("due_at", "")
     if not title:
         return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=empty_title"})
 
-    settings = await db.get_owner_by_dashboard_token(token)
-    from zoneinfo import ZoneInfo
-    try:
-        tz = ZoneInfo(settings["timezone"])
-    except Exception:
-        tz = ZoneInfo("UTC")
-
-    try:
-        # datetime-local отдаёт naive строку вида "2026-10-05T14:30" — трактуем её
-        # как локальное время владельца (та же tz, в которой рендерится дашборд).
-        due_at = datetime.fromisoformat(due_at_raw).replace(tzinfo=tz)
-    except ValueError:
-        due_at = datetime.now(tz)
+    tz = _tz_of(settings)
+    due_at = _parse_due_at(data.get("due_at", ""), tz)
+    if due_at is None:
+        # Раньше нераспознанная дата молча превращалась в "сейчас", и задача
+        # создавалась не на то время, о котором просил пользователь.
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=bad_due_at"})
 
     # repeat/remind — обязательные позиционные параметры add_task; с дашборда задача
     # создаётся без повтора и с дефолтным напоминанием (то же, что ожидает остальной код).
@@ -2247,6 +2695,7 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
         created_by=acting_user_id, description=description,
     )
     await db.log_history(task_id, acting_user_id, title, "created")
+    _schedule_task(task_id, owner_id, owner_type, due_at, "none", "on_time", tz)
 
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
@@ -2263,10 +2712,10 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
     if action not in ("done", "undone", "postpone", "delete"):
         return aioweb.Response(status=404)
 
-    owner = await _require_session(request, token)
+    owner = await _require_session_full(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type, tg_user_id = owner
+    settings, owner_id, owner_type, tg_user_id = owner
     acting_user_id = _acting_user_id(owner_id, owner_type, tg_user_id)
 
     cookie = request.cookies.get(f"session_{token}", "")
@@ -2280,12 +2729,22 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
     if not task or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
         return aioweb.Response(status=404)
 
+    # Джобы планировщика синхронизируем так же, как это делают кнопки в боте
+    # (mark_done/mark_undone/snooze/delete_task в bot.py): иначе выполненная с
+    # дашборда задача продолжала напоминать о себе, а удалённая оставляла
+    # висеть джобу на уже несуществующий id.
+    tz = _tz_of(settings)
+    remind_until_done = bool(task.get("remind_until_done"))
+
     if action == "done":
         await db.mark_done(task_id)
         await db.log_history(task_id, acting_user_id, task["title"], "done")
+        _unschedule_task(task_id)
     elif action == "undone":
         await db.mark_undone(task_id)
         await db.log_history(task_id, acting_user_id, task["title"], "undone")
+        _schedule_task(task_id, owner_id, owner_type, task["due_at"], task["repeat"], task["remind"], tz,
+                       remind_until_done=remind_until_done)
     elif action == "postpone":
         if task["repeat"] != "none":
             # Сдвиг due_at у повторяющейся задачи не отражается на её реальном
@@ -2294,11 +2753,16 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
             # шаблоне уже скрыта для таких задач; это серверная подстраховка
             # на случай прямого POST мимо формы.
             return aioweb.Response(status=400)
-        await db.update_task(task_id, due_at=task["due_at"] + timedelta(days=1))
+        new_due = task["due_at"] + timedelta(days=1)
+        await db.update_task(task_id, due_at=new_due)
         await db.log_history(task_id, acting_user_id, task["title"], "rescheduled")
+        _unschedule_task(task_id)
+        _schedule_task(task_id, owner_id, owner_type, new_due, "none", task["remind"], tz,
+                       remind_until_done=remind_until_done)
     elif action == "delete":
         await db.delete_task(task_id)
         await db.log_history(task_id, acting_user_id, task["title"], "deleted")
+        _unschedule_task(task_id)
 
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
@@ -2429,6 +2893,12 @@ async def handle_subtask_delete(request: aioweb.Request) -> aioweb.Response:
 
 
 def register_dashboard_routes(app: aioweb.Application):
+    # Сжатие — на все ответы приложения (для не-текстовых и мелких это no-op).
+    if compression_middleware not in app.middlewares:
+        app.middlewares.append(compression_middleware)
+    # Статика регистрируется первой: её путь /dashboard/static/... по форме
+    # совпадает с /dashboard/{token}/..., а aiohttp матчит в порядке регистрации.
+    app.router.add_get("/dashboard/static/{filename}", handle_static_css)
     app.router.add_get("/dashboard/{token}", handle_dashboard)
     app.router.add_post("/dashboard/{token}", handle_dashboard)
     app.router.add_post("/dashboard/{token}/telegram-auth", handle_telegram_auth)

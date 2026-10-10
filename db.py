@@ -276,6 +276,13 @@ async def init_db():
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_task_photos_task_id ON task_photos(task_id)")
+        # Превью (уменьшенная копия того же кадра). Дашборд показывает фото в
+        # ленте размером 118px, а в data лежит кадр до 1280px — отдавать его в
+        # превью значило гнать в телефон в десятки раз больше байтов, чем он
+        # способен показать. NULL означает "превью ещё не сделано" — такие
+        # записи (все, загруженные до этой миграции, и всё, что приходит из
+        # бота) дорендериваются на первом же запросе превью.
+        await conn.execute("ALTER TABLE task_photos ADD COLUMN IF NOT EXISTS thumb BYTEA")
 
 
 async def close_db():
@@ -458,15 +465,29 @@ async def update_task(task_id: int, **fields):
 MAX_PHOTOS_PER_TASK = 5
 
 
-async def add_task_photo(task_id: int, data: bytes, mime: str, uploaded_by: int | None = None) -> int:
+async def add_task_photo(task_id: int, data: bytes, mime: str, uploaded_by: int | None = None,
+                         thumb: bytes | None = None) -> int:
+    """thumb — необязательное превью (см. колонку task_photos.thumb). Если не
+    передать, оно будет сделано лениво при первом запросе превью, поэтому
+    старые вызывающие стороны (бот) ломать не нужно."""
     async def _run():
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO task_photos (task_id, data, mime, uploaded_by) VALUES ($1, $2, $3, $4) RETURNING id",
-                task_id, data, mime, uploaded_by,
+                """INSERT INTO task_photos (task_id, data, mime, uploaded_by, thumb)
+                   VALUES ($1, $2, $3, $4, $5) RETURNING id""",
+                task_id, data, mime, uploaded_by, thumb,
             )
             return row["id"]
     return await _with_retry(_run)
+
+
+async def set_task_photo_thumb(photo_id: int, thumb: bytes):
+    """Досоздание превью для фото, загруженного до появления колонки thumb
+    (или ботом). Делается один раз на фото, при первом показе."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            await conn.execute("UPDATE task_photos SET thumb = $1 WHERE id = $2", thumb, photo_id)
+    await _with_retry(_run)
 
 
 async def get_task_photo(photo_id: int) -> dict | None:
@@ -491,6 +512,40 @@ async def get_task_photos_meta(task_id: int) -> list[dict]:
                 task_id,
             )
             return [dict(r) for r in rows]
+    return await _with_retry(_run)
+
+
+async def get_task_photo_thumb(photo_id: int) -> tuple[bytes | None, int] | None:
+    """Только превью и task_id, без полного кадра. Нужна отдельно от
+    get_task_photo, потому что та тащит из БД колонку data (сотни килобайт на
+    фото), а для показа ленты нужны лишь байты превью. Возвращает
+    (thumb_or_None, task_id) или None, если фото нет."""
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT thumb, task_id FROM task_photos WHERE id = $1", photo_id)
+            return (row["thumb"], row["task_id"]) if row else None
+    return await _with_retry(_run)
+
+
+async def get_task_photos_meta_bulk(task_ids: list[int]) -> dict[int, list[dict]]:
+    """То же, что get_task_photos_meta, но сразу для списка задач — ОДНИМ
+    запросом вместо запроса на задачу (дашборд рендерит десятки карточек за
+    раз, и N+1 там был самой дорогой частью страницы). Возвращает
+    {task_id: [фото...]}; задачи без фото в словаре отсутствуют."""
+    if not task_ids:
+        return {}
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, task_id, mime, uploaded_by, created_at FROM task_photos
+                   WHERE task_id = ANY($1::int[]) ORDER BY task_id, created_at""",
+                list(task_ids),
+            )
+            grouped: dict[int, list[dict]] = {}
+            for r in rows:
+                grouped.setdefault(r["task_id"], []).append(dict(r))
+            return grouped
     return await _with_retry(_run)
 
 
@@ -536,6 +591,24 @@ async def get_subtasks(task_id: int) -> list[dict]:
                 "SELECT * FROM subtasks WHERE task_id = $1 ORDER BY position", task_id
             )
             return [dict(r) for r in rows]
+    return await _with_retry(_run)
+
+
+async def get_subtasks_bulk(task_ids: list[int]) -> dict[int, list[dict]]:
+    """Батч-версия get_subtasks — тем же принципом, что get_task_photos_meta_bulk."""
+    if not task_ids:
+        return {}
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM subtasks WHERE task_id = ANY($1::int[]) ORDER BY task_id, position",
+                list(task_ids),
+            )
+            grouped: dict[int, list[dict]] = {}
+            for r in rows:
+                grouped.setdefault(r["task_id"], []).append(dict(r))
+            return grouped
     return await _with_retry(_run)
 
 

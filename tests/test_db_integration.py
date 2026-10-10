@@ -123,3 +123,45 @@ async def test_history_is_scoped_per_user_and_per_chat(clean_db):
     user_rows = await db.get_history_stats(1, 7, "Europe/Warsaw")
     assert sum(r["cnt"] for r in user_rows if r["event"] == "done") == 2   # его чат-выполнение + личное
     assert await db.get_history_stats(999, 7, "Europe/Warsaw") == []
+
+
+# ---------- батч-выборки для дашборда ----------
+# Дашборд рендерит десятки карточек за раз и раньше делал по два запроса на
+# КАЖДУЮ задачу; эти функции должны отдавать ровно то же, что поштучные
+# get_task_photos_meta/get_subtasks, но одним запросом.
+
+async def test_get_task_photos_meta_bulk_matches_per_task_version(clean_db):
+    due = datetime.now(WAW) + timedelta(days=1)
+    t1 = await db.add_task(1, "user", "a", due, "none", "0")
+    t2 = await db.add_task(1, "user", "b", due, "none", "0")
+    t3 = await db.add_task(1, "user", "без фото", due, "none", "0")
+    await db.add_task_photo(t1, b"\x01", "image/jpeg", uploaded_by=1)
+    await db.add_task_photo(t1, b"\x02", "image/jpeg", uploaded_by=2)
+    await db.add_task_photo(t2, b"\x03", "image/jpeg")
+
+    bulk = await db.get_task_photos_meta_bulk([t1, t2, t3])
+    assert bulk[t1] == await db.get_task_photos_meta(t1)
+    assert bulk[t2] == await db.get_task_photos_meta(t2)
+    assert t3 not in bulk                      # задачи без фото в словарь не попадают
+    assert "data" not in bulk[t1][0]           # байты не тащим, как и в поштучной версии
+
+
+async def test_get_subtasks_bulk_matches_per_task_version_and_order(clean_db):
+    due = datetime.now(WAW) + timedelta(days=1)
+    t1 = await db.add_task(1, "user", "a", due, "none", "0")
+    t2 = await db.add_task(1, "user", "b", due, "none", "0")
+    for title in ("первый", "второй", "третий"):
+        await db.add_subtask(t1, title)
+    await db.add_subtask(t2, "один")
+
+    bulk = await db.get_subtasks_bulk([t1, t2])
+    assert bulk[t1] == await db.get_subtasks(t1)
+    assert [st["title"] for st in bulk[t1]] == ["первый", "второй", "третий"]  # порядок по position
+    assert bulk[t2] == await db.get_subtasks(t2)
+
+
+async def test_bulk_helpers_on_empty_and_unknown_ids(clean_db):
+    assert await db.get_task_photos_meta_bulk([]) == {}
+    assert await db.get_subtasks_bulk([]) == {}
+    assert await db.get_task_photos_meta_bulk([999999]) == {}
+    assert await db.get_subtasks_bulk([999999]) == {}
