@@ -134,11 +134,7 @@
     });
   }
 
-  // ---------- выполнение задачи без перезагрузки ----------
-  // Перехватываем форму чекбокса: POST уходит fetch'ем (CSRF — в самой форме),
-  // карточка отмечается, из кружка вылетают частицы, затем она схлопывается.
-  // Любой сбой, повторяющаяся задача (после её выполнения список меняется
-  // сложнее) или не-ОК от сервера — обычная отправка формы, как без скрипта.
+  // ---------- выполнение задачи: эффект частиц ----------
   var COLORS = ['var(--accent)', 'var(--green)', 'var(--orange)'];
   function burst(btn) {
     var r = btn.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
@@ -151,49 +147,10 @@
       d.body.appendChild(p);
     }
   }
-  function collapse(card) {
-    var h = card.offsetHeight;
-    card.style.overflow = 'hidden';
-    var an = card.animate([
-      {height: h + 'px', opacity: 1},
-      {height: h + 'px', opacity: 0.6, offset: 0.25},
-      {height: '0px', opacity: 0, marginBottom: '0px', paddingTop: '0px', paddingBottom: '0px', borderWidth: '0px'}
-    ], {duration: 480, easing: 'cubic-bezier(0.22, 0.8, 0.2, 1)', fill: 'forwards', delay: 260});
-    an.onfinish = function () { card.remove(); };
-  }
-  // Точные числа сводки берём с сервера (одна лёгкая GET) и плавно докручиваем.
-  function refreshStats() {
-    fetch(location.href, {credentials: 'same-origin'}).then(function (r) { return r.ok ? r.text() : ''; })
-      .then(function (html) {
-        if (!html) return;
-        var doc = new DOMParser().parseFromString(html, 'text/html');
-        ['today', 'overdue', 'streak'].forEach(function (k) {
-          var now = d.querySelector('.stat-' + k + ' .stat-num'), next = doc.querySelector('.stat-' + k + ' .stat-num');
-          if (!now || !next) return;
-          var from = parseInt(now.textContent, 10) || 0, to = parseInt(next.textContent, 10) || 0;
-          if (from !== to) tween(now, to, String, from);
-        });
-      }).catch(function () {});
-  }
+  // Частицы вылетают при выполнении: само действие (fetch, схлопывание карточки,
+  // сводка) живёт в dashboard.js для всех устройств и сообщает событием task:done.
   function completion() {
-    d.addEventListener('submit', function (e) {
-      var f = e.target, card = f.parentNode, btn = f.querySelector && f.querySelector('.check-btn');
-      if (!btn || !card.classList || !card.classList.contains('task') || card.dataset.busy) return;
-      if (card.querySelector('.meta.rep') || !/\/(done|undone)$/.test(f.action)) return;
-      e.preventDefault();
-      card.dataset.busy = '1';
-      var undo = /undone$/.test(f.action);
-      fetch(f.action, {method: 'POST', body: new FormData(f), credentials: 'same-origin', redirect: 'manual'})
-        .then(function (r) {
-          if (r.type !== 'opaqueredirect' && !r.ok) throw new Error(r.status);
-          card.classList.toggle('done', !undo);
-          card.classList.add('fx-done');
-          if (!undo) burst(btn);
-          collapse(card);
-          refreshStats();
-        })
-        .catch(function () { delete card.dataset.busy; f.submit(); });
-    });
+    d.addEventListener('task:done', function (e) { if (e.detail && e.detail.btn) burst(e.detail.btn); });
   }
 
   // ---------- клавиатура ----------

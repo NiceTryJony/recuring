@@ -3,7 +3,6 @@
 владельца + CSRF-токен из формы; объект действия обязан принадлежать
 владельцу дашборда."""
 
-import re
 from datetime import datetime, time as dtime, timedelta
 from urllib.parse import parse_qsl
 
@@ -11,14 +10,13 @@ from aiohttp import web as aioweb
 
 import db
 
-from .config import BOT_USERNAME, SESSION_MAX_AGE, UTC, _acting_user_id, _tz_of
+from .config import BOT_USERNAME, SESSION_MAX_AGE, SHARE_CODE_RE, UTC, _acting_user_id, _tz_of
+from .fragments import description_payload, state_payload, subtasks_payload, wants_json
 from .photos import _fetch_and_compress_photo
 from .scheduler_hooks import _schedule_task, _unschedule_task
 from .share_hooks import _prepare_share_message
 from .texts import _dt
 
-# Код из db.get_or_create_task_share: 's_' + token_urlsafe(9) (12 символов).
-SHARE_CODE_RE = re.compile(r"s_[A-Za-z0-9_-]{12}")
 from .security import (
     _client_ip, _login_rate_limited, _record_failed_login, _require_session, _require_session_full,
     _sign_session, _verify_csrf, verify_telegram_login, verify_webapp_init_data,
@@ -337,7 +335,10 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
 
     title = data.get("title", "").strip()
     description = data.get("description", "").strip() or None
+    texts = _dt(settings.get("language", "ru"))
     if not title:
+        if wants_json(request):
+            return aioweb.json_response({"error": texts["error_empty_title"]}, status=422)
         return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=empty_title"})
 
     tz = _tz_of(settings)
@@ -345,6 +346,8 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
     if due_at is None:
         # Раньше нераспознанная дата молча превращалась в "сейчас", и задача
         # создавалась не на то время, о котором просил пользователь.
+        if wants_json(request):
+            return aioweb.json_response({"error": texts["error_bad_due_at"]}, status=422)
         return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=bad_due_at"})
 
     # repeat/remind — обязательные позиционные параметры add_task; с дашборда задача
@@ -356,6 +359,9 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
     await db.log_history(task_id, acting_user_id, title, "created")
     _schedule_task(task_id, owner_id, owner_type, due_at, "none", "on_time", tz)
 
+    if wants_json(request):
+        return aioweb.json_response(
+            await state_payload(request, token, settings, owner_id, owner_type, data, task_id=task_id))
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
 
@@ -423,6 +429,15 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
         await db.log_history(task_id, acting_user_id, task["title"], "deleted")
         _unschedule_task(task_id)
 
+    if wants_json(request):
+        payload = await state_payload(
+            request, token, settings, owner_id, owner_type, data,
+            task_id=None if action == "delete" else task_id,
+            with_chart=action in ("done", "undone", "delete"),
+        )
+        payload["task_id"] = task_id
+        payload["action"] = action
+        return aioweb.json_response(payload)
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
 
@@ -437,10 +452,10 @@ async def handle_task_edit(request: aioweb.Request) -> aioweb.Response:
     except ValueError:
         return aioweb.Response(status=404)
 
-    owner = await _require_session(request, token)
+    owner = await _require_session_full(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type, _tg_user_id = owner
+    settings, owner_id, owner_type, _tg_user_id = owner
 
     cookie = request.cookies.get(f"session_{token}", "")
     data = await request.post()
@@ -454,6 +469,8 @@ async def handle_task_edit(request: aioweb.Request) -> aioweb.Response:
     description = data.get("description", "").strip()[:4000] or None
     await db.update_task(task_id, description=description)
 
+    if wants_json(request):
+        return aioweb.json_response(description_payload(request, token, settings, {**task, "description": description}))
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}#task-{task_id}"})
 
 
@@ -478,10 +495,10 @@ async def handle_subtask_create(request: aioweb.Request) -> aioweb.Response:
     except ValueError:
         return aioweb.Response(status=404)
 
-    owner = await _require_session(request, token)
+    owner = await _require_session_full(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type, _tg_user_id = owner
+    settings, owner_id, owner_type, _tg_user_id = owner
 
     cookie = request.cookies.get(f"session_{token}", "")
     data = await request.post()
@@ -496,6 +513,8 @@ async def handle_subtask_create(request: aioweb.Request) -> aioweb.Response:
     if title:
         await db.add_subtask(task_id, title[:200])
 
+    if wants_json(request):
+        return aioweb.json_response(await subtasks_payload(request, token, settings, task_id))
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}#task-{task_id}"})
 
 
@@ -507,10 +526,10 @@ async def handle_subtask_toggle(request: aioweb.Request) -> aioweb.Response:
     except ValueError:
         return aioweb.Response(status=404)
 
-    owner = await _require_session(request, token)
+    owner = await _require_session_full(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type, _tg_user_id = owner
+    settings, owner_id, owner_type, _tg_user_id = owner
 
     cookie = request.cookies.get(f"session_{token}", "")
     data = await request.post()
@@ -522,6 +541,8 @@ async def handle_subtask_toggle(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=404)
 
     await db.toggle_subtask(subtask_id)
+    if wants_json(request):
+        return aioweb.json_response(await subtasks_payload(request, token, settings, sub["task_id"]))
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}#task-{sub['task_id']}"})
 
 
@@ -533,10 +554,10 @@ async def handle_subtask_delete(request: aioweb.Request) -> aioweb.Response:
     except ValueError:
         return aioweb.Response(status=404)
 
-    owner = await _require_session(request, token)
+    owner = await _require_session_full(request, token)
     if owner is None:
         return aioweb.Response(status=403)
-    owner_id, owner_type, _tg_user_id = owner
+    settings, owner_id, owner_type, _tg_user_id = owner
 
     cookie = request.cookies.get(f"session_{token}", "")
     data = await request.post()
@@ -548,4 +569,6 @@ async def handle_subtask_delete(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=404)
 
     await db.delete_subtask(subtask_id)
+    if wants_json(request):
+        return aioweb.json_response(await subtasks_payload(request, token, settings, sub["task_id"]))
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}#task-{sub['task_id']}"})

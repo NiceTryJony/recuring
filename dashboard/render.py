@@ -243,23 +243,44 @@ def _render_subtasks(subtasks: list[dict], token: str, task_id: int, csrf: str, 
     for st in subtasks:
         row_class = "subtask-row done" if st["done"] else "subtask-row"
         rows.append(f"""<div class="{row_class}">
-<form method="post" action="/dashboard/{token}/subtasks/{st['id']}/toggle">
+<form method="post" action="/dashboard/{token}/subtasks/{st['id']}/toggle" data-ajax="sub">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="subtask-check" aria-label="toggle">{CHECK_SVG}</button>
 </form>
 <span class="subtask-title">{escape(st["title"])}</span>
-<form method="post" action="/dashboard/{token}/subtasks/{st['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_subtask"])}')">
+<form method="post" action="/dashboard/{token}/subtasks/{st['id']}/delete" data-ajax="sub" onsubmit="return confirm('{escape(texts["confirm_delete_subtask"])}')">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="subtask-del-btn" aria-label="delete">✕</button>
 </form>
 </div>""")
     list_html = f'<div class="subtasks">{"".join(rows)}</div>' if rows else ""
-    add_form = f"""<form class="subtask-add-form" method="post" action="/dashboard/{token}/tasks/{task_id}/subtasks/new">
+    add_form = f"""<form class="subtask-add-form" method="post" action="/dashboard/{token}/tasks/{task_id}/subtasks/new" data-ajax="sub">
 <input type="hidden" name="csrf" value="{csrf}">
 <div class="form-control"><input type="text" name="title" aria-label="{escape(texts["new_subtask_placeholder"])}" maxlength="200" required><label>{_float_label(texts["new_subtask_placeholder"])}</label></div>
 <button type="submit" class="btn-tinted">{escape(texts["btn_add_subtask"])}</button>
 </form>"""
-    return list_html + add_form
+    # Обёртка нужна fetch-действиям: сервер присылает новый блок целиком, клиент
+    # подменяет его, не трогая остальную (раскрытую) карточку.
+    return f'<div class="subtasks-block">{list_html}{add_form}</div>'
+
+
+def _render_description(task: dict, token: str, csrf: str, texts: dict) -> str:
+    """Текст описания + вложенная форма правки (см. комментарий в _render_task).
+    Отдельной функцией, чтобы fetch-ответ мог прислать только этот блок."""
+    description = task.get("description") or ""
+    description_text_html = f'<p class="description-text">{escape(description)}</p>' if description else ""
+    edit_label = texts["edit_description_label"] if description else texts["add_description_label"]
+    return f"""<div class="desc-block">
+{description_text_html}
+<details class="edit-toggle">
+<summary>{_icon("pen")}{escape(edit_label)}</summary>
+<form class="desc-form" method="post" action="/dashboard/{token}/tasks/{task['id']}/edit" data-ajax="desc">
+<input type="hidden" name="csrf" value="{csrf}">
+<textarea name="description" placeholder="{escape(texts["description_placeholder"])}" maxlength="4000" rows="2">{escape(description)}</textarea>
+<button type="submit" class="btn-tinted">{escape(texts["btn_save_description"])}</button>
+</form>
+</details>
+</div>"""
 
 
 def _render_task(
@@ -312,23 +333,10 @@ def _render_task(
     photos_html = _render_photos(photos, token, task["id"], csrf, texts)
     upload_html = _render_upload_form(token, task["id"], csrf, texts, len(photos))
 
-    # Раньше текст описания дублировался: один раз как read-only абзац,
-    # сразу под ним — та же строка ещё раз в textarea формы редактирования.
-    # Теперь textarea спрятана во вложенный <details> ("✏️ Изменить
-    # описание") — по умолчанию виден только чистый текст, форма
-    # редактирования — отдельное осознанное действие, а не вечно открытая
-    # дублирующая копия.
-    description = task.get("description") or ""
-    description_text_html = f'<p class="description-text">{escape(description)}</p>' if description else ""
-    edit_label = texts["edit_description_label"] if description else texts["add_description_label"]
-    desc_form_html = f"""<details class="edit-toggle">
-<summary>{_icon("pen")}{escape(edit_label)}</summary>
-<form class="desc-form" method="post" action="/dashboard/{token}/tasks/{task['id']}/edit">
-<input type="hidden" name="csrf" value="{csrf}">
-<textarea name="description" placeholder="{escape(texts["description_placeholder"])}" maxlength="4000" rows="2">{escape(description)}</textarea>
-<button type="submit" class="btn-tinted">{escape(texts["btn_save_description"])}</button>
-</form>
-</details>"""
+    # Раньше текст описания дублировался: один раз как read-only абзац, рядом —
+    # та же строка в textarea. Теперь textarea спрятана во вложенный <details>
+    # (см. _render_description): по умолчанию виден только чистый текст.
+    description_html = _render_description(task, token, csrf, texts)
     subtasks_html = _render_subtasks(subtasks or [], token, task["id"], csrf, texts)
 
     extra_actions = ""
@@ -341,7 +349,7 @@ def _render_task(
         # показываем её только для разовых задач (repeat == "none"); тот же
         # repeat != "none" уже отдельно обрабатывается в bot.py/snooze_task.
         postpone_html = (
-            f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/postpone">
+            f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/postpone" data-ajax="task">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit">{_icon("fwd")}{escape(texts["btn_postpone"])}</button>
 </form>"""
@@ -354,7 +362,7 @@ def _render_task(
         extra_actions = f"""<div class="task-actions">
 {share_html}
 {postpone_html}
-<form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
+<form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" data-ajax="task" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="del-btn">{_icon("trash")}{escape(texts["btn_delete"])}</button>
 </form>
@@ -363,8 +371,7 @@ def _render_task(
     expanded_html = f"""<div class="task-expanded">
 {repeat_info_html}
 {author_html}
-{description_text_html}
-{desc_form_html}
+{description_html}
 {subtasks_html}
 {photos_html}
 {upload_html}
@@ -373,8 +380,8 @@ def _render_task(
     if lazy:
         expanded_html = f'<template class="task-x">{expanded_html}</template>'
 
-    return f"""<div class="{css_class}" id="task-{task['id']}">
-<form method="post" action="/dashboard/{token}/tasks/{task['id']}/{toggle_action}">
+    return f"""<div class="{css_class}" id="task-{task['id']}" data-due="{int(local_due.timestamp())}">
+<form method="post" action="/dashboard/{token}/tasks/{task['id']}/{toggle_action}" data-ajax="task">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="check-btn" aria-label="toggle">{CHECK_SVG}</button>
 </form>

@@ -45,6 +45,263 @@
     }
   }
 
+  // ---------- действия без перезагрузки ----------
+  // Формы с data-ajax работают и без JS (обычный POST + редирект). С JS тот же
+  // POST уходит fetch'ем с Accept: application/json, сервер отвечает готовыми
+  // HTML-фрагментами (dashboard/fragments.py), а мы подменяем их на месте.
+  // Интерфейс реагирует сразу (оптимистично) и откатывается, если сервер
+  // отказал. Все анимации — только transform/opacity.
+  var html = document.documentElement;
+  var EASE_OUT = 'cubic-bezier(0.32, 0.72, 0, 1)';
+  var canAnimate = !!html.animate &&
+    !(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var rich = canAnimate && html.classList.contains('mid');   // FLIP-перестановка — не на слабых телефонах
+  var errMeta = document.querySelector('meta[name=x-err]');
+  var ERR_TEXT = errMeta ? errMeta.content : 'Error';
+
+  function haptic(kind) {
+    if (!(tg && tg.HapticFeedback)) return;
+    if (kind === 'success') tg.HapticFeedback.notificationOccurred('success');
+    else tg.HapticFeedback.impactOccurred('light');
+  }
+
+  function toast(text) {
+    var old = document.querySelector('.toast');
+    if (old) old.remove();
+    var el = document.createElement('div');
+    el.className = 'toast';
+    el.setAttribute('role', 'status');
+    el.textContent = text;
+    document.body.appendChild(el);
+    setTimeout(function () { el.classList.add('out'); setTimeout(function () { el.remove(); }, 300); }, 3200);
+  }
+
+  function toNode(markup) {
+    var t = document.createElement('template');
+    t.innerHTML = markup.trim();
+    return t.content.firstElementChild;
+  }
+
+  // Плавное перемещение соседей: запоминаем позиции видимых карточек, меняем
+  // DOM, затем проигрываем разницу (FLIP) — карточки «съезжают» на новые места.
+  function flip(mutate) {
+    var first = [];
+    if (rich) {
+      var vh = window.innerHeight;
+      Array.prototype.forEach.call(document.querySelectorAll('.list .task'), function (c) {
+        var r = c.getBoundingClientRect();
+        if (r.bottom > -200 && r.top < vh + 200) first.push([c, r.top]);
+      });
+    }
+    mutate();
+    first.forEach(function (p) {
+      var c = p[0];
+      if (!c.isConnected) return;
+      var dy = p[1] - c.getBoundingClientRect().top;
+      if (Math.abs(dy) > 1) c.animate([{transform: 'translateY(' + dy + 'px)'}, {transform: 'none'}], {duration: 420, easing: EASE_OUT});
+    });
+  }
+
+  function enter(node) {
+    if (canAnimate) node.animate([{opacity: 0, transform: 'translateY(-8px) scale(0.98)'}, {opacity: 1, transform: 'none'}],
+      {duration: 360, easing: EASE_OUT});
+  }
+
+  function leave(node, done) {
+    if (!canAnimate) { done(); return; }
+    var a = node.animate([{opacity: 1, transform: 'none'}, {opacity: 0, transform: 'scale(0.96)'}],
+      {duration: 180, easing: 'ease-out', fill: 'forwards'});
+    a.onfinish = done;
+  }
+
+  function countTo(el, to) {
+    var from = parseInt(el.textContent, 10) || 0;
+    if (from === to) return;
+    if (!canAnimate) { el.textContent = to; return; }
+    var t0 = performance.now();
+    (function step(t) {
+      var p = Math.min(1, (t - t0) / 450), e = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(from + (to - from) * e);
+      if (p < 1) requestAnimationFrame(step);
+    })(t0);
+  }
+
+  function applyStats(s) {
+    if (!s) return;
+    ['today', 'overdue', 'streak'].forEach(function (k) {
+      var el = document.querySelector('.stat-' + k + ' .stat-num');
+      if (el && s[k] != null) countTo(el, s[k]);
+    });
+    var ring = document.querySelector('.stat-today');
+    if (ring && s.progress != null) ring.style.setProperty('--p', s.progress);
+  }
+
+  // Куда вставить карточку: активные по возрастанию срока, выполненные — по убыванию.
+  function placeCard(card) {
+    var list = document.querySelector('.list');
+    if (!list || list.querySelector('.task-group')) return false;   // сгруппированный вид — на месте
+    var due = Number(card.dataset.due), done = card.classList.contains('done'), ref = null;
+    var cards = list.querySelectorAll(':scope > .task');
+    for (var i = 0; i < cards.length; i++) {
+      var c = cards[i];
+      if (c === card) continue;
+      var cDone = c.classList.contains('done'), cDue = Number(c.dataset.due);
+      if (done ? (cDone && cDue < due) : (cDone || cDue > due)) { ref = c; break; }
+    }
+    if (!ref) ref = list.querySelector(':scope > .load-more');
+    list.insertBefore(card, ref);
+    return true;
+  }
+
+  function syncEmpty(p) {
+    var list = document.querySelector('.list');
+    if (!list) return;
+    var empty = list.querySelector(':scope > .empty');
+    if (p.empty && !list.querySelector('.task')) {
+      if (!empty) { var e = document.createElement('div'); e.className = 'empty'; e.textContent = p.empty; list.prepend(e); }
+    } else if (empty) { empty.remove(); }
+  }
+
+  // Общая часть любого ответа: сводка, вкладки/теги, график.
+  function applyCommon(p) {
+    applyStats(p.stats);
+    if (p.controls) {
+      var cur = document.querySelector('.view-controls'), next = toNode(p.controls);
+      if (cur && next && cur.outerHTML !== next.outerHTML) cur.replaceWith(next);
+    }
+    if (p.chart) {
+      var chart = document.querySelector('.chart-block'), nc = toNode(p.chart);
+      if (chart && nc) chart.replaceWith(nc);
+    }
+    syncEmpty(p);
+  }
+
+  // forceMove: после оптимистичного переключения класс done уже стоит, по нему перемещение не определить.
+  function applyTask(p, forceMove) {
+    var cur = document.getElementById('task-' + p.task_id);
+    if (!p.card) {
+      if (cur) leave(cur, function () { flip(function () { cur.remove(); syncEmpty(p); }); });
+      return;
+    }
+    var next = toNode(p.card);
+    if (!next) return;
+    if (!cur) {                                      // новая задача
+      flip(function () {
+        if (!placeCard(next)) (document.querySelector('.list') || document.body).prepend(next);
+        syncEmpty({});
+      });
+      enter(next);
+      return;
+    }
+    var moved = forceMove || cur.classList.contains('done') !== next.classList.contains('done') || cur.dataset.due !== next.dataset.due;
+    flip(function () {
+      cur.replaceWith(next);
+      if (moved) placeCard(next);
+    });
+    if (moved) enter(next);
+  }
+
+  function showCreateError(form, msg) {
+    var err = form.querySelector('.new-task-error');
+    if (!err) {
+      err = document.createElement('div');
+      err.className = 'new-task-error';
+      form.insertBefore(err, form.querySelector('input[name=csrf]'));
+    }
+    err.textContent = msg || ERR_TEXT;
+  }
+
+  function sendForm(form, submitter) {
+    var kind = form.dataset.ajax;
+    var card = form.closest('.task');
+    var isToggle = kind === 'task' && /\/(done|undone)$/.test(form.action);
+    var undo = isToggle && /undone$/.test(form.action);
+    var row = kind === 'sub' ? form.closest('.subtask-row') : null;
+    var subToggle = !!row && /\/toggle$/.test(form.action);
+    var btn = submitter || form.querySelector('button[type=submit], button:not([type])');
+
+    form.dataset.busy = '1';
+    if (btn) btn.disabled = true;
+    // оптимистичное состояние
+    if (isToggle && card) card.classList.toggle('done', !undo);
+    else if (subToggle) row.classList.toggle('done');
+    else if (card && kind === 'task') card.classList.add('pending');
+    else if (row) row.classList.add('pending');
+    if (isToggle && !undo) haptic('success');
+
+    function rollback(msg) {
+      if (isToggle && card) card.classList.toggle('done', undo);
+      else if (subToggle) row.classList.toggle('done');
+      if (card) card.classList.remove('pending');
+      if (row) row.classList.remove('pending');
+      if (msg) toast(msg);
+    }
+
+    var fd = new FormData(form);
+    fd.append('ctx', location.search);
+    fetch(form.action, {method: 'POST', body: fd, credentials: 'same-origin', headers: {'Accept': 'application/json'}})
+      .then(function (r) {
+        if (r.status === 403) { location.reload(); return null; }
+        return r.json().then(function (p) { return {ok: r.ok, status: r.status, p: p}; },
+                             function () { return {ok: false, status: r.status, p: {}}; });
+      })
+      .then(function (res) {
+        if (!res) return;
+        if (!res.ok) {
+          if (res.status === 422 && kind === 'create') showCreateError(form, res.p.error);
+          else rollback((res.p && res.p.error) || ERR_TEXT);
+          return;
+        }
+        var p = res.p;
+        if (kind === 'task') {
+          if (card) card.classList.remove('pending');
+          applyTask(p, isToggle);
+          if (isToggle && !undo && p.card) {
+            var nb = document.querySelector('#task-' + p.task_id + ' .check-btn');
+            if (nb) document.dispatchEvent(new CustomEvent('task:done', {detail: {btn: nb}}));
+          }
+          if (p.action === 'delete') haptic('light');
+          applyCommon(p);
+        } else if (kind === 'sub') {
+          var block = document.querySelector('#task-' + p.task_id + ' .subtasks-block');
+          if (block) {
+            var nbk = toNode(p.subtasks);
+            block.replaceWith(nbk);
+            if (form.classList.contains('subtask-add-form')) {
+              var inp = nbk.querySelector('input[name=title]');
+              if (inp) inp.focus({preventScroll: true});
+            }
+          }
+        } else if (kind === 'desc') {
+          var dsc = document.querySelector('#task-' + p.task_id + ' .desc-block');
+          if (dsc) dsc.replaceWith(toNode(p.description));
+        } else if (kind === 'create') {
+          form.reset();
+          var err = form.querySelector('.new-task-error');
+          if (err) err.remove();
+          var sheetEl = document.querySelector('.add-sheet');
+          if (sheetEl) sheetEl.open = false;
+          applyTask(p);
+          applyCommon(p);
+          haptic('success');
+        }
+      })
+      .catch(function () { rollback(ERR_TEXT); })
+      .then(function () {
+        delete form.dataset.busy;
+        if (btn) btn.disabled = false;
+      });
+  }
+
+  document.addEventListener('submit', function (e) {
+    var f = e.target;
+    // defaultPrevented — отказ в confirm() из onsubmit формы удаления.
+    if (e.defaultPrevented || !f.dataset || !f.dataset.ajax || !window.fetch || !window.FormData) return;
+    e.preventDefault();
+    if (f.dataset.busy) return;
+    sendForm(f, e.submitter);
+  });
+
   // ---------- «Поделиться» ----------
   // Сервер отдаёт ссылку и (если получилось) id готового сообщения. Порядок:
   // нативный диалог выбора чата (Bot API 8.0+) -> окно «переслать» Telegram ->

@@ -18,8 +18,7 @@ import db
 from stats import compute_streak, daily_series
 from task_groups import GROUPS, VIEWS, day_counts, group_tasks, select_tasks, tag_counts, today_progress
 
-from .config import BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, _tz_of, logger
-from .actions import SHARE_CODE_RE
+from .config import BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, SHARE_CODE_RE, _tz_of, logger
 from .pages import (
     HISTORY_PAGE, SHARE_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER, TEMPLATES_PAGE, WEBAPP_ENTRY_PAGE,
     _login_response,
