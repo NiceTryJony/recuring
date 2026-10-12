@@ -69,7 +69,9 @@ PROFILES = {
     },
     "mid": {
         "target_ms": 240, "viewport": {"width": 393, "height": 851}, "dpr": 2.75,
-        "mobile": True, "device_memory": 4, "cores": 8,
+        # 8 ГБ — как у современного среднего телефона; так профиль попадает в
+        # средний уровень детектора (.mid), а weak с 4 ГБ — в облегчённый.
+        "mobile": True, "device_memory": 8, "cores": 8,
         "network": {"latency": 40, "down_kbps": 9000, "up_kbps": 3000},
     },
     "weak": {
