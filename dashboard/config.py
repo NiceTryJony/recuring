@@ -24,6 +24,11 @@ if not BOT_TOKEN:
 SESSION_SECRET = BOT_TOKEN  # используем токен бота как секрет для HMAC
 SESSION_MAX_AGE = 60 * 60 * 24 * 7  # неделя
 
+# Заголовок Server-Timing (время БД и приложения) отдаём только по явной просьбе:
+# DASHBOARD_SERVER_TIMING=1. Медленные запросы логируются всегда.
+SERVER_TIMING = os.environ.get("DASHBOARD_SERVER_TIMING") == "1"
+SLOW_REQUEST_MS = 300
+
 AVATAR_CACHE_SECONDS = 3600  # getFile-ссылка живёт ~1ч, чтобы не дёргать Bot API на каждый показ
 # Имя бота без @ — нужно виджету Telegram Login (data-telegram-login=...).
 # Домен, на котором крутится дашборд, должен быть прописан боту через

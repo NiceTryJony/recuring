@@ -13,13 +13,13 @@ from urllib.parse import parse_qs
 from aiohttp import web as aioweb
 
 import db
-from task_groups import GROUPS, VIEWS, day_counts, select_tasks, tag_counts, today_progress
+from task_groups import GROUPS, VIEWS
 
 from .config import DONE_TASKS_PAGE_SIZE, _tz_of
 from .render import _render_description, _render_subtasks, _render_task
 from .security import _csrf_token
 from .texts import _dt
-from .views import _safe_chart, _view_controls
+from .views import _more_done_html, _page_state, _safe_chart, _view_controls
 
 
 def wants_json(request: aioweb.Request) -> bool:
@@ -55,19 +55,17 @@ async def state_payload(request: aioweb.Request, token: str, settings: dict, own
     tz = _tz_of(settings)
     ctx = parse_ctx(data.get("ctx", ""))
     now = dt.datetime.now(tz)
-    today = now.date()
 
-    all_tasks = await db.get_tasks(owner_id, owner_type, include_done=True)
-    local_due = {t["id"]: t["due_at"].astimezone(tz) for t in all_tasks}
-    tasks, _hidden = select_tasks(
-        all_tasks, local_due, view=ctx["view"], today=today, selected_date=ctx["date"] or today,
-        filter_active=ctx["date"] is not None, done_limit=ctx["done_limit"], tag=ctx["tag"],
+    state = await _page_state(
+        owner_id, owner_type, tz, now, view=ctx["view"], tag=ctx["tag"], done_limit=ctx["done_limit"],
+        selected_date=ctx["date"], filter_active=ctx["date"] is not None,
     )
-    today_n, overdue_n = day_counts(all_tasks, local_due, now)
+    tasks, local_due, stats = state["tasks"], state["local_due"], state["stats"]
     payload: dict = {
         "task_id": task_id,
-        "stats": {"today": today_n, "overdue": overdue_n, "progress": today_progress(all_tasks, local_due, today)},
-        "controls": _view_controls(token, texts, ctx["view"], ctx["group"], ctx["tag"], tag_counts(all_tasks), ctx["nojs"]),
+        "stats": {"today": stats["today"], "overdue": stats["overdue"], "progress": state["progress"]},
+        "controls": _view_controls(token, texts, ctx["view"], ctx["group"], ctx["tag"], state["tags"], ctx["nojs"]),
+        "more_done": _more_done_html(token, texts, state["hidden_done"], ctx["done_limit"], ctx["nojs"]),
         "empty": texts["empty"] if not tasks else None,
         "card": None,
     }

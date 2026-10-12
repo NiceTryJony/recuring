@@ -133,6 +133,11 @@ async def init_db():
         """)
 
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id, owner_type)")
+        # Выборки страницы дашборда: активные (done = FALSE) и «последние N выполненных»
+        # (done = TRUE ORDER BY due_at DESC LIMIT N) читаются прямо по этому индексу.
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_owner_done_due ON tasks(owner_id, owner_type, done, due_at)"
+        )
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_subtasks_task_id ON subtasks(task_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_history_user_id ON task_history(user_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_history_user_event_at ON task_history(user_id, event_at)")

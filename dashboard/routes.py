@@ -8,9 +8,10 @@ from .actions import (
     handle_template_apply, handle_template_create, handle_template_delete, handle_webapp_auth,
 )
 from .assets import compression_middleware, handle_static
+from .timing import timing_middleware
 from .photos import handle_avatar, handle_task_photo_delete, handle_task_photo_get, handle_task_photo_upload
 from .views import (
-    handle_dashboard, handle_history, handle_share_preview, handle_templates_page, handle_webapp_entry,
+    handle_chart, handle_dashboard, handle_history, handle_share_preview, handle_templates_page, handle_webapp_entry,
 )
 
 
@@ -18,6 +19,8 @@ def register_dashboard_routes(app: aioweb.Application):
     # Сжатие — на все ответы приложения (для не-текстовых и мелких это no-op).
     if compression_middleware not in app.middlewares:
         app.middlewares.append(compression_middleware)
+    if timing_middleware not in app.middlewares:
+        app.middlewares.append(timing_middleware)
     # Статика регистрируется первой: её путь /dashboard/static/... по форме
     # совпадает с /dashboard/{token}/..., а aiohttp матчит в порядке регистрации.
     app.router.add_get("/dashboard/static/{filename}", handle_static)
@@ -47,6 +50,7 @@ def register_dashboard_routes(app: aioweb.Application):
     app.router.add_get("/dashboard/{token}/share/{code}", handle_share_preview)
     app.router.add_post("/dashboard/{token}/share/{code}/accept", handle_share_accept)
     app.router.add_get("/dashboard/{token}/avatar/{user_id}", handle_avatar)
+    app.router.add_get("/dashboard/{token}/chart", handle_chart)
     app.router.add_get("/dashboard/{token}/history", handle_history)
     app.router.add_get("/dashboard/{token}/templates", handle_templates_page)
     app.router.add_post("/dashboard/{token}/templates/new", handle_template_create)

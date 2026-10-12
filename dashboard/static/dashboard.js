@@ -173,6 +173,12 @@
       var chart = document.querySelector('.chart-block'), nc = toNode(p.chart);
       if (chart && nc) chart.replaceWith(nc);
     }
+    if (p.more_done != null) {
+      var lst = document.querySelector('.list'), curMore = lst && lst.querySelector(':scope > .load-more');
+      if (!p.more_done) { if (curMore) curMore.remove(); }
+      else if (curMore) curMore.replaceWith(toNode(p.more_done));
+      else if (lst) lst.appendChild(toNode(p.more_done));
+    }
     syncEmpty(p);
   }
 
@@ -301,6 +307,30 @@
     if (f.dataset.busy) return;
     sendForm(f, e.submitter);
   });
+
+  // ---------- график: подгружается, когда подъезжает к экрану ----------
+  // Сервер отдаёт на его месте пустую рамку (.chart-lazy): два SQL-запроса
+  // графика не задерживают список. Без JS страница ?nojs=1 рисует график сразу.
+  var lazyChart = document.querySelector('.chart-lazy');
+  if (lazyChart) {
+    var loadChart = function () {
+      fetch(lazyChart.dataset.src, {credentials: 'same-origin'})
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (markup) {
+          var node = markup && toNode(markup);
+          if (node && lazyChart.isConnected) { lazyChart.replaceWith(node); enter(node); }
+          else lazyChart.removeAttribute('aria-busy');
+        })
+        .catch(function () { lazyChart.removeAttribute('aria-busy'); });
+    };
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(function (entries, io) {
+        if (entries[0].isIntersecting) { io.disconnect(); loadChart(); }
+      }, {rootMargin: '300px'}).observe(lazyChart);
+    } else {
+      loadChart();
+    }
+  }
 
   // ---------- «Поделиться» ----------
   // Сервер отдаёт ссылку и (если получилось) id готового сообщения. Порядок:

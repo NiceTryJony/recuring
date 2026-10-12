@@ -1,8 +1,10 @@
 """Пул соединений, URL базы и повтор запросов при временных сбоях."""
 
+import contextvars
 import logging
 import os
 import re
+import time
 from urllib.parse import quote, unquote
 
 import asyncpg
@@ -58,12 +60,18 @@ _MAX_RETRIES = 3
 _RETRY_DELAY_SEC = 2
 
 
+# Сколько миллисекунд и запросов к БД набежало в текущем HTTP-запросе. Список
+# [мс, число] кладёт dashboard (middleware Server-Timing); вне запроса — None.
+db_timing: contextvars.ContextVar = contextvars.ContextVar("db_timing", default=None)
+
+
 async def _with_retry(coro_fn, *args, **kwargs):
     """Оборачивает запрос к БД ретраями на случай временной недоступности
     (например, Supabase free tier приостановил проект или сетевой сбой)."""
     import asyncio
     last_exc = None
     for attempt in range(1, _MAX_RETRIES + 1):
+        started = time.perf_counter()
         try:
             return await coro_fn(*args, **kwargs)
         except (asyncpg.PostgresConnectionError, OSError) as e:
@@ -71,6 +79,11 @@ async def _with_retry(coro_fn, *args, **kwargs):
             logger.warning("DB запрос не удался (попытка %d/%d): %r", attempt, _MAX_RETRIES, e)
             if attempt < _MAX_RETRIES:
                 await asyncio.sleep(_RETRY_DELAY_SEC * attempt)
+        finally:
+            timing = db_timing.get()
+            if timing is not None:
+                timing[0] += (time.perf_counter() - started) * 1000
+                timing[1] += 1
     logger.error("DB запрос не удался после %d попыток", _MAX_RETRIES)
     raise last_exc
 

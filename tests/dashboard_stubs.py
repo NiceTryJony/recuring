@@ -5,6 +5,9 @@
 (tests/perf/test_dashboard_perf.py), чтобы набор подменяемых функций не
 расходился между ними."""
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import db
 
 # Код «Поделиться задачей», который отдаёт заглушка; указывает на первую задачу.
@@ -29,6 +32,7 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
     возвращает get_tasks (порядок как у настоящего ORDER BY done, due_at — за
     это отвечает вызывающий). photos/subtasks — {task_id: [...]}. Возвращает spy."""
     spy = spy if spy is not None else make_spy()
+    spy["tasks"] = tasks   # живой список: тесты подкладывают в него задачи
     photos = photos or {}
     subtasks = subtasks or {}
     users = users or {}
@@ -41,6 +45,38 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
 
     async def _task(task_id):
         return next((t for t in tasks if t["id"] == task_id), None)
+
+    async def _dash_tasks(owner_id, owner_type, done_limit, tag=None, day_start=None, day_end=None):
+        """Python-зеркало SQL db.get_dashboard_tasks (его честность проверяют интеграционные тесты)."""
+        active = [t for t in tasks if not t["done"]]
+        done = sorted((t for t in tasks if t["done"] and (not tag or t.get("tag") == tag)),
+                      key=lambda t: t["due_at"], reverse=True)[:done_limit]
+        day = [t for t in tasks if day_start is not None and day_start <= t["due_at"] < day_end]
+        seen, out = set(), []
+        for t in active + done + day:
+            if t["id"] not in seen:
+                seen.add(t["id"])
+                out.append(t)
+        return sorted(out, key=lambda t: (t["done"], t["due_at"]))
+
+    async def _dash_stats(owner_id, owner_type, tz_name, tag, days_from, days_to):
+        """Python-зеркало SQL db.get_dashboard_stats."""
+        tz = ZoneInfo(tz_name)
+        now = datetime.now(tz)
+        local = {t["id"]: t["due_at"].astimezone(tz) for t in tasks}
+        today = [t for t in tasks if local[t["id"]].date() == now.date()]
+        tags: dict = {}
+        for t in tasks:
+            if t.get("tag") and not t["done"]:
+                tags[t["tag"]] = tags.get(t["tag"], 0) + 1
+        return {
+            "overdue": sum(1 for t in tasks if not t["done"] and local[t["id"]] < now),
+            "today": sum(1 for t in today if not t["done"] and local[t["id"]] >= now),
+            "today_total": len(today), "today_done": sum(1 for t in today if t["done"]),
+            "done_total": sum(1 for t in tasks if t["done"] and (not tag or t.get("tag") == tag)),
+            "days": {d.date() for d in local.values() if days_from <= d.date() <= days_to},
+            "tags": list(tags.items()),
+        }
 
     async def _photos_bulk(ids):
         spy["photos_bulk"] += 1
@@ -110,6 +146,8 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
         "get_owner_by_dashboard_token": _owner,
         "get_or_create_user_dashboard_token": _user_token,
         "get_tasks": _tasks,
+        "get_dashboard_tasks": _dash_tasks,
+        "get_dashboard_stats": _dash_stats,
         "get_task": _task,
         "get_task_photos_meta_bulk": _photos_bulk,
         "get_subtasks_bulk": _subtasks_bulk,

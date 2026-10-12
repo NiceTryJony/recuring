@@ -111,6 +111,8 @@
 
 /* ---------- график активности ---------- */
 .chart-block { padding: var(--gutter); margin-top: var(--s5); }
+/* Пока график подгружается, рамка держит место — страница не «прыгает». */
+.chart-lazy { min-height: 200px; }
 .chart-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
 .chart-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; }
 .streak { color: var(--orange); font-size: 0.9375rem; font-weight: 600; }
