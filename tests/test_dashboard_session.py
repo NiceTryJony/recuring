@@ -168,8 +168,7 @@ def test_client_ip_falls_back_when_chain_shorter_than_expected():
 
 @pytest.fixture(autouse=True)
 def _clean_login_attempts():
-    dashboard._LOGIN_ATTEMPTS.clear()
-    dashboard._last_login_prune = 0.0
+    dashboard._reset_login_limiter()
     yield
     dashboard._LOGIN_ATTEMPTS.clear()
 
@@ -192,7 +191,8 @@ def test_login_attempts_pruned_after_window():
     old = time_module.time() - max(dashboard._LOGIN_WINDOW_SECONDS,
                                    dashboard._LOGIN_LOCKOUT_SECONDS) - 1
     dashboard._LOGIN_ATTEMPTS[("tok", "ip")] = [old]
-    dashboard._last_login_prune = 0.0
+    # таймер уборки живёт в dashboard.security — сбрасываем его, сохранив запись
+    dashboard.security._last_login_prune = 0.0
     dashboard._login_rate_limited("other", "ip")  # любой вызов запускает уборку
     assert ("tok", "ip") not in dashboard._LOGIN_ATTEMPTS
 

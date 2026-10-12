@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import dashboard
 import db
+from tests.dashboard_stubs import install_db_stubs, make_spy
 
 UTC = ZoneInfo("UTC")
 TOKEN = "tok-abc"
@@ -46,71 +47,12 @@ def task():
 def spy():
     """Счётчики обращений к БД и планировщику — ими проверяем, что страница
     берёт фото/подзадачи батчем, а действия доходят до планировщика."""
-    return {"photos_bulk": 0, "subtasks_bulk": 0, "photos_single": 0, "subtasks_single": 0,
-            "scheduled": [], "unscheduled": [], "added": []}
+    return make_spy()
 
 
 @pytest_asyncio.fixture
 async def client(monkeypatch, settings, task, spy):
-    async def _owner(token):
-        return settings if token == TOKEN else None
-
-    async def _tasks(*a, **kw):
-        return [task]
-
-    async def _task(task_id):
-        return task if task_id == task["id"] else None
-
-    async def _photos_bulk(ids):
-        spy["photos_bulk"] += 1
-        return {}
-
-    async def _subtasks_bulk(ids):
-        spy["subtasks_bulk"] += 1
-        return {}
-
-    async def _photos_single(task_id):
-        spy["photos_single"] += 1
-        return []
-
-    async def _subtasks_single(task_id):
-        spy["subtasks_single"] += 1
-        return []
-
-    async def _add_task(owner_id, owner_type, title, due_at, repeat, remind, **kw):
-        spy["added"].append({"title": title, "due_at": due_at, "repeat": repeat})
-        return 42
-
-    async def _noop(*a, **kw):
-        return None
-
-    async def _empty_list(*a, **kw):
-        return []
-
-    async def _empty_dict(*a, **kw):
-        return {}
-
-    for name, impl in {
-        "get_owner_by_dashboard_token": _owner,
-        "get_tasks": _tasks,
-        "get_task": _task,
-        "get_task_photos_meta_bulk": _photos_bulk,
-        "get_subtasks_bulk": _subtasks_bulk,
-        "get_task_photos_meta": _photos_single,
-        "get_subtasks": _subtasks_single,
-        "add_task": _add_task,
-        "get_telegram_users": _empty_dict,
-        "get_history_stats": _empty_list,
-        "get_done_days": _empty_list,
-        "get_event_feed": _empty_list,
-        "get_templates": _empty_list,
-        "log_history": _noop,
-        "mark_done": _noop,
-        "mark_undone": _noop,
-        "update_task": _noop,
-        "delete_task": _noop,
-    }.items():
-        monkeypatch.setattr(db, name, impl)
+    install_db_stubs(monkeypatch, TOKEN, settings, [task], spy=spy)
 
     dashboard.set_scheduler_hooks(
         schedule=lambda task_id, *a, **kw: spy["scheduled"].append(task_id),
@@ -439,3 +381,80 @@ async def test_single_lightbox_per_page(client, monkeypatch, task):
     assert body.count('class="photo-lightbox"') == 1
     assert body.count('id="ph-lb"') == 1
     assert body.count("data-full=") == 5
+
+
+# ---------- лёгкость страницы: лимит выполненных, ленивые карточки, JS ----------
+
+@pytest.fixture
+def many_done(monkeypatch, task):
+    """Одна активная задача и 30 выполненных (в порядке ORDER BY done, due_at)."""
+    tasks = [task]
+    for i in range(30):
+        t = dict(task)
+        t.update(id=100 + i, done=True, title=f"готово {i}",
+                 due_at=datetime.now(UTC) - timedelta(days=30 - i))
+        tasks.append(t)
+
+    async def _tasks(*a, **kw):
+        return tasks
+
+    monkeypatch.setattr(db, "get_tasks", _tasks)
+    return tasks
+
+
+async def test_done_tasks_are_limited_with_load_more(client, many_done):
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert body.count('class="task done"') == dashboard.config.DONE_TASKS_PAGE_SIZE
+    assert "общая задача" in body                      # активные — все
+    assert "готово 29" in body and "готово 0" not in body   # выполненные — самые свежие
+    assert f"done_limit={2 * dashboard.config.DONE_TASKS_PAGE_SIZE}" in body
+
+    body = await (await client.get(f"/dashboard/{TOKEN}?done_limit=40")).text()
+    assert body.count('class="task done"') == 30
+    assert "done_limit=" not in body
+
+
+async def test_day_filter_shows_whole_day_without_limit(client, many_done):
+    await _login(client)
+    day = many_done[5]["due_at"].astimezone(ZoneInfo("Europe/Warsaw")).date()
+    body = await (await client.get(f"/dashboard/{TOKEN}?date={day.isoformat()}")).text()
+    assert "готово 4" in body and "done_limit=" not in body
+
+
+async def test_expanded_card_is_lazy_template_with_nojs_fallback(client):
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    # раскрытая часть — инертный <template>, его достаёт dashboard.js
+    assert '<template class="task-x"><div class="task-expanded">' in body
+    assert f'href="/dashboard/{TOKEN}?nojs=1"' in body and "<noscript>" in body
+
+    body = await (await client.get(f"/dashboard/{TOKEN}?nojs=1")).text()
+    assert "<template" not in body and '<div class="task-expanded">' in body
+
+
+async def test_page_js_is_external_cached_file(client):
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert "onclick=" not in body                      # стрелки карусели — через dashboard.js
+    url = re.search(r'<script defer src="(/dashboard/static/dashboard\.[0-9a-f]+\.js)"', body).group(1)
+    resp = await client.get(url)
+    assert resp.status == 200 and resp.content_type == "application/javascript"
+    assert "immutable" in resp.headers["Cache-Control"]
+    js = await resp.text()
+    assert "task-x" in js and "onTelegramAuth" in js
+
+
+async def test_heavy_effects_are_opt_in(client):
+    """Дорогие эффекты (блюр, зерно) — только под .fx, которую ставит детектор
+    мощного устройства; по умолчанию страница облегчённая."""
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert "classList.add('fx')" in body
+    css_urls = re.findall(r'href="(/dashboard/static/[^"]+\.css)"', body)
+    css = "".join([await (await client.get(u)).text() for u in css_urls])
+    for rule in re.findall(r"([^{}]*)\{[^{}]*backdrop-filter:\s*(?!none)[^;{}]+", css):
+        assert ".fx" in rule, rule
+    # анимировать filter нельзя ни в каком режиме — он пересчитывается каждый кадр
+    for name, body_ in re.findall(r"@keyframes\s*([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", css):
+        assert "filter" not in body_, name
