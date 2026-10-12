@@ -2725,6 +2725,12 @@ async def run_health_server():
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
     dashboard.register_dashboard_routes(app)
+    # Дашборд живёт в этом же процессе, но импортировать bot.py у себя не может
+    # (цикл импорта), поэтому отдаём ему наши планировщик-функции: задача,
+    # созданная с веб-страницы, попадает в APScheduler сразу, а выполненная или
+    # удалённая — снимает свои джобы. Без этого напоминание по задаче с
+    # дашборда не приходило до рестарта процесса (restore_jobs).
+    dashboard.set_scheduler_hooks(schedule=schedule_task, unschedule=_remove_task_jobs)
     runner = aioweb.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))

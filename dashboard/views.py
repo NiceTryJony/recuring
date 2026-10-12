@@ -1,0 +1,330 @@
+"""GET-страницы дашборда: задачи, история событий, шаблоны.
+
+Доступ — по уникальному токену в URL (/dashboard/<token>) + пароль в форме
+логина. Токен может принадлежать как личному пользователю, так и групповому
+чату (общие задачи чата) — db.get_owner_by_dashboard_token() ищет среди обоих
+и возвращает owner_id/owner_type, дальше вся логика страницы работает с ними
+одинаково."""
+
+import asyncio
+import datetime as dt
+from datetime import datetime
+from html import escape
+
+from aiohttp import web as aioweb
+
+import db
+from stats import compute_streak, daily_series
+
+from .config import BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, _tz_of, logger
+from .pages import HISTORY_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER, TEMPLATES_PAGE, _login_response
+from .render import _render_chart, _render_day_picker, _render_event, _render_task, _render_template_row
+from .security import (
+    _clear_login_attempts, _client_ip, _csrf_token, _login_rate_limited, _record_failed_login,
+    _sign_session, _verify_session, verify_password,
+)
+from .texts import _dt, _dt_flat, _dt_tasks_page
+
+HISTORY_PAGE_SIZE = 30
+
+
+async def handle_history(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/history — пока только для группового дашборда:
+    для личного автор события всегда один и тот же человек, лента не нужна."""
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        return aioweb.Response(text=_dt("ru")["not_found"], status=404)
+
+    owner_id = settings["owner_id"]
+    owner_type = settings["owner_type"]
+    lang = settings.get("language", "ru")
+    texts = _dt(lang)
+
+    if owner_type != "chat":
+        return aioweb.Response(status=404)
+
+    cookie = request.cookies.get(f"session_{token}")
+    # current_password_version обязателен: без него смена пароля дашборда
+    # инвалидировала сессию на всех страницах, кроме этой, и утёкшая cookie
+    # продолжала читать ленту событий чата.
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
+    if session is None or (session[0], session[1]) != (owner_id, owner_type):
+        # Как и на главной странице — незалогиненный видит форму пароля.
+        return _login_response(token, lang)
+
+    tz = _tz_of(settings)
+
+    try:
+        offset = max(0, int(request.query.get("offset", "0")))
+    except ValueError:
+        offset = 0
+
+    # Берём на одну запись больше лимита — если она есть, значит дальше ещё
+    # что-то осталось и нужно показать "Показать ещё".
+    events = await db.get_event_feed(None, owner_id, limit=HISTORY_PAGE_SIZE + 1, offset=offset)
+    has_more = len(events) > HISTORY_PAGE_SIZE
+    events = events[:HISTORY_PAGE_SIZE]
+
+    if not events:
+        events_html = f'<div class="empty">{escape(texts["history_empty"])}</div>'
+    else:
+        actor_ids = {e["user_id"] for e in events}
+        creators = await db.get_telegram_users(list(actor_ids))
+        events_html = "\n".join(_render_event(e, tz, lang, token, creators.get(e["user_id"])) for e in events)
+
+    load_more_html = ""
+    if has_more:
+        next_offset = offset + HISTORY_PAGE_SIZE
+        load_more_html = f'<a class="load-more" href="/dashboard/{token}/history?offset={next_offset}">{escape(texts["btn_load_more"])}</a>'
+
+    page = HISTORY_PAGE.format(
+        token=token, events_html=events_html, load_more_html=load_more_html, **_dt_flat(lang),
+    )
+    return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def handle_templates_page(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/templates — список своих шаблонов + форма
+    создания нового. Доступно и личному, и групповому владельцу (в отличие
+    от /history) — см. комментарий у nav_links в handle_dashboard."""
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        return aioweb.Response(text=_dt("ru")["not_found"], status=404)
+
+    owner_id = settings["owner_id"]
+    owner_type = settings["owner_type"]
+    lang = settings.get("language", "ru")
+    texts = _dt(lang)
+
+    cookie = request.cookies.get(f"session_{token}")
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
+    if session is None or (session[0], session[1]) != (owner_id, owner_type):
+        return _login_response(token, lang)
+
+    csrf = _csrf_token(cookie)
+    templates = await db.get_templates(owner_id, owner_type)
+    if not templates:
+        templates_html = f'<div class="empty">{escape(texts["templates_empty"])}</div>'
+    else:
+        templates_html = "\n".join(_render_template_row(tpl, lang, token, csrf) for tpl in templates)
+
+    new_template_error = ""
+    err = request.query.get("error")
+    if err == "empty_title":
+        new_template_error = f'<div class="new-task-error">{escape(texts["error_empty_template_title"])}</div>'
+    elif err == "limit":
+        new_template_error = (
+            f'<div class="new-task-error">'
+            f'{escape(texts["template_limit_reached"].format(n=db.MAX_TEMPLATES_PER_OWNER))}</div>'
+        )
+
+    page = TEMPLATES_PAGE.format(
+        token=token, csrf=csrf, templates_html=templates_html,
+        new_template_error=new_template_error, **_dt_flat(lang),
+    )
+    return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+
+
+async def _build_chart(owner_id: int, owner_type: str, tz, texts: dict) -> str:
+    # личный дашборд — история самого пользователя; групповой — события по общим задачам чата
+    user_id, chat_id = (owner_id, None) if owner_type == "user" else (None, owner_id)
+    rows, done_days = await asyncio.gather(
+        db.get_history_stats(user_id, CHART_DAYS, tz.key, chat_id=chat_id),
+        db.get_done_days(user_id, tz.key, chat_id=chat_id),
+    )
+    today = datetime.now(tz).date()
+    series = daily_series(rows, "done", CHART_DAYS, today)
+    return _render_chart(series, compute_streak(done_days, today), texts)
+
+
+async def _safe_chart(owner_id: int, owner_type: str, tz, texts: dict) -> str:
+    try:
+        return await _build_chart(owner_id, owner_type, tz, texts)
+    except Exception:
+        # график — второстепенный блок: сбой БД/статистики не должен ронять весь дашборд
+        logger.exception("Не удалось построить график активности owner=%s/%s", owner_type, owner_id)
+        return ""
+
+
+async def _handle_login_post(request: aioweb.Request, token: str, settings: dict, lang: str) -> aioweb.Response:
+    texts = _dt(lang)
+    ip = _client_ip(request)
+    if _login_rate_limited(token, ip):
+        error_html = f'<div class="error">{escape(texts["error_too_many_attempts"])}</div>'
+        return _login_response(token, lang, error_html, status=429)
+
+    data = await request.post()
+    password = data.get("password", "")
+    if await asyncio.to_thread(verify_password, password, settings["dashboard_password_hash"] or ""):
+        _clear_login_attempts(token, ip)
+        # tg_user_id=0: кто именно ввёл общий пароль, нам неизвестно — для
+        # owner_type='chat' это уточнится позже через виджет на самой
+        # странице (см. handle_telegram_auth), без этого шага деградируем
+        # на owner_id (chat_id) в истории, как было раньше.
+        session_value = _sign_session(settings["owner_id"], settings["owner_type"],
+                                      password_version=settings.get("dashboard_password_version", 0))
+        resp = aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+        # Render терминирует TLS на прокси — схему берём из X-Forwarded-Proto
+        is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
+        resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
+                        samesite="Strict", secure=is_https)
+        return resp
+
+    _record_failed_login(token, ip)
+    error_html = f'<div class="error">{escape(texts["error_wrong_password"])}</div>'
+    return _login_response(token, lang, error_html, status=401)
+
+
+def _select_tasks(all_tasks: list[dict], local_due: dict, selected_date, filter_active: bool,
+                  done_limit: int) -> tuple[list[dict], int]:
+    """Какие задачи рисовать и сколько выполненных осталось за кадром.
+
+    Панель дней — это ФИЛЬТР, не обязательный режим: без ?date= в URL
+    дашборд показывает все активные задачи, а выбор дня сужает список до
+    одного дня (тогда показывается весь день целиком, без лимитов). Так ссылка
+    дашборда без параметров (например, уже сохранённая в Telegram) не меняет
+    поведения для тех, кто панелью не пользуется.
+
+    Без фильтра выполненные режутся до done_limit самых свежих: они копятся
+    годами, и раньше страница рендерила их все — на слабом телефоне сотни
+    лишних карточек и были главной ценой первой отрисовки."""
+    if filter_active:
+        return [t for t in all_tasks if local_due[t["id"]].date() == selected_date], 0
+    active = [t for t in all_tasks if not t["done"]]
+    done = sorted((t for t in all_tasks if t["done"]), key=lambda t: t["due_at"], reverse=True)
+    return active + done[:done_limit], max(0, len(done) - done_limit)
+
+
+async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        # До того, как мы знаем настройки конкретного владельца, язык
+        # страницы с ошибкой определить нечем — используем дефолт (ru).
+        return aioweb.Response(text=_dt("ru")["not_found"], status=404)
+
+    owner_id = settings["owner_id"]
+    owner_type = settings["owner_type"]
+    lang = settings.get("language", "ru")
+    texts = _dt(lang)
+
+    if request.method == "POST":
+        return await _handle_login_post(request, token, settings, lang)
+
+    cookie = request.cookies.get(f"session_{token}")
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
+    if session is None or (session[0], session[1]) != (owner_id, owner_type):
+        return _login_response(token, lang)
+    _, _, tg_user_id = session
+
+    tz = _tz_of(settings)
+    csrf = _csrf_token(cookie)
+    now = dt.datetime.now(tz)
+    today = now.date()
+
+    raw_date = request.query.get("date", "")
+    selected_date = today
+    filter_active = bool(raw_date)
+    if raw_date:
+        try:
+            selected_date = dt.date.fromisoformat(raw_date)
+        except ValueError:
+            selected_date, filter_active = today, False  # битый параметр — тихо откатываемся на "все задачи"
+    try:
+        done_limit = max(DONE_TASKS_PAGE_SIZE, int(request.query.get("done_limit", DONE_TASKS_PAGE_SIZE)))
+    except ValueError:
+        done_limit = DONE_TASKS_PAGE_SIZE
+    # ?nojs=1 — полная версия без <template>: ссылка на неё стоит в <noscript>,
+    # без JS ленивые карточки было бы не раскрыть.
+    nojs = request.query.get("nojs") == "1"
+
+    all_tasks = await db.get_tasks(owner_id, owner_type, include_done=True)
+    # Перевод в зону владельца — один раз на задачу (раньше трижды: для
+    # точек панели, для фильтра и в самом рендере карточки).
+    local_due = {t["id"]: t["due_at"].astimezone(tz) for t in all_tasks}
+    # task_days — для точек-индикаторов под числами панели: на какие дни
+    # вообще есть задачи. Считаем по полному списку, иначе индикаторы видели
+    # бы только дни внутри уже отфильтрованной недели/месяца.
+    task_days = {d.date() for d in local_due.values()}
+    tasks, hidden_done = _select_tasks(all_tasks, local_due, selected_date, filter_active, done_limit)
+
+    day_picker_html = _render_day_picker(
+        selected_date if filter_active else today, today, lang, token, task_days, filter_active=filter_active
+    )
+
+    chart = _safe_chart(owner_id, owner_type, tz, texts)
+    if not tasks:
+        tasks_html = f'<div class="empty">{escape(texts["empty"])}</div>'
+        chart_html = await chart
+    else:
+        async def _creators() -> dict[int, dict]:
+            if owner_type != "chat":
+                return {}
+            return await db.get_telegram_users(list({t["created_by"] for t in tasks if t.get("created_by")}))
+
+        # Фото и подзадачи — ОДИН запрос на всю страницу каждый (WHERE task_id
+        # = ANY(...)), а не по запросу на задачу. И все независимые выборки
+        # (авторы, фото, подзадачи, статистика графика) идут параллельно, а не
+        # друг за другом — время ответа = самый медленный запрос, а не их сумма.
+        task_ids = [t["id"] for t in tasks]
+        creators, photos_by_task, subtasks_by_task, chart_html = await asyncio.gather(
+            _creators(), db.get_task_photos_meta_bulk(task_ids), db.get_subtasks_bulk(task_ids), chart,
+        )
+        tasks_html = "\n".join(
+            _render_task(
+                t, tz, lang, token, csrf, creator=creators.get(t.get("created_by")), owner_type=owner_type,
+                photos=photos_by_task.get(t["id"]), subtasks=subtasks_by_task.get(t["id"]),
+                now=now, local_due=local_due[t["id"]], lazy=not nojs,
+            )
+            for t in tasks
+        )
+
+    more_done_html = ""
+    if hidden_done:
+        nojs_q = "&nojs=1" if nojs else ""
+        more_done_html = (
+            f'<a class="load-more" href="/dashboard/{token}?done_limit={done_limit + DONE_TASKS_PAGE_SIZE}{nojs_q}">'
+            f'{escape(texts["btn_more_done"].format(n=hidden_done))}</a>'
+        )
+    nojs_html = "" if nojs else (
+        f'<noscript><a class="load-more" href="/dashboard/{token}?nojs=1">'
+        f'{escape(texts["nojs_full_version"])}</a></noscript>'
+    )
+
+    heading = texts["heading_chat"] if owner_type == "chat" else texts["heading"]
+    # В отличие от истории (nav_history) — лента событий с авторами нужна
+    # только групповому дашборду (см. комментарий у handle_history) — шаблоны
+    # полезны и личному владельцу, поэтому ссылка показывается всегда.
+    nav_links = [f'<a class="nav-link" href="/dashboard/{token}/templates">{escape(texts["nav_templates"])}</a>']
+    if owner_type == "chat":
+        nav_links.append(f'<a class="nav-link" href="/dashboard/{token}/history">{escape(texts["nav_history"])}</a>')
+    nav_html = " ".join(nav_links)
+
+    error_key = {"empty_title": "error_empty_title", "bad_photo": "error_bad_photo",
+                 "bad_due_at": "error_bad_due_at"}.get(request.query.get("error", ""))
+    new_task_error_html = f'<div class="new-task-error">{escape(texts[error_key])}</div>' if error_key else ""
+
+    # Виджет показываем только на групповом дашборде и только пока не знаем,
+    # кто именно из участников сейчас смотрит страницу (вошли по общему паролю,
+    # через виджет ещё не проходили). На личном дашборде identity уже известна
+    # (owner_id сам и есть tg_user_id), виджет там не нужен.
+    tg_widget_html = ""
+    if owner_type == "chat" and tg_user_id == 0 and BOT_USERNAME:
+        tg_widget_html = TELEGRAM_WIDGET_BANNER.format(
+            bot_username=BOT_USERNAME, token=token, note=texts["tg_widget_note"], csrf=csrf,
+        )
+
+    page = TASKS_PAGE.format(
+        tasks_html=tasks_html, chart_html=chart_html, heading=heading, nav_html=nav_html,
+        token=token, csrf=csrf, new_task_error=new_task_error_html, tg_widget_html=tg_widget_html,
+        day_picker_html=day_picker_html, more_done_html=more_done_html, nojs_html=nojs_html,
+        **_dt_tasks_page(lang),
+    )
+    return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})

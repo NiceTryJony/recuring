@@ -1,0 +1,4 @@
+/* Лента событий. Сами .event, .empty, .load-more, .nav-link — в base.css;
+   здесь только то, чем история отличается: аватар крупнее, чем в карточке задачи. */
+.avatar { width: 28px; height: 28px; }
+.avatar-placeholder { font-size: 0.9rem; }
