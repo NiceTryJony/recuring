@@ -526,3 +526,32 @@ async def test_webapp_auth_rejects_bad_init_data(client, settings, init_data):
     resp = await client.post("/dashboard/webapp-auth", json={"initData": init_data})
     assert resp.status == 403
     assert not resp.cookies
+
+
+# ---------- вкладки и группировка ----------
+
+async def test_view_tabs_and_grouping_params(client, task):
+    await _login(client)
+    page = await (await client.get(f"/dashboard/{TOKEN}?group=tag")).text()
+    assert 'class="view-tab active"' in page and 'class="task-group"' in page and "Без тега" in page
+    done_page = await (await client.get(f"/dashboard/{TOKEN}?view=done")).text()
+    assert task["title"] not in done_page
+    junk = await client.get(f"/dashboard/{TOKEN}?view=zzz&group=zzz")
+    assert junk.status == 200 and task["title"] in await junk.text()
+
+
+async def test_page_has_summary_add_sheet_and_tabbar(client):
+    await _login(client)
+    page = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert 'class="summary"' in page and 'class="add-sheet"' in page and 'class="tabbar"' in page
+    assert page.count('action="/dashboard/tok-abc/tasks/new"') == 1
+    err = await (await client.get(f"/dashboard/{TOKEN}?error=empty_title")).text()
+    assert 'class="add-sheet" open' in err
+
+
+async def test_tasks_page_has_side_panel_before_list(client):
+    await _login(client)
+    page = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    side, lst = page.index('<aside class="side">'), page.index('<main class="list">')
+    assert side < page.index('class="summary"') < page.index('class="bars"') < page.index("</aside>") < lst
+    assert page.index("общая задача") > lst

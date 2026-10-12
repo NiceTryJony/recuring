@@ -10,28 +10,52 @@
    надпись или одно кольцо. fill-mode у входных анимаций — backwards, а не both,
    иначе замороженное значение transform перебивает hover. */
 
-.fx { interpolate-size: allow-keywords; --glow: rgba(0, 122, 255, 0.10); }
-@media (prefers-color-scheme: dark) { .fx { --glow: rgba(10, 132, 255, 0.17); } }
+.fx { interpolate-size: allow-keywords; --glow: color-mix(in srgb, var(--accent) 16%, transparent); }
 
-/* ---------- фон: два медленных пятна в пустых полях по бокам колонки ----------
-   Один фиксированный слой на пятно, двигается только transform (композитор). */
+/* ---------- фон: аврора из трёх пятен + сетка с виньеткой ----------
+   По одному фиксированному слою на пятно, двигается только transform
+   (композитор); параллакс по скроллу — отдельным свойством translate, чтобы не
+   спорить с дрейфом. Сетка — один статичный слой (градиенты, без картинок). */
 .fx body { background: transparent; }
-.fx body::before, .fx body::after {
+.fx body::before, .fx body::after, .fx::before {
   content: ""; position: fixed; z-index: -1; width: 60vmax; height: 60vmax; border-radius: 50%;
   pointer-events: none; will-change: transform;
 }
 .fx body::before {
   left: -26vmax; top: -22vmax;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 17%, transparent), transparent);
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 20%, transparent), transparent);
   animation: fx-drift-a 38s ease-in-out infinite alternate;
 }
 .fx body::after {
   right: -26vmax; bottom: -26vmax;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 11%, transparent), transparent);
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 60%, #22d3ee 40%) 0%, transparent 100%);
+  opacity: 0.16;
   animation: fx-drift-b 46s ease-in-out infinite alternate;
+}
+.fx::before {
+  right: -20vmax; top: -30vmax; width: 50vmax; height: 50vmax;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 55%, #c084fc 45%) 0%, transparent 100%);
+  opacity: 0.12;
+  animation: fx-drift-c 52s ease-in-out infinite alternate;
+}
+.fx::after {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.55;
+  background-image:
+    linear-gradient(var(--sep) 1px, transparent 1px),
+    linear-gradient(90deg, var(--sep) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000, transparent 75%);
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000, transparent 75%);
 }
 @keyframes fx-drift-a { to { transform: translate(20vmax, 14vmax) scale(1.18); } }
 @keyframes fx-drift-b { to { transform: translate(-18vmax, -12vmax) scale(1.12); } }
+@keyframes fx-drift-c { to { transform: translate(-14vmax, 18vmax) scale(1.25); } }
+@supports (animation-timeline: scroll()) {
+  @keyframes fx-par-a { to { translate: 0 -12vmax; } }
+  @keyframes fx-par-b { to { translate: 0 10vmax; } }
+  .fx body::before { animation: fx-drift-a 38s ease-in-out infinite alternate, fx-par-a linear both; animation-timeline: auto, scroll(root); }
+  .fx body::after { animation: fx-drift-b 46s ease-in-out infinite alternate, fx-par-b linear both; animation-timeline: auto, scroll(root); }
+}
 
 /* ---------- появление при прокрутке ---------- */
 @keyframes fx-rise { from { opacity: 0; transform: translateY(18px) scale(0.985); } }
@@ -92,6 +116,26 @@
   .fx .task-photo:hover img { transform: scale(1.07); }
 }
 
+/* ---------- градиентная рамка за курсором ----------
+   Появляется только у карточки под курсором (pseudo без content не строится
+   вовсе) — на остальных карточках страницы это не стоит ничего. */
+.fx .stat { position: relative; isolation: isolate; }
+.fx .stat {
+  background: linear-gradient(155deg, color-mix(in srgb, var(--surface) 90%, var(--accent)), var(--surface) 70%);
+}
+.fx .stat-num { text-shadow: 0 0 22px color-mix(in srgb, currentColor 40%, transparent); }
+@keyframes fx-edge { from { opacity: 0; } }
+@media (hover: hover) and (pointer: fine) {
+  .fx .task:hover::after, .fx .event:hover::after, .fx .chart-block:hover::after,
+  .fx .day-picker:hover::after, .fx .stat:hover::after {
+    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: radial-gradient(280px circle at var(--mx, 50%) var(--my, 50%), color-mix(in srgb, var(--accent) 85%, #fff), transparent 65%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    animation: fx-edge 0.35s ease backwards;
+  }
+}
+
 /* ---------- раскрытие карточки ---------- */
 @supports selector(::details-content) {
   .fx .task-details::details-content {
@@ -144,11 +188,6 @@
 .fx .btn-filled { transform: translate(var(--tx, 0px), var(--ty, 0px)); transition: transform 0.3s var(--spring); }
 .fx .btn-filled:active { transform: translate(var(--tx, 0px), var(--ty, 0px)) scale(0.97); }
 
-.fx .new-task-form > input:not([type=hidden]), .fx .new-task-form > textarea {
-  background: linear-gradient(var(--accent), var(--accent)) no-repeat 0 100% / 0 2px;
-  transition: background-size 0.5s var(--spring);
-}
-.fx .new-task-form > input:focus, .fx .new-task-form > textarea:focus { background-size: 100% 2px; box-shadow: none; }
 
 /* кольцо вспыхивает на нажатии чекбокса */
 .fx .check-btn::after {
@@ -171,3 +210,56 @@
     animation: fx-progress linear both; animation-timeline: scroll(root);
   }
 }
+
+/* ---------- выполнение задачи: частицы и «поп» чекбокса ---------- */
+@keyframes fx-burst { to { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; } }
+@keyframes fx-pop { 40% { transform: scale(1.35); } }
+.fx .fx-p {
+  position: fixed; z-index: 2000; width: 7px; height: 7px; margin: -3px 0 0 -3px; border-radius: 50%;
+  pointer-events: none; animation: fx-burst 0.75s cubic-bezier(0.22, 0.8, 0.2, 1) forwards;
+}
+.fx .task.fx-done .check-btn { animation: fx-pop 0.5s var(--spring); }
+
+/* ---------- кольцо прогресса «сегодня» (в сводке) ---------- */
+@property --pp { syntax: "<number>"; inherits: false; initial-value: 0; }
+@keyframes fx-ring-fill { from { --pp: 0; } }
+.fx .stat-today[style]::before {
+  content: ""; position: absolute; right: 14px; top: 14px; width: 36px; height: 36px; border-radius: 50%;
+  --pp: var(--p);
+  background: conic-gradient(var(--accent) calc(var(--pp) * 1%), var(--fill) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  animation: fx-ring-fill 1.2s var(--spring) 0.3s backwards;
+}
+
+/* ---------- график: градиентные столбики и тултип ---------- */
+.fx .bar { background: linear-gradient(to top, var(--accent), color-mix(in srgb, var(--accent) 55%, #22d3ee)); }
+.fx .bar.zero { background: var(--fill); }
+.fx .col { position: relative; }
+@media (hover: hover) and (pointer: fine) {
+  .fx .col:hover::after {
+    content: attr(data-t); position: absolute; left: 50%; top: -34px; z-index: 5; transform: translateX(-50%);
+    padding: 4px 10px; border-radius: 8px; white-space: nowrap; pointer-events: none;
+    background: var(--surface-2); border: 1px solid var(--sep); color: var(--label);
+    font-size: 0.75rem; font-variant-numeric: tabular-nums; animation: fx-edge 0.2s ease backwards;
+  }
+}
+
+/* ---------- заголовок: градиентный текст ---------- */
+.fx .large-title { text-wrap: balance; }
+.fx .large-title .w {
+  background: linear-gradient(100deg, var(--label) 30%, color-mix(in srgb, var(--accent) 75%, #22d3ee));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* ---------- подсказка по клавишам ---------- */
+.fx .fx-help {
+  position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.5); animation: fx-edge 0.2s ease backwards;
+}
+.fx .fx-help ul {
+  list-style: none; margin: 0; padding: var(--s4) var(--s5); border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--sep); line-height: 2;
+  animation: rise 0.3s var(--spring) backwards;
+}
+.fx .task-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 6px; }

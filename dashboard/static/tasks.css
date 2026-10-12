@@ -1,22 +1,26 @@
-/* Страница задач. Строка задачи — как в «Напоминаниях»: круглый чекбокс,
-   заголовок обычного начертания, под ним дата вторичным цветом; просроченная
-   дата — красная. Общие карточки, кнопки и форма — в base.css. */
+/* Страница задач: строка — круглый чекбокс, заголовок, под ним дата и тег;
+   просроченная подсвечена красной полосой слева. Общие карточки, кнопки,
+   сводка, вкладки и форма — в base.css. */
 
-.task.done .title { color: var(--label-2); }
+.task.done .title { color: var(--label-2); text-decoration: line-through; text-decoration-color: var(--label-3); }
+.task.done { opacity: 0.75; }
+.task.overdue { box-shadow: inset 3px 0 0 var(--red); }
 .task.overdue .meta { color: var(--red); }
 /* line-height: 0 нужен только форме чекбокса (кружок без лишней строки вокруг). */
 .task form { margin: 0; }
 .task > form { line-height: 0; }
-/* Видимый кружок 22px, хит-область — 44px невидимым ::before. */
+/* Видимый кружок 24px, хит-область — 44px невидимым ::before. */
 .check-btn, .subtask-check {
-  width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--label-3);
-  background: transparent; flex-shrink: 0; margin-top: 1px; padding: 0; position: relative;
+  width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--label-3);
+  background: transparent; flex-shrink: 0; margin-top: 0; padding: 0; position: relative;
+  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s var(--ease);
 }
-.check-btn::before, .subtask-check::before { content: ""; position: absolute; inset: -11px; }
+.check-btn::before, .subtask-check::before { content: ""; position: absolute; inset: -10px; }
 .check-btn:active, .subtask-check:active { transform: scale(0.88); }
-/* Выполнено — закрашенный кружок с внутренним кольцом, как в «Напоминаниях». */
+/* Выполнено — закрашенный кружок с галочкой (фон-картинка: без лишних узлов). */
 .task.done .check-btn, .subtask-row.done .subtask-check {
-  border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 2.5px var(--surface);
+  border-color: var(--accent);
+  background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / 14px no-repeat;
 }
 
 /* Карточка-раскрывашка: <details>/<summary> без JS. Чекбокс живёт вне
@@ -39,14 +43,17 @@
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4'/%3E%3C/svg%3E") center / contain no-repeat;
 }
-/* Тег — «#тег» цветом акцента, как в «Напоминаниях». */
-.tag { color: var(--accent); font-size: 0.9375rem; margin-top: 2px; }
+/* Тег — плашка цветом акцента. */
+.tag {
+  display: inline-block; margin-top: var(--s2); padding: 2px 10px; border-radius: 999px;
+  background: var(--accent-tint); color: var(--accent); font-size: 0.8125rem; font-weight: 500;
+}
 
-.task-expanded { margin-top: 12px; padding-top: 12px; border-top: 0.5px solid var(--sep); }
-/* Раскрытие: на слабых — мгновенно; на .mid — короткое проявление со сдвигом
-   (только opacity/transform), пружиной без отскока. */
+.task-expanded { margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--sep); }
+/* Раскрытие: короткое проявление со сдвигом (только opacity/transform) на
+   всех уровнях, пружиной без отскока. */
 @keyframes expand-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-.mid .task-expanded { animation: expand-in 0.45s var(--spring) both; }
+.task-expanded { animation: expand-in 0.4s var(--spring) both; }
 
 .repeat-chip {
   display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px;
@@ -73,9 +80,9 @@
 
 /* Подзадачи — вложенный список с разделителями. */
 .subtasks { margin-bottom: 10px; }
-.subtask-row { display: flex; align-items: center; gap: 12px; min-height: 40px; border-bottom: 0.5px solid var(--sep); }
+.subtask-row { display: flex; align-items: center; gap: var(--s3); min-height: 44px; border-bottom: 1px solid var(--sep); }
 .subtask-row form { margin: 0; line-height: 0; }
-.subtask-check { width: 20px; height: 20px; margin: 0; }
+.subtask-check { width: 22px; height: 22px; margin: 0; }
 .subtask-title { flex: 1; min-width: 0; font-size: 0.9375rem; overflow-wrap: break-word; }
 .subtask-row.done .subtask-title { color: var(--label-2); }
 .subtask-del-btn {
@@ -87,18 +94,21 @@
 .subtask-add-form input[type=text] { flex: 1; min-width: 0; }
 .subtask-add-form .btn-tinted { flex-shrink: 0; }
 
-/* ---------- график (как «Экранное время»/«Здоровье») ---------- */
-.chart-block { padding: var(--gutter); margin-top: 24px; }
+/* ---------- график активности ---------- */
+.chart-block { padding: var(--gutter); margin-top: var(--s5); }
 .chart-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
 .chart-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; }
 .streak { color: var(--orange); font-size: 0.9375rem; font-weight: 600; }
-.bars { display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 14px; border-bottom: 0.5px solid var(--sep); }
+.bars { display: flex; align-items: flex-end; gap: 6px; height: 120px; margin-top: var(--s4); border-bottom: 1px solid var(--sep); }
 .col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; }
-.num { font-size: 0.6875rem; color: var(--label-2); height: 14px; line-height: 14px; font-variant-numeric: tabular-nums; }
-.bar { width: 100%; max-width: 22px; background: var(--accent); border-radius: 4px 4px 1px 1px; }
+.num { font-size: 0.75rem; color: var(--label-2); height: 14px; line-height: 14px; font-variant-numeric: tabular-nums; }
+.bar {
+  width: 100%; max-width: 26px; background: var(--accent); border-radius: 6px 6px 2px 2px;
+  transform-origin: bottom; animation: grow 0.6s var(--spring) backwards;
+}
 .bar.zero { background: var(--fill); height: 2px !important; }
 .labels { display: flex; gap: 4px; margin-top: 6px; }
-.labels span { flex: 1; text-align: center; font-size: 0.6875rem; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.labels span { flex: 1; text-align: center; font-size: 0.75rem; color: var(--label-2); font-variant-numeric: tabular-nums; }
 
 /* ---------- фото ----------
    Карусель: viewport ровно 3 кадра, остальное — scroll-snap; стрелки только
@@ -154,14 +164,14 @@ html:not(.mid) .photo-lightbox.open { animation: fade-in 0.2s ease both; }
 .photo-lightbox img { max-width: 100%; max-height: 100%; border-radius: 12px; user-select: none; -webkit-user-drag: none; }
 .photo-lightbox-close {
   position: absolute; z-index: 1; top: max(var(--gutter), env(safe-area-inset-top)); right: var(--gutter);
-  width: 36px; height: 36px; border-radius: 50%; border: none; padding: 0;
+  width: 44px; height: 44px; border-radius: 50%; border: none; padding: 0;
   display: flex; align-items: center; justify-content: center;
   background: rgba(118, 118, 128, 0.4); color: #fff;
 }
 .photo-lightbox-close .i { width: 18px; height: 18px; stroke-width: 2.4; }
 
-/* ---------- выбор дня (неделя как в «Календаре» iOS) ---------- */
-.day-picker { padding: 12px var(--gutter) 6px; margin-bottom: 12px; }
+/* ---------- выбор дня (неделя + месяц) ---------- */
+.day-picker { padding: var(--s3) var(--gutter) var(--s2); margin-bottom: var(--s4); }
 .day-picker-header { display: flex; align-items: center; justify-content: space-between; min-height: 30px; margin-bottom: 8px; }
 .day-picker-month { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; text-transform: capitalize; }
 .day-today-link {
@@ -178,10 +188,10 @@ html:not(.mid) .photo-lightbox.open { animation: fade-in 0.2s ease both; }
 }
 .day-item:active { transform: scale(0.9); transition-duration: 0.08s; }
 /* Буквы дня недели — над числом, как в «Календаре». */
-.day-name { order: -1; font-size: 0.6875rem; color: var(--label-2); margin-bottom: 4px; letter-spacing: 0.01em; }
+.day-name { order: -1; font-size: 0.75rem; color: var(--label-2); margin-bottom: 4px; letter-spacing: 0.01em; }
 .day-number {
-  width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  font-size: 1.0625rem; font-variant-numeric: tabular-nums;
+  width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; font-variant-numeric: tabular-nums;
 }
 .day-item.day-today .day-number { color: var(--accent); font-weight: 600; }
 .day-item.day-active .day-number { background: var(--accent); color: var(--on-accent); font-weight: 600; }
@@ -198,9 +208,31 @@ html:not(.mid) .photo-lightbox.open { animation: fade-in 0.2s ease both; }
 }
 .day-picker-expand[open] > summary::after { transform: rotate(-135deg); bottom: 2px; }
 .day-picker-month-grid { padding-bottom: 8px; }
-.mid .day-picker-month-grid { animation: expand-in 0.45s var(--spring) both; }
+.day-picker-month-grid { animation: expand-in 0.4s var(--spring) both; }
 .day-picker-dow-row, .day-picker-month-cells { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-.day-dow-label { text-align: center; font-size: 0.6875rem; color: var(--label-2); padding-bottom: 4px; }
-.day-item-month .day-number { width: 34px; height: 34px; font-size: 1rem; }
+.day-dow-label { text-align: center; font-size: 0.75rem; color: var(--label-2); padding-bottom: 4px; }
+.day-item-month .day-number { width: 40px; height: 40px; font-size: 1rem; }
 .day-item-month .day-name { display: none; }
 .day-empty { visibility: hidden; }
+
+/* ---------- раскладка ----------
+   Телефон: одна колонка, порядок блоков задаётся order (боковая панель
+   «растворяется» через display: contents), график — внизу. Широкий экран:
+   слева липкая панель (сводка, вкладки, календарь, график), справа список. */
+.layout { display: flex; flex-direction: column; }
+.side { display: contents; }
+.summary { order: 1; }
+.view-controls { order: 2; }
+.day-picker { order: 3; }
+.list { order: 4; min-width: 0; }
+.chart-block { order: 5; }
+@media (min-width: 1100px) {
+  body { max-width: 1120px; }
+  .layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: var(--s5); align-items: start; }
+  .side {
+    display: flex; flex-direction: column; position: sticky; top: calc(56px + env(safe-area-inset-top));
+    max-height: calc(100dvh - 72px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+    padding-bottom: var(--s4);
+  }
+  .chart-block { margin-top: 0; }
+}

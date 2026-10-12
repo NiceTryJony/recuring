@@ -47,6 +47,9 @@ _ICON_SPRITE = (
     '<symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/></symbol>'
     '<symbol id="i-rep" viewBox="0 0 24 24"><path d="M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4"/></symbol>'
     '<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>'
+    '<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>'
+    '<symbol id="i-tpl" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 10v10"/></symbol>'
+    '<symbol id="i-hist" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 3-6.2M4 4v4h4M12 8v4l3 2"/></symbol>'
     '</svg>'
 )
 
@@ -66,8 +69,8 @@ def _head(title_field: str, css_file: str, with_js: bool = False) -> str:
 <title>{{{title_field}}}</title>
 {fx_detect}
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f5f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 {stylesheets(css_file)}{js}
 </head>"""
@@ -153,19 +156,32 @@ TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 <body>
 """ + _ICON_SPRITE + "\n" + _navbar("heading", right="{nav_html}") + """
 {tg_widget_html}
-{new_task_error}
+<div class="layout">
+<aside class="side">
+{summary_html}
+{view_controls_html}
+{day_picker_html}
+{chart_html}
+</aside>
+<main class="list">
+{tasks_html}
+{more_done_html}
+</main>
+</div>
+{nojs_html}
+<details class="add-sheet"{add_open}>
+<summary class="fab" aria-label="{btn_new_task}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus"/></svg></summary>
 <form class="new-task-form" method="post" action="/dashboard/{token}/tasks/new">
+<h2>{btn_new_task}</h2>
+{new_task_error}
 <input type="hidden" name="csrf" value="{csrf}">
 <input type="text" name="title" placeholder="{new_title_placeholder}" maxlength="200" required>
 <textarea name="description" placeholder="{new_description_placeholder}" maxlength="4000" rows="2"></textarea>
 <input type="datetime-local" name="due_at" required>
 <button type="submit" class="btn-filled">{btn_add}</button>
 </form>
-{day_picker_html}
-{tasks_html}
-{more_done_html}
-{chart_html}
-{nojs_html}
+</details>
+{tabbar_html}
 <!-- Один оверлей на всю страницу вместо отдельного на каждую задачу с фото;
      открывается делегированным обработчиком из dashboard.js. -->
 <div class="photo-lightbox" id="ph-lb" role="dialog" aria-modal="true">

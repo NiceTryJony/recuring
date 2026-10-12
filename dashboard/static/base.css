@@ -1,70 +1,78 @@
-/* Общая база всех страниц дашборда — в духе iOS: системный шрифт, светлая и
-   тёмная темы по настройке системы, сгруппированные карточки на сером фоне,
-   полупрозрачная панель навигации, отклик на нажатие без задержки.
+/* Общая база всех страниц дашборда — тёмный «tech»-дашборд: плотные карточки
+   на глубоком фоне, один акцентный цвет, цифры tabular, крупные тап-цели.
+   Светлая тема — по настройке системы; внутри Telegram Mini App цвета берутся
+   из темы Telegram (--tg-*, их ставит dashboard.js).
 
    ТРИ УРОВНЯ УСТРОЙСТВ (класс на <html> ставит детектор в pages.py):
-     без класса — слабое устройство: все поверхности сплошные, никакого
-       backdrop-filter, анимаций появления нет, только мгновенный отклик;
-     .mid — среднее: материал (блюр) у одной панели навигации, анимация
-       раскрытия карточки, лайтбокс из миниатюры со свайпом (dashboard.js);
+     без класса — слабое устройство: сплошные поверхности, никакого
+       backdrop-filter; анимации только transform/opacity;
+     .mid — среднее: материал (блюр) у одной панели навигации, лайтбокс из
+       миниатюры со свайпом (dashboard.js);
      .mid.fx — мощное: блюр ещё и у панелей и лайтбокса, подсветка при наведении.
 
    Правило для правок: всё, что заставляет композитор пересчитывать пиксели
-   на каждый кадр (backdrop-filter, filter, mix-blend-mode, большие тени,
-   анимации с задержками), — только под .mid или .fx. Анимировать filter
-   нельзя ни на каком уровне. */
+   на каждый кадр (backdrop-filter, filter, mix-blend-mode, большие тени), —
+   только под .mid или .fx. Анимировать filter нельзя ни на каком уровне.
+   Анимации transform/opacity — можно везде; reduced-motion их отключает.
+   Отступы — только из шкалы --s1…--s5. */
 
 :root {
-  /* Палитра iOS (UIKit semantic colors), светлая тема. */
-  --bg: #f2f2f7;                         /* systemGroupedBackground */
-  --surface: #ffffff;                    /* secondarySystemGroupedBackground */
-  --surface-press: #e5e5ea;
-  --label: #000000;
-  --label-2: rgba(60, 60, 67, 0.6);      /* secondaryLabel */
-  --label-3: rgba(60, 60, 67, 0.3);      /* tertiaryLabel */
-  --sep: rgba(60, 60, 67, 0.29);         /* separator */
-  --fill: rgba(118, 118, 128, 0.12);     /* tertiarySystemFill — поля ввода */
-  --accent: #007aff;                     /* systemBlue */
-  --accent-tint: rgba(0, 122, 255, 0.12);
-  --green: #34c759;
-  --red: #ff3b30;
-  --orange: #ff9500;
-  --on-accent: #ffffff;
-  /* Материал панели навигации (на .mid — с блюром под ней). */
-  --bar: rgba(242, 242, 247, 0.78);
+  /* Базовая палитра (тёмная по умолчанию). */
+  --c-bg: #0b0d12;
+  --c-surface: #131720;
+  --c-label: #e8ebf2;
+  --c-hint: #8f98ab;
+  --c-accent: #5a78ff;
+  --c-on-accent: #ffffff;
+  --c-green: #34d399;
+  --c-red: #f87171;
+  --c-orange: #fbbf24;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --c-bg: #f3f5f9;
+    --c-surface: #ffffff;
+    --c-label: #0f1420;
+    --c-hint: #5a6478;
+    --c-accent: #3b5bdb;
+    --c-green: #0f9d6b;
+    --c-red: #d6336c;
+    --c-orange: #d97706;
+  }
+}
+:root {
+  /* Семантические токены. Если dashboard.js выставил тему Telegram (--tg-*),
+     берём её; иначе — базовая палитра выше. Остальное считается от них. */
+  --bg: var(--tg-secondary-bg-color, var(--c-bg));
+  --surface: var(--tg-section-bg-color, var(--c-surface));
+  --label: var(--tg-text-color, var(--c-label));
+  --label-2: var(--tg-hint-color, var(--c-hint));
+  --accent: var(--tg-button-color, var(--c-accent));
+  --on-accent: var(--tg-button-text-color, var(--c-on-accent));
+  --green: var(--c-green);
+  --red: var(--tg-destructive-text-color, var(--c-red));
+  --orange: var(--c-orange);
+  --label-3: color-mix(in srgb, var(--label) 38%, transparent);
+  --sep: color-mix(in srgb, var(--label) 10%, transparent);
+  --fill: color-mix(in srgb, var(--label) 7%, transparent);
+  --surface-2: color-mix(in srgb, var(--surface) 90%, var(--label));
+  --surface-press: color-mix(in srgb, var(--surface) 84%, var(--label));
+  --accent-tint: color-mix(in srgb, var(--accent) 16%, transparent);
+  --bar: color-mix(in srgb, var(--bg) 80%, transparent);
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
   --radius: 14px;
   --radius-sm: 10px;
-  --gutter: 16px;
-  /* Кривая листов iOS. --spring — критически затухающая пружина
-     (damping 1.0, response 0.35 c), разложенная в linear(): без отскока,
-     отскок уместен только после жеста с импульсом. */
-  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --gutter: var(--s4);
+  --tabbar-h: 60px;
+  --ease: cubic-bezier(0.22, 0.8, 0.2, 1);
   --spring: var(--ease);
-  --font: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  color-scheme: light dark;
+  --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 @supports (transition-timing-function: linear(0, 1)) {
   :root {
     --spring: linear(0, 0.075 5%, 0.227 10%, 0.389 15%, 0.536 20%, 0.75 30%, 0.873 40%,
                      0.938 50%, 0.971 60%, 0.986 70%, 0.994 80%, 1);
-  }
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #000000;
-    --surface: #1c1c1e;
-    --surface-press: #2c2c2e;
-    --label: #ffffff;
-    --label-2: rgba(235, 235, 245, 0.6);
-    --label-3: rgba(235, 235, 245, 0.3);
-    --sep: rgba(84, 84, 88, 0.65);
-    --fill: rgba(118, 118, 128, 0.24);
-    --accent: #0a84ff;
-    --accent-tint: rgba(10, 132, 255, 0.18);
-    --green: #30d158;
-    --red: #ff453a;
-    --orange: #ff9f0a;
-    --bar: rgba(22, 22, 24, 0.78);
   }
 }
 
@@ -74,41 +82,42 @@
 html { background: var(--bg); overflow-x: clip; -webkit-text-size-adjust: 100%; }
 body {
   font-family: var(--font);
-  /* Body iOS: 17 pt, свободный интерлиньяж, трекинг почти ноль. */
-  font-size: 1.0625rem; line-height: 1.35; letter-spacing: -0.01em;
+  font-size: 1rem; line-height: 1.45;
   background: var(--bg); color: var(--label);
-  margin: 0 auto; max-width: 640px;
-  padding: 0 max(var(--gutter), env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom))
+  margin: 0 auto; max-width: 680px;
+  /* снизу — место под нижнюю панель и кнопку «+» */
+  padding: 0 max(var(--gutter), env(safe-area-inset-right))
+           calc(var(--tabbar-h) + 88px + env(safe-area-inset-bottom))
            max(var(--gutter), env(safe-area-inset-left));
   -webkit-font-smoothing: antialiased;
 }
 .i {
-  width: 1.15em; height: 1.15em; flex-shrink: 0; vertical-align: -0.2em;
+  width: 1.25em; height: 1.25em; flex-shrink: 0; vertical-align: -0.25em;
   fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
 }
 
-/* ---------- панель навигации и большой заголовок ----------
-   Как в iOS: пока большой заголовок виден, панель сливается с фоном; когда он
-   уезжает под неё, проявляются разделитель и компактный заголовок. Связь со
-   скроллом — CSS scroll-driven animation (только opacity — композитор); где её
-   нет, разделитель просто виден всегда, а компактный заголовок скрыт.
-   Материал (блюр) — на самом .navbar, а не на его ::before: Chrome не даёт
-   backdrop-filter внутри липкого блока с z-index видеть контент страницы под
-   ним. По ширине это колонка, но карточек за её пределами всё равно нет. */
+/* ---------- анимации (transform/opacity — на всех уровнях) ---------- */
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+@keyframes fade { from { opacity: 0; } }
+@keyframes sheet-in { from { opacity: 0; transform: translateY(32px); } }
+@keyframes grow { from { transform: scaleY(0); } }
+@keyframes pop { from { opacity: 0; transform: scale(0.6); } }
+
+/* ---------- панель навигации и заголовок ---------- */
 .navbar {
   position: sticky; top: 0; z-index: 50;
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px;
-  min-height: 44px; padding-top: env(safe-area-inset-top);
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s2);
+  min-height: 48px; padding-top: env(safe-area-inset-top);
   background: var(--bg);
 }
 .navbar::before {
-  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 0.5px; background: var(--sep);
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--sep);
 }
 .navbar-title {
   font-weight: 600; text-align: center; opacity: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.navbar-side { display: flex; align-items: center; gap: 16px; }
+.navbar-side { display: flex; align-items: center; gap: var(--s4); }
 .navbar-right { justify-content: flex-end; }
 @keyframes bar-in { from { opacity: 0; } to { opacity: 1; } }
 @supports (animation-timeline: scroll()) {
@@ -120,24 +129,22 @@ body {
 }
 .mid .navbar {
   background: var(--bar);
-  backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(160%); -webkit-backdrop-filter: blur(16px) saturate(160%);
 }
 .large-title {
-  /* Large Title: 34 pt, жирный, плотный интерлиньяж, трекинг в минус. */
-  font-size: 2.125rem; font-weight: 700; line-height: 1.12; letter-spacing: -0.022em;
-  margin: 2px 0 14px;
+  font-size: 1.75rem; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em;
+  margin: var(--s3) 0 var(--s4);
 }
 .nav-link, .nav-back {
   display: inline-flex; align-items: center; gap: 2px; min-height: 44px;
-  color: var(--accent); text-decoration: none; white-space: nowrap;
+  color: var(--accent); text-decoration: none; white-space: nowrap; font-weight: 500;
 }
 .nav-back { margin-left: -6px; }
 .nav-back .i { width: 1.3em; height: 1.3em; stroke-width: 2.4; }
 
 /* ---------- отклик ----------
-   На нажатие (pointer-down), а не на отпускание: кнопки чуть сжимаются,
-   текстовые — притухают. touch-action: manipulation снимает ~300 мс ожидания
-   двойного тапа. transform и opacity — композитор, это можно на любом уровне. */
+   На нажатие (pointer-down): кнопки чуть сжимаются, текстовые — притухают.
+   touch-action: manipulation снимает ~300 мс ожидания двойного тапа. */
 button, a, summary, label { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 button { font: inherit; letter-spacing: inherit; cursor: pointer; transition: transform 0.2s var(--ease), opacity 0.2s ease; }
 button:active { transform: scale(0.97); transition-duration: 0.08s; }
@@ -145,85 +152,185 @@ button:active { transform: scale(0.97); transition-duration: 0.08s; }
   transition: opacity 0.2s ease;
 }
 .nav-link:active, .nav-back:active, .task-actions button:active, .edit-toggle summary:active,
-.photo-upload-btn:active, .day-today-link:active { opacity: 0.35; transition-duration: 0s; transform: none; }
+.photo-upload-btn:active, .day-today-link:active { opacity: 0.4; transition-duration: 0s; transform: none; }
 a { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------- кнопки ---------- */
 .btn-filled {
-  min-height: 50px; padding: 0 20px; border: none; border-radius: 12px;
-  background: var(--accent); color: var(--on-accent); font-weight: 600;
+  min-height: 52px; padding: 0 var(--s5); border: none; border-radius: 12px;
+  background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 1rem;
 }
 .btn-tinted {
-  min-height: 34px; padding: 0 14px; border: none; border-radius: 999px;
+  min-height: 40px; padding: 0 var(--s4); border: none; border-radius: 999px;
   background: var(--accent-tint); color: var(--accent); font-size: 0.9375rem; font-weight: 600;
 }
-.task-actions { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-top: 12px; }
+.task-actions { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s5); margin-top: var(--s3); }
 .task-actions form { margin: 0; }
 .task-actions button:not(.btn-tinted) {
-  display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0;
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0;
   background: none; border: none; color: var(--accent); font-size: 0.9375rem;
 }
 .task-actions .del-btn { color: var(--red) !important; }
 
 /* ---------- карточки ---------- */
-.task, .event, .chart-block, .tg-widget-banner, .new-task-form, .day-picker, .load-more {
-  background: var(--surface); color: var(--label); border-radius: var(--radius);
+.task, .event, .chart-block, .tg-widget-banner, .day-picker, .load-more, .stat, .empty {
+  background: var(--surface); color: var(--label); border: 1px solid var(--sep); border-radius: var(--radius);
 }
 /* content-visibility: браузер пропускает layout/paint карточек вне экрана —
    почти бесплатное ускорение первой отрисовки и скролла длинного списка. */
-.task, .event { content-visibility: auto; contain-intrinsic-size: auto 64px; }
-.task { padding: 12px var(--gutter); margin-bottom: 8px; display: flex; gap: 12px; align-items: flex-start; }
-.title { font-size: 1.0625rem; line-height: 1.3; color: var(--label); overflow-wrap: anywhere; }
-.meta { color: var(--label-2); font-size: 0.9375rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
-.event { padding: 12px var(--gutter); margin-bottom: 8px; display: flex; gap: 12px; align-items: center; }
+.task, .event { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+.task {
+  padding: var(--s3) var(--s4); margin-bottom: var(--s2); display: flex; gap: var(--s3); align-items: flex-start;
+  animation: rise 0.4s var(--ease) backwards;
+}
+.title { font-size: 1rem; font-weight: 500; line-height: 1.35; color: var(--label); overflow-wrap: anywhere; }
+.meta { color: var(--label-2); font-size: 0.875rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.event { padding: var(--s3) var(--s4); margin-bottom: var(--s2); display: flex; gap: var(--s3); align-items: center; }
 .event-body { flex: 1; min-width: 0; }
 .event-line { font-size: 0.9375rem; }
 .event-line .ev-title { font-weight: 600; }
 .event-time { color: var(--label-2); font-size: 0.8125rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .avatar {
-  width: 20px; height: 20px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
+  width: 24px; height: 24px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
   background: var(--fill);
 }
-/* Монограмма как в «Контактах». */
 .avatar-placeholder {
   display: inline-flex; align-items: center; justify-content: center;
-  background: linear-gradient(#a5abb8, #858994); color: #fff;
-  font-size: 0.625rem; font-weight: 600; letter-spacing: 0;
+  background: var(--accent-tint); color: var(--accent);
+  font-size: 0.75rem; font-weight: 600; letter-spacing: 0;
 }
-.empty { color: var(--label-2); text-align: center; padding: 48px 16px; }
+.empty { color: var(--label-2); text-align: center; padding: 48px var(--s4); border-style: dashed; }
 .load-more {
-  display: block; padding: 13px var(--gutter); margin: 8px 0; text-align: center;
-  color: var(--accent); text-decoration: none;
+  display: block; padding: var(--s3) var(--gutter); margin: var(--s2) 0; text-align: center;
+  color: var(--accent); text-decoration: none; font-weight: 500; min-height: 48px;
 }
 .load-more:active { background: var(--surface-press); }
 .tg-widget-banner {
-  padding: 12px var(--gutter); margin-bottom: 12px;
-  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: var(--s3) var(--gutter); margin-bottom: var(--s3);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap;
 }
 .tg-widget-banner span { font-size: 0.8125rem; color: var(--label-2); }
 
-/* ---------- форма в стиле inset grouped ----------
-   Поля — строки карточки с волосяными разделителями, отбитыми слева, как в
-   «Настройках»; основное действие — закрашенная кнопка внизу. */
-.new-task-form { display: flex; flex-direction: column; padding-bottom: 12px; margin-bottom: 16px; overflow: hidden; }
-.new-task-form > input:not([type=hidden]), .new-task-form > textarea, .field-row {
-  width: calc(100% - var(--gutter)); margin-left: var(--gutter); padding: 11px var(--gutter) 11px 0; min-height: 44px;
-  border: none; border-bottom: 0.5px solid var(--sep); border-radius: 0;
-  background: transparent; color: var(--label); font: inherit; letter-spacing: inherit;
+/* ---------- сводка ---------- */
+.summary { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--s2); margin-bottom: var(--s4); }
+.stat {
+  display: flex; flex-direction: column; gap: 2px; padding: var(--s3) var(--s4);
+  animation: rise 0.4s var(--ease) backwards;
 }
-.new-task-form > textarea { resize: vertical; min-height: 64px; display: block; }
-.new-task-form > input:focus, .new-task-form > textarea:focus { outline: none; }
-.new-task-form > input:focus-visible, .new-task-form > textarea:focus-visible { box-shadow: inset 0 -2px 0 var(--accent); }
+.stat:nth-child(2) { animation-delay: 0.05s; }
+.stat:nth-child(3) { animation-delay: 0.1s; }
+.stat-num { font-size: 1.75rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.stat-label { font-size: 0.8125rem; color: var(--label-2); }
+.stat-today .stat-num { color: var(--accent); }
+.stat-overdue .stat-num { color: var(--red); }
+.stat-streak .stat-num { color: var(--orange); }
+
+/* ---------- вкладки, группировка, теги ---------- */
+.view-controls { margin-bottom: var(--s4); }
+.view-tabs {
+  display: flex; gap: var(--s1); padding: var(--s1); border-radius: 12px; background: var(--fill);
+  overflow-x: auto; scrollbar-width: none;
+}
+.view-tabs::-webkit-scrollbar { display: none; }
+.view-tab {
+  flex: 1 0 auto; min-height: 44px; padding: 0 var(--s3); border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--label-2); text-decoration: none; font-weight: 500; font-size: 0.9375rem; white-space: nowrap;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+.view-tab.active { background: var(--surface); color: var(--label); box-shadow: 0 0 0 1px var(--sep); }
+.view-tab:active { opacity: 0.6; }
+.group-switch, .tag-chips { display: flex; gap: var(--s2); margin-top: var(--s3); }
+.group-switch { flex-wrap: wrap; }
+.tag-chips { overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.tag-chips::-webkit-scrollbar { display: none; }
+.group-opt, .tag-chip {
+  flex: 0 0 auto; min-height: 40px; padding: 0 var(--s4); border-radius: 999px;
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--sep); color: var(--label-2); text-decoration: none; font-size: 0.875rem; font-weight: 500;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+.group-opt.active, .tag-chip.active { background: var(--accent-tint); color: var(--accent); border-color: transparent; }
+.group-opt:active, .tag-chip:active { opacity: 0.6; }
+.task-group { margin-top: var(--s4); }
+.task-group + .task-group { margin-top: var(--s5); }
+.group-title {
+  margin: 0 var(--s1) var(--s2); font-size: 0.8125rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--label-2);
+}
+.group-count { margin-left: var(--s1); color: var(--label-3); font-variant-numeric: tabular-nums; }
+
+/* ---------- добавление задачи: кнопка «+» и нижняя шторка ----------
+   <details class="add-sheet">: открывается без JS. Закрытая — только круглая
+   кнопка; открытая — затемнение (::before) и форма снизу. */
+.add-sheet > summary {
+  list-style: none; position: fixed; z-index: 70; right: max(var(--gutter), env(safe-area-inset-right));
+  bottom: calc(var(--tabbar-h) + var(--s4) + env(safe-area-inset-bottom));
+  width: 56px; height: 56px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent); color: var(--on-accent);
+  box-shadow: 0 6px 18px -4px color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: pop 0.4s var(--spring) 0.2s backwards;
+  transition: transform 0.2s var(--ease);
+}
+.add-sheet > summary::-webkit-details-marker { display: none; }
+.add-sheet > summary .i { width: 26px; height: 26px; stroke-width: 2.4; }
+.add-sheet > summary:active { transform: scale(0.92); }
+.add-sheet[open] > summary { display: none; }
+.add-sheet[open]::before {
+  content: ""; position: fixed; inset: 0; z-index: 80; background: rgba(0, 0, 0, 0.55);
+  animation: fade 0.25s ease backwards;
+}
+.add-sheet[open] .new-task-form {
+  position: fixed; z-index: 90; left: 0; right: 0; bottom: 0; margin: 0 auto; width: 100%; max-width: 560px;
+  max-height: 88dvh; overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 20px 20px 0 0; border-bottom: none;
+  padding: var(--s3) var(--gutter) calc(var(--s4) + env(safe-area-inset-bottom));
+  animation: sheet-in 0.35s var(--spring) backwards;
+}
+.add-sheet[open] .new-task-form::after {
+  content: ""; order: -2; align-self: center; width: 40px; height: 4px; border-radius: 2px;
+  background: var(--label-3); margin-bottom: var(--s1);
+}
+.new-task-form h2 { margin: 0; font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em; }
+
+/* ---------- формы ---------- */
+.new-task-form {
+  display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); margin-bottom: var(--s4);
+  background: var(--surface); border: 1px solid var(--sep); border-radius: var(--radius);
+}
+.new-task-form > input:not([type=hidden]), .new-task-form > textarea, .field-row {
+  width: 100%; min-height: 48px; padding: var(--s3) var(--s4);
+  border: 1px solid transparent; border-radius: 12px;
+  background: var(--fill); color: var(--label); font: inherit; letter-spacing: inherit;
+}
+.new-task-form > textarea { resize: vertical; min-height: 72px; display: block; }
+.new-task-form > input:focus, .new-task-form > textarea:focus { outline: none; border-color: var(--accent); }
 .new-task-form ::placeholder { color: var(--label-3); }
-.new-task-form > .btn-filled { margin: 12px var(--gutter) 0; }
-.field-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.field-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
 .field-row span { color: var(--label-2); font-size: 0.9375rem; }
 .field-row input {
   width: 5em; padding: 6px 10px; border: none; border-radius: 8px; text-align: right;
   background: var(--fill); color: var(--label); font: inherit;
 }
-.new-task-error { color: var(--red); font-size: 0.8125rem; margin: 0 var(--gutter) 8px; }
+.new-task-error { color: var(--red); font-size: 0.875rem; }
+
+/* ---------- нижняя панель разделов (телефон / Mini App) ---------- */
+.tabbar {
+  position: fixed; z-index: 60; left: 0; right: 0; bottom: 0; display: flex; justify-content: center;
+  min-height: var(--tabbar-h); padding: 0 var(--s2) env(safe-area-inset-bottom);
+  background: var(--surface); border-top: 1px solid var(--sep);
+}
+.tab {
+  flex: 1 1 0; max-width: 200px; min-height: var(--tabbar-h);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  color: var(--label-2); text-decoration: none; font-size: 0.75rem; font-weight: 500;
+  transition: color 0.2s ease, transform 0.2s var(--ease);
+}
+.tab .i { width: 24px; height: 24px; }
+.tab.active { color: var(--accent); }
+.tab:active { transform: scale(0.92); }
 
 /* ---------- лайтбокс фото ----------
    Сплошное затемнение на любом уровне; блюр фона во весь экран — самый
@@ -234,39 +341,49 @@ a { color: var(--accent); }
   backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%);
 }
 
-/* ---------- мощные устройства: стекло у панелей, наведение ---------- */
-.fx .chart-block, .fx .day-picker, .fx .new-task-form {
+/* ---------- мощные устройства: стекло у панелей ---------- */
+.fx .chart-block, .fx .day-picker {
   background: color-mix(in srgb, var(--surface) 82%, transparent);
   backdrop-filter: blur(20px) saturate(160%); -webkit-backdrop-filter: blur(20px) saturate(160%);
 }
 @media (hover: hover) and (pointer: fine) {
   button, .task-summary, summary, .day-item, .task-photo { cursor: pointer; }
   .task, .event, .load-more { transition: background-color 0.15s ease; }
-  .task:hover, .event:hover, .load-more:hover { background: color-mix(in srgb, var(--surface) 92%, var(--label)); }
-  .nav-link:hover, .nav-back:hover, .task-actions button:hover { opacity: 0.7; }
+  .task:hover, .event:hover, .load-more:hover { background: var(--surface-2); }
+  .view-tab:not(.active):hover, .group-opt:not(.active):hover, .tag-chip:not(.active):hover { color: var(--label); }
+  .nav-link:hover, .nav-back:hover, .task-actions button:hover { opacity: 0.75; }
+}
+
+/* ---------- широкий экран: панель разделов не нужна, ссылки — в шапке ---------- */
+@media (min-width: 900px) {
+  body { padding-bottom: 120px; }
+  .tabbar { display: none; }
+  .add-sheet > summary { bottom: var(--s5); }
+}
+@media (max-width: 899px) {
+  .navbar-right { display: none; }  /* дублируются нижней панелью */
 }
 
 /* ---------- доступность ---------- */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   /* scroll-driven панель не «анимация во времени», её оставляем как есть */
   .navbar::before, .navbar-title { animation-duration: auto !important; }
   button:active { transform: none; }
 }
 @media (prefers-reduced-transparency: reduce) {
   .mid .navbar { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
-  .fx .chart-block, .fx .day-picker, .fx .new-task-form { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .fx .chart-block, .fx .day-picker { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
   .fx .photo-lightbox { background: #000; backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 @media (prefers-contrast: more) {
   :root { --label-2: var(--label); --sep: var(--label-3); }
-  .task, .event, .chart-block, .tg-widget-banner, .new-task-form, .day-picker, .load-more { border: 1px solid var(--label-3); }
 }
 
 /* ---------- переходы между страницами (только ПК) ----------
-   Кроссфейд между задачами, историей и шаблонами; панель и большой заголовок
-   «переезжают», а не мигают. Браузер должен знать об этом до первой отрисовки,
-   поэтому правило здесь, а не в fx.css, — но под тем же условием «это ПК». */
+   Кроссфейд между задачами, историей и шаблонами; панель и заголовок
+   «переезжают», а не мигают. Правило здесь, а не в fx.css: браузер должен
+   знать о нём до первой отрисовки, — но под тем же условием «это ПК». */
 @media (hover: hover) and (pointer: fine) and (min-width: 900px) and (prefers-reduced-motion: no-preference) {
   @view-transition { navigation: auto; }
   .navbar { view-transition-name: fx-bar; }

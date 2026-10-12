@@ -25,6 +25,14 @@
     tg.expand();
   }
 
+  // ---------- шторка «Новая задача» ----------
+  // Клик по затемнению (это ::before самого <details>, цель клика — он сам) и Esc закрывают.
+  var sheet = document.querySelector('.add-sheet');
+  if (sheet) {
+    sheet.addEventListener('click', function (e) { if (e.target === sheet) sheet.open = false; });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') sheet.open = false; });
+  }
+
   // ---------- ленивое раскрытие карточек ----------
   // Содержимое раскрытой карточки (описание, формы, подзадачи, фото) сервер
   // кладёт в <template class="task-x">: браузер разбирает его в инертный
