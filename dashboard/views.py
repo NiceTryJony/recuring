@@ -10,11 +10,13 @@ import asyncio
 import datetime as dt
 from datetime import datetime
 from html import escape
+from urllib.parse import urlencode
 
 from aiohttp import web as aioweb
 
 import db
 from stats import compute_streak, daily_series
+from task_groups import GROUPS, VIEWS, day_counts, group_tasks, select_tasks, tag_counts, today_progress
 
 from .config import BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, _tz_of, logger
 from .pages import (
@@ -138,7 +140,7 @@ async def handle_templates_page(request: aioweb.Request) -> aioweb.Response:
 
 
 
-async def _build_chart(owner_id: int, owner_type: str, tz, texts: dict) -> str:
+async def _build_chart(owner_id: int, owner_type: str, tz, texts: dict) -> tuple[str, int]:
     # личный дашборд — история самого пользователя; групповой — события по общим задачам чата
     user_id, chat_id = (owner_id, None) if owner_type == "user" else (None, owner_id)
     rows, done_days = await asyncio.gather(
@@ -147,16 +149,17 @@ async def _build_chart(owner_id: int, owner_type: str, tz, texts: dict) -> str:
     )
     today = datetime.now(tz).date()
     series = daily_series(rows, "done", CHART_DAYS, today)
-    return _render_chart(series, compute_streak(done_days, today), texts)
+    streak = compute_streak(done_days, today)
+    return _render_chart(series, streak, texts), streak
 
 
-async def _safe_chart(owner_id: int, owner_type: str, tz, texts: dict) -> str:
+async def _safe_chart(owner_id: int, owner_type: str, tz, texts: dict) -> tuple[str, int | None]:
     try:
         return await _build_chart(owner_id, owner_type, tz, texts)
     except Exception:
         # график — второстепенный блок: сбой БД/статистики не должен ронять весь дашборд
         logger.exception("Не удалось построить график активности owner=%s/%s", owner_type, owner_id)
-        return ""
+        return "", None
 
 
 async def _handle_login_post(request: aioweb.Request, token: str, settings: dict, lang: str) -> aioweb.Response:
@@ -188,24 +191,65 @@ async def _handle_login_post(request: aioweb.Request, token: str, settings: dict
     return _login_response(token, lang, error_html, status=401)
 
 
-def _select_tasks(all_tasks: list[dict], local_due: dict, selected_date, filter_active: bool,
-                  done_limit: int) -> tuple[list[dict], int]:
-    """Какие задачи рисовать и сколько выполненных осталось за кадром.
+def _view_controls(token: str, texts: dict, view: str, group: str, tag: str | None,
+                   tags: list[tuple[str, int]], nojs: bool) -> str:
+    """Вкладки (Все/Сегодня/…), переключатель группировки и чипы тегов — обычные
+    ссылки с query, работают без JS. Параметры, не относящиеся к ссылке,
+    сохраняются (кроме ?date=: смена вкладки снимает фильтр по дню)."""
+    def href(**over) -> str:
+        q = {"view": view, "group": group, "tag": tag or "", "nojs": "1" if nojs else ""}
+        q.update(over)
+        q = {k: v for k, v in q.items() if v and not (k == "view" and v == "all") and not (k == "group" and v == "none")}
+        return f"/dashboard/{token}" + (f"?{urlencode(q)}" if q else "")
 
-    Панель дней — это ФИЛЬТР, не обязательный режим: без ?date= в URL
-    дашборд показывает все активные задачи, а выбор дня сужает список до
-    одного дня (тогда показывается весь день целиком, без лимитов). Так ссылка
-    дашборда без параметров (например, уже сохранённая в Telegram) не меняет
-    поведения для тех, кто панелью не пользуется.
+    def link(label: str, url: str, active: bool, cls: str) -> str:
+        return f'<a class="{cls}{" active" if active else ""}" href="{escape(url)}">{escape(label)}</a>'
 
-    Без фильтра выполненные режутся до done_limit самых свежих: они копятся
-    годами, и раньше страница рендерила их все — на слабом телефоне сотни
-    лишних карточек и были главной ценой первой отрисовки."""
-    if filter_active:
-        return [t for t in all_tasks if local_due[t["id"]].date() == selected_date], 0
-    active = [t for t in all_tasks if not t["done"]]
-    done = sorted((t for t in all_tasks if t["done"]), key=lambda t: t["due_at"], reverse=True)
-    return active + done[:done_limit], max(0, len(done) - done_limit)
+    tabs = "".join(link(texts[f"view_{v}"], href(view=v), v == view, "view-tab") for v in VIEWS)
+    groups = "".join(link(texts[f"group_{g}"], href(group=g), g == group, "group-opt") for g in GROUPS)
+    chips = ""
+    if tags:
+        chips = "".join(link(f"{name} {n}", href(tag="" if name == tag else name), name == tag, "tag-chip")
+                        for name, n in tags)
+        chips = f'<div class="tag-chips">{chips}</div>'
+    return f'<div class="view-controls"><nav class="view-tabs">{tabs}</nav><div class="group-switch">{groups}</div>{chips}</div>'
+
+
+def _summary(texts: dict, today_n: int, overdue_n: int, streak: int | None, progress: int | None = None) -> str:
+    stats = [("today", today_n, texts["stat_today"]), ("overdue", overdue_n, texts["stat_overdue"])]
+    if streak is not None:
+        stats.append(("streak", streak, texts["stat_streak"]))
+    cells = []
+    for cls, n, label in stats:
+        ring = f' style="--p:{progress}"' if cls == "today" and progress is not None else ""
+        cells.append(
+            f'<div class="stat stat-{cls}"{ring}><span class="stat-num">{n}</span>'
+            f'<span class="stat-label">{escape(label)}</span></div>'
+        )
+    cells = "".join(cells)
+    return f'<section class="summary">{cells}</section>'
+
+
+def _tabbar(token: str, texts: dict, owner_type: str) -> str:
+    """Нижняя панель разделов (телефон / Mini App); на десктопе скрывается CSS."""
+    items = [(f"/dashboard/{token}", "i-list", texts["nav_tasks"], True),
+             (f"/dashboard/{token}/templates", "i-tpl", texts["nav_templates"], False)]
+    if owner_type == "chat":
+        items.append((f"/dashboard/{token}/history", "i-hist", texts["nav_history"], False))
+    links = "".join(
+        f'<a class="tab{" active" if cur else ""}" href="{href}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true">'
+        f'<use href="#{icon}"/></svg><span>{escape(label)}</span></a>'
+        for href, icon, label, cur in items
+    )
+    return f'<nav class="tabbar">{links}</nav>'
+
+
+def _group_heading(key, mode: str, texts: dict, count: int) -> str:
+    if mode == "tag":
+        label = key or texts["group_untagged"]
+    else:
+        label = key.strftime("%d.%m")
+    return f'<h2 class="group-title">{escape(label)} <span class="group-count">{count}</span></h2>'
 
 
 async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
@@ -260,7 +304,19 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     # вообще есть задачи. Считаем по полному списку, иначе индикаторы видели
     # бы только дни внутри уже отфильтрованной недели/месяца.
     task_days = {d.date() for d in local_due.values()}
-    tasks, hidden_done = _select_tasks(all_tasks, local_due, selected_date, filter_active, done_limit)
+    view = request.query.get("view", "all")
+    if view not in VIEWS:
+        view = "all"
+    group_mode = request.query.get("group", "none")
+    if group_mode not in GROUPS:
+        group_mode = "none"
+    tag = request.query.get("tag") or None
+    tasks, hidden_done = select_tasks(
+        all_tasks, local_due, view=view, today=today, selected_date=selected_date,
+        filter_active=filter_active, done_limit=done_limit, tag=tag,
+    )
+    today_n, overdue_n = day_counts(all_tasks, local_due, now)
+    view_controls_html = _view_controls(token, texts, view, group_mode, tag, tag_counts(all_tasks), nojs)
 
     day_picker_html = _render_day_picker(
         selected_date if filter_active else today, today, lang, token, task_days, filter_active=filter_active
@@ -269,7 +325,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     chart = _safe_chart(owner_id, owner_type, tz, texts)
     if not tasks:
         tasks_html = f'<div class="empty">{escape(texts["empty"])}</div>'
-        chart_html = await chart
+        chart_html, streak = await chart
     else:
         async def _creators() -> dict[int, dict]:
             if owner_type != "chat":
@@ -281,17 +337,24 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         # (авторы, фото, подзадачи, статистика графика) идут параллельно, а не
         # друг за другом — время ответа = самый медленный запрос, а не их сумма.
         task_ids = [t["id"] for t in tasks]
-        creators, photos_by_task, subtasks_by_task, chart_html = await asyncio.gather(
+        creators, photos_by_task, subtasks_by_task, (chart_html, streak) = await asyncio.gather(
             _creators(), db.get_task_photos_meta_bulk(task_ids), db.get_subtasks_bulk(task_ids), chart,
         )
-        tasks_html = "\n".join(
-            _render_task(
+        def _card(t: dict) -> str:
+            return _render_task(
                 t, tz, lang, token, csrf, creator=creators.get(t.get("created_by")), owner_type=owner_type,
                 photos=photos_by_task.get(t["id"]), subtasks=subtasks_by_task.get(t["id"]),
                 now=now, local_due=local_due[t["id"]], lazy=not nojs,
             )
-            for t in tasks
-        )
+
+        if group_mode == "none":
+            tasks_html = "\n".join(_card(t) for t in tasks)
+        else:
+            tasks_html = "\n".join(
+                f'<section class="task-group">{_group_heading(key, group_mode, texts, len(items))}\n'
+                + "\n".join(_card(t) for t in items) + "</section>"
+                for key, items in group_tasks(tasks, local_due, group_mode)
+            )
 
     more_done_html = ""
     if hidden_done:
@@ -313,6 +376,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     if owner_type == "chat":
         nav_links.append(f'<a class="nav-link" href="/dashboard/{token}/history">{escape(texts["nav_history"])}</a>')
     nav_html = " ".join(nav_links)
+    tabbar_html = _tabbar(token, texts, owner_type)
 
     error_key = {"empty_title": "error_empty_title", "bad_photo": "error_bad_photo",
                  "bad_due_at": "error_bad_due_at"}.get(request.query.get("error", ""))
@@ -331,7 +395,8 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     page = TASKS_PAGE.format(
         tasks_html=tasks_html, chart_html=chart_html, heading=heading, nav_html=nav_html,
         token=token, csrf=csrf, new_task_error=new_task_error_html, tg_widget_html=tg_widget_html,
-        day_picker_html=day_picker_html, more_done_html=more_done_html, nojs_html=nojs_html,
+        day_picker_html=day_picker_html, view_controls_html=view_controls_html, tabbar_html=tabbar_html,
+        summary_html=_summary(texts, today_n, overdue_n, streak, today_progress(all_tasks, local_due, today)), add_open=" open" if error_key else "", more_done_html=more_done_html, nojs_html=nojs_html,
         **_dt_tasks_page(lang),
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
