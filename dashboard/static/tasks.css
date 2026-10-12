@@ -11,16 +11,31 @@
 .task > form { line-height: 0; }
 /* Видимый кружок 24px, хит-область — 44px невидимым ::before. */
 .check-btn, .subtask-check {
-  width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--label-3);
-  background: transparent; flex-shrink: 0; margin-top: 0; padding: 0; position: relative;
-  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s var(--ease);
+  width: 24px; height: 24px; border: none; background: transparent;
+  flex-shrink: 0; margin-top: 0; padding: 0; position: relative;
+  transition: transform 0.2s var(--ease);
 }
-.check-btn::before, .subtask-check::before { content: ""; position: absolute; inset: -10px; }
+/* Хит-область 44px; на hover — бледный круг (как в uiverse-чекбоксе). */
+.check-btn::before, .subtask-check::before {
+  content: ""; position: absolute; inset: -10px; border-radius: 50%;
+  background: var(--fill); opacity: 0; transition: opacity 0.2s ease;
+}
+.check-btn:hover::before, .subtask-check:hover::before { opacity: 1; }
 .check-btn:active, .subtask-check:active { transform: scale(0.88); }
-/* Выполнено — закрашенный кружок с галочкой (фон-картинка: без лишних узлов). */
-.task.done .check-btn, .subtask-row.done .subtask-check {
-  border-color: var(--accent);
-  background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / 14px no-repeat;
+/* Чекбокс WhiteNervosa: контур стирается, галочка дорисовывается. */
+.check-btn svg, .subtask-check svg {
+  position: relative; width: 18px; height: 18px; fill: none; stroke: var(--label-3); stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round; transition: stroke 0.2s ease;
+}
+.check-btn svg path, .subtask-check svg path { stroke-dasharray: 60; stroke-dashoffset: 0; }
+.check-btn svg polyline, .subtask-check svg polyline { stroke-dasharray: 22; stroke-dashoffset: 66; }
+.check-btn:hover svg, .subtask-check:hover svg,
+.task.done .check-btn svg, .subtask-row.done .subtask-check svg { stroke: var(--accent); }
+.task.done .check-btn svg path, .subtask-row.done .subtask-check svg path {
+  stroke-dashoffset: 60; transition: stroke-dashoffset 0.3s linear;
+}
+.task.done .check-btn svg polyline, .subtask-row.done .subtask-check svg polyline {
+  stroke-dashoffset: 42; transition: stroke-dashoffset 0.2s linear 0.15s;
 }
 
 /* Карточка-раскрывашка: <details>/<summary> без JS. Чекбокс живёт вне
@@ -70,13 +85,13 @@
 .edit-toggle summary::-webkit-details-marker { display: none; }
 .edit-toggle[open] summary { margin-bottom: 6px; }
 .desc-form { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
-.desc-form textarea, .subtask-add-form input[type=text] {
+.desc-form textarea {
   width: 100%; padding: 9px 12px; border: none; border-radius: var(--radius-sm);
   background: var(--fill); color: var(--label); font: inherit; font-size: 0.9375rem; letter-spacing: inherit;
 }
 .desc-form textarea { resize: vertical; min-height: 64px; }
-.desc-form textarea:focus, .subtask-add-form input[type=text]:focus { outline: none; box-shadow: 0 0 0 2px var(--accent); }
-.desc-form ::placeholder, .subtask-add-form ::placeholder { color: var(--label-3); }
+.desc-form textarea:focus { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.desc-form ::placeholder { color: var(--label-3); }
 
 /* Подзадачи — вложенный список с разделителями. */
 .subtasks { margin-bottom: 10px; }
@@ -91,7 +106,7 @@
 }
 .subtask-del-btn:active { color: var(--red); }
 .subtask-add-form { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
-.subtask-add-form input[type=text] { flex: 1; min-width: 0; }
+.subtask-add-form .form-control { flex: 1; min-width: 0; margin: 22px 0 0; }
 .subtask-add-form .btn-tinted { flex-shrink: 0; }
 
 /* ---------- график активности ---------- */

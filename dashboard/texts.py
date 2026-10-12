@@ -284,8 +284,20 @@ def _dt(lang: str) -> dict:
 # варианте, без заголовков, которые handle_dashboard передаёт отдельным
 # аргументом. Раньше эти словари пересобирались на каждый рендер страницы —
 # теперь считаются один раз при импорте модуля.
+def _float_label(text: str) -> str:
+    """Подпись поля по буквам (плавающий label в base.css): каждая буква — свой
+    <span> с нарастающей задержкой перехода."""
+    from html import escape
+    text = text.rstrip("….")
+    return "".join(
+        f'<span style="transition-delay:{i * 50}ms">{escape(ch) if ch != " " else "&nbsp;"}</span>'
+        for i, ch in enumerate(text))
+
+
+_FLOAT_KEYS = ("password_placeholder", "new_title_placeholder", "new_template_title_placeholder")
 _TEXTS_FLAT = {
-    lang: {k: v for k, v in texts.items() if k != "repeat"}
+    lang: {**{k: v for k, v in texts.items() if k != "repeat"},
+           **{k + "_fl": _float_label(texts[k]) for k in _FLOAT_KEYS}}
     for lang, texts in DASHBOARD_TEXTS.items()
 }
 _TEXTS_TASKS_PAGE = {
