@@ -89,8 +89,12 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
     async def _empty_list(*a, **kw):
         return []
 
+    async def _user_token(user_id):
+        return token, settings.get("dashboard_password_version", 0)
+
     for name, impl in {
         "get_owner_by_dashboard_token": _owner,
+        "get_or_create_user_dashboard_token": _user_token,
         "get_tasks": _tasks,
         "get_task": _task,
         "get_task_photos_meta_bulk": _photos_bulk,

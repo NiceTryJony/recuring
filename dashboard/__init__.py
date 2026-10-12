@@ -28,6 +28,6 @@ from .security import (
     _LOGIN_ATTEMPTS, _LOGIN_LOCKOUT_SECONDS, _LOGIN_MAX_ATTEMPTS, _LOGIN_WINDOW_SECONDS,
     _clear_login_attempts, _client_ip, _csrf_token, _login_rate_limited, _record_failed_login,
     _reset_login_limiter, _sign_session, _verify_csrf, _verify_session, hash_password,
-    verify_password, verify_telegram_login,
+    verify_password, verify_telegram_login, verify_webapp_init_data,
 )
 from .texts import DASHBOARD_TEXTS, _dows, _dt, _months

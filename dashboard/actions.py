@@ -12,7 +12,10 @@ import db
 from .config import SESSION_MAX_AGE, UTC, _acting_user_id, _tz_of
 from .photos import _fetch_and_compress_photo
 from .scheduler_hooks import _schedule_task, _unschedule_task
-from .security import _require_session, _require_session_full, _sign_session, _verify_csrf, verify_telegram_login
+from .security import (
+    _client_ip, _login_rate_limited, _record_failed_login, _require_session, _require_session_full,
+    _sign_session, _verify_csrf, verify_telegram_login, verify_webapp_init_data,
+)
 
 
 def _resolve_template_due_at(time_of_day: str, day_offset: int, tz) -> datetime:
@@ -170,6 +173,35 @@ async def handle_telegram_auth(request: aioweb.Request) -> aioweb.Response:
     pwd_version = settings.get("dashboard_password_version", 0)
     session_value = _sign_session(owner_id, owner_type, tg_user_id=tg_user_id, password_version=pwd_version)
     resp = aioweb.Response(status=200)
+    is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
+    resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
+                    samesite="Strict", secure=is_https)
+    return resp
+
+
+async def handle_webapp_auth(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/webapp-auth — вход из Telegram Mini App по подписанному
+    initData, без пароля (только личные дашборды). CSRF не нужен: сессии ещё
+    нет, а защитой служит подпись. Неверные попытки считаются rate-limit'ом
+    по IP, как и неверный пароль."""
+    ip = _client_ip(request)
+    if _login_rate_limited("webapp", ip):
+        return aioweb.Response(status=429)
+    try:
+        payload = await request.json()
+        init_data = payload["initData"]
+    except (ValueError, KeyError, TypeError):
+        return aioweb.Response(status=400)
+
+    user = verify_webapp_init_data(init_data) if isinstance(init_data, str) else None
+    if user is None:
+        _record_failed_login("webapp", ip)
+        return aioweb.Response(status=403)
+
+    user_id = int(user["id"])
+    token, pwd_version = await db.get_or_create_user_dashboard_token(user_id)
+    session_value = _sign_session(user_id, "user", tg_user_id=user_id, password_version=pwd_version)
+    resp = aioweb.json_response({"url": f"/dashboard/{token}"})
     is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
     resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
                     samesite="Strict", secure=is_https)

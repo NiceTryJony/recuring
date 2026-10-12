@@ -17,7 +17,9 @@ import db
 from stats import compute_streak, daily_series
 
 from .config import BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, _tz_of, logger
-from .pages import HISTORY_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER, TEMPLATES_PAGE, _login_response
+from .pages import (
+    HISTORY_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER, TEMPLATES_PAGE, WEBAPP_ENTRY_PAGE, _login_response,
+)
 from .render import _render_chart, _render_day_picker, _render_event, _render_task, _render_template_row
 from .security import (
     _clear_login_attempts, _client_ip, _csrf_token, _login_rate_limited, _record_failed_login,
@@ -26,6 +28,11 @@ from .security import (
 from .texts import _dt, _dt_flat, _dt_tasks_page
 
 HISTORY_PAGE_SIZE = 30
+
+
+async def handle_webapp_entry(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/app — стартовая страница Mini App (см. WEBAPP_ENTRY_PAGE)."""
+    return aioweb.Response(text=WEBAPP_ENTRY_PAGE, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 async def handle_history(request: aioweb.Request) -> aioweb.Response:
