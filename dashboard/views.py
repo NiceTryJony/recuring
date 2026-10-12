@@ -19,8 +19,10 @@ from stats import compute_streak, daily_series
 from task_groups import GROUPS, VIEWS, day_counts, group_tasks, select_tasks, tag_counts, today_progress
 
 from .config import BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, _tz_of, logger
+from .actions import SHARE_CODE_RE
 from .pages import (
-    HISTORY_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER, TEMPLATES_PAGE, WEBAPP_ENTRY_PAGE, _login_response,
+    HISTORY_PAGE, SHARE_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER, TEMPLATES_PAGE, WEBAPP_ENTRY_PAGE,
+    _login_response,
 )
 from .render import _render_chart, _render_day_picker, _render_event, _render_task, _render_template_row
 from .security import (
@@ -35,6 +37,60 @@ HISTORY_PAGE_SIZE = 30
 async def handle_webapp_entry(request: aioweb.Request) -> aioweb.Response:
     """GET /dashboard/app — стартовая страница Mini App (см. WEBAPP_ENTRY_PAGE)."""
     return aioweb.Response(text=WEBAPP_ENTRY_PAGE, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def handle_share_preview(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/share/{code} — экран «Добавить к своим задачам».
+    Только для личного дашборда получателя; язык и часовой пояс — его."""
+    token = request.match_info["token"]
+    code = request.match_info["code"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings or settings["owner_type"] != "user":
+        return aioweb.Response(text=_dt("ru")["not_found"], status=404)
+
+    owner_id = settings["owner_id"]
+    lang = settings.get("language", "ru")
+    texts = _dt(lang)
+
+    cookie = request.cookies.get(f"session_{token}")
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
+    if session is None or (session[0], session[1]) != (owner_id, "user"):
+        return _login_response(token, lang)
+
+    src = await db.get_task_by_share_code(code) if SHARE_CODE_RE.fullmatch(code) else None
+    if not src:
+        content = f'<div class="empty">{escape(texts["share_unavailable"])}</div>'
+    else:
+        tz = _tz_of(settings)
+        now = datetime.now(tz)
+        due = src["due_at"].astimezone(tz)
+        if due <= now:
+            due = now + dt.timedelta(hours=1)  # прошедшую дату не предлагаем — напоминание сработало бы сразу
+        subtasks = await db.get_subtasks(src["id"])
+        tag_html = f'<div class="tag">#{escape(src["tag"])}</div>' if src.get("tag") else ""
+        desc_html = f'<p class="description-text">{escape(src["description"])}</p>' if src.get("description") else ""
+        subs_html = ""
+        if subtasks:
+            items = "".join(f"<li>{escape(s['title'])}</li>" for s in subtasks)
+            subs_html = (f'<div class="share-label">{escape(texts["share_subtasks_label"])}</div>'
+                         f'<ul class="share-subtasks">{items}</ul>')
+        error_html = (f'<div class="new-task-error">{escape(texts["error_bad_due_at"])}</div>'
+                      if request.query.get("error") == "bad_due_at" else "")
+        content = f"""<form class="share-card" id="share-form" method="post" action="/dashboard/{token}/share/{code}/accept">
+<input type="hidden" name="csrf" value="{_csrf_token(cookie)}">
+<h2 class="share-title">{escape(src["title"])}</h2>
+{tag_html}
+{desc_html}
+{subs_html}
+<label class="field-row"><span>{escape(texts["share_due_label"])}</span>
+<input type="datetime-local" name="due_at" value="{due.strftime('%Y-%m-%dT%H:%M')}" required></label>
+{error_html}
+<button type="submit" class="btn-filled" id="share-add">{escape(texts["share_add_btn"])}</button>
+</form>"""
+
+    page = SHARE_PAGE.format(token=token, content_html=content, **_dt_flat(lang))
+    return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 async def handle_history(request: aioweb.Request) -> aioweb.Response:

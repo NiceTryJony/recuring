@@ -20,6 +20,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Chat,
     BotCommand, BotCommandScopeDefault, BufferedInputFile, MenuButtonWebApp, WebAppInfo,
+    InlineQueryResultArticle, InputTextMessageContent,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -2719,6 +2720,21 @@ async def setup_bot_commands():
             text="📋 Tasks", web_app=WebAppInfo(url=f"{DASHBOARD_BASE_URL.rstrip('/')}/dashboard/app")))
 
 
+async def prepare_share_message(user_id: int, title: str, text: str, button_text: str, link: str) -> str:
+    """Готовое сообщение «Поделиться задачей» для WebApp.shareMessage: текст и
+    кнопка, которая открывает Mini App с кодом задачи (Bot API 8.0+)."""
+    result = InlineQueryResultArticle(
+        id="share", title=title,
+        input_message_content=InputTextMessageContent(message_text=text),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=link)]]),
+    )
+    prepared = await bot.save_prepared_inline_message(
+        user_id=user_id, result=result,
+        allow_user_chats=True, allow_group_chats=True, allow_bot_chats=False, allow_channel_chats=False,
+    )
+    return prepared.id
+
+
 # ---------- health-check веб-сервер (нужен Render Web Service, чтобы видеть открытый порт) ----------
 
 async def health(request):
@@ -2736,6 +2752,7 @@ async def run_health_server():
     # удалённая — снимает свои джобы. Без этого напоминание по задаче с
     # дашборда не приходило до рестарта процесса (restore_jobs).
     dashboard.set_scheduler_hooks(schedule=schedule_task, unschedule=_remove_task_jobs)
+    dashboard.set_share_hooks(prepare=prepare_share_message)
     runner = aioweb.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))

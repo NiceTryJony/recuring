@@ -23,7 +23,59 @@
     tg.onEvent('themeChanged', applyTheme);
     tg.ready();
     tg.expand();
+
+    // Нативная «Назад» на вторичных страницах (там есть .nav-back).
+    var back = document.querySelector('.nav-back');
+    if (back && tg.BackButton) {
+      tg.BackButton.show();
+      tg.BackButton.onClick(function () { location.href = back.href; });
+    }
+    // Экран «Общая задача»: основное действие — нативная кнопка внизу, а
+    // HTML-кнопка прячется (html[data-tg-main], см. share.css).
+    var shareForm = document.getElementById('share-form');
+    var shareAdd = document.getElementById('share-add');
+    if (shareForm && shareAdd && tg.MainButton) {
+      root.dataset.tgMain = '1';
+      tg.MainButton.setText(shareAdd.textContent);
+      tg.MainButton.show();
+      tg.MainButton.onClick(function () {
+        if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+        if (shareForm.reportValidity()) { tg.MainButton.showProgress(); shareForm.submit(); }
+      });
+    }
   }
+
+  // ---------- «Поделиться» ----------
+  // Сервер отдаёт ссылку и (если получилось) id готового сообщения. Порядок:
+  // нативный диалог выбора чата (Bot API 8.0+) -> окно «переслать» Telegram ->
+  // системный share -> копирование ссылки.
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('.share-btn');
+    if (!b) return;
+    b.disabled = true;
+    fetch(b.dataset.url, {
+      method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'csrf=' + encodeURIComponent(b.dataset.csrf), credentials: 'same-origin'
+    }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (d) {
+        var inTg = tg && tg.initData;
+        if (inTg && d.prepared_id && tg.shareMessage && tg.isVersionAtLeast && tg.isVersionAtLeast('8.0')) {
+          tg.shareMessage(d.prepared_id);
+        } else if (inTg && tg.openTelegramLink) {
+          tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(d.link) + '&text=' + encodeURIComponent(d.text));
+        } else if (navigator.share) {
+          navigator.share({text: d.text, url: d.link}).catch(function () {});
+        } else if (navigator.clipboard) {
+          return navigator.clipboard.writeText(d.link).then(function () {
+            var old = b.lastChild.textContent;
+            b.lastChild.textContent = b.dataset.copied;
+            setTimeout(function () { b.lastChild.textContent = old; }, 1800);
+          });
+        }
+      })
+      .catch(function () {})
+      .then(function () { b.disabled = false; });
+  });
 
   // ---------- шторка «Новая задача» ----------
   // Клик по затемнению (это ::before самого <details>, цель клика — он сам) и Esc закрывают.

@@ -24,6 +24,7 @@ from .photos import compress_task_photo, make_task_photo_thumb
 from .render import _render_chart, _render_day_picker, _render_task
 from .routes import register_dashboard_routes
 from .scheduler_hooks import _schedule_task, _unschedule_task, set_scheduler_hooks
+from .share_hooks import set_share_hooks
 from .security import (
     _LOGIN_ATTEMPTS, _LOGIN_LOCKOUT_SECONDS, _LOGIN_MAX_ATTEMPTS, _LOGIN_WINDOW_SECONDS,
     _clear_login_attempts, _client_ip, _csrf_token, _login_rate_limited, _record_failed_login,

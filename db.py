@@ -284,6 +284,17 @@ async def init_db():
         # бота) дорендериваются на первом же запросе превью.
         await conn.execute("ALTER TABLE task_photos ADD COLUMN IF NOT EXISTS thumb BYTEA")
 
+        # Коды «Поделиться задачей»: один код на задачу (UNIQUE), живёт, пока
+        # жива задача. Код случайный — id задачи наружу не светится.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_shares (
+                code TEXT PRIMARY KEY,
+                task_id INTEGER NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+                created_by BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
 
 async def close_db():
     if _pool:
@@ -634,6 +645,35 @@ async def get_subtask(subtask_id: int) -> dict | None:
     async def _run():
         async with _pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM subtasks WHERE id = $1", subtask_id)
+            return dict(row) if row else None
+    return await _with_retry(_run)
+
+
+# ---------- «Поделиться задачей» ----------
+
+async def get_or_create_task_share(task_id: int, created_by: int | None) -> str:
+    """Код ссылки на задачу; повторный вызов отдаёт тот же код. Префикс 's_'
+    отличает его от других значений start_param Mini App."""
+    code = "s_" + secrets.token_urlsafe(9)
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO task_shares (code, task_id, created_by) VALUES ($1, $2, $3)
+                   ON CONFLICT (task_id) DO UPDATE SET task_id = EXCLUDED.task_id
+                   RETURNING code""",
+                code, task_id, created_by
+            )
+            return row["code"]
+    return await _with_retry(_run)
+
+
+async def get_task_by_share_code(code: str) -> dict | None:
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT t.* FROM task_shares s JOIN tasks t ON t.id = s.task_id WHERE s.code = $1", code
+            )
             return dict(row) if row else None
     return await _with_retry(_run)
 

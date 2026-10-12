@@ -8,6 +8,7 @@ from html import escape
 
 import db
 
+from .config import BOT_USERNAME
 from .texts import _dows, _dt, _float_label, _months
 
 # Чекбокс WhiteNervosa (uiverse): контур-«капля» стирается, галочка дорисовывается.
@@ -346,7 +347,12 @@ def _render_task(
 </form>"""
             if task["repeat"] == "none" else ""
         )
+        share_html = (
+            f"""<button type="button" class="share-btn" data-url="/dashboard/{token}/tasks/{task['id']}/share" data-csrf="{csrf}" data-copied="{escape(texts["share_link_copied"])}">{_icon("share")}{escape(texts["btn_share"])}</button>"""
+            if BOT_USERNAME else ""
+        )
         extra_actions = f"""<div class="task-actions">
+{share_html}
 {postpone_html}
 <form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
 <input type="hidden" name="csrf" value="{csrf}">

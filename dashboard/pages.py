@@ -46,6 +46,7 @@ _ICON_SPRITE = (
     '<symbol id="i-cam" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2l2-2.5h6L17 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/></symbol>'
     '<symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/></symbol>'
     '<symbol id="i-rep" viewBox="0 0 24 24"><path d="M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4"/></symbol>'
+    '<symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V3M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></symbol>'
     '<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>'
     '<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>'
     '<symbol id="i-tpl" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 10v10"/></symbol>'
@@ -190,6 +191,13 @@ TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
      страницу и уходят за ней лишним запросом -->
 <img alt="">
 </div>
+</body></html>"""
+
+
+SHARE_PAGE = _head("share_page_title", "share.css", with_js=True) + """
+<body>
+""" + _navbar("share_page_title", left=_back_link()) + """
+{content_html}
 </body></html>"""
 
 
