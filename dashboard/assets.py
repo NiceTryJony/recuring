@@ -66,6 +66,10 @@ def publish(filename: str) -> str:
 
 BASE_CSS_URL = publish("base.css")
 DASHBOARD_JS_URL = publish("dashboard.js")
+# Эффекты для ПК: в HTML их нет, детектор в pages.py подгружает оба файла
+# только когда ставит класс fx (на телефонах они не скачиваются вовсе).
+FX_CSS_URL = publish("fx.css")
+FX_JS_URL = publish("fx.js")
 
 
 def stylesheets(page_css_file: str) -> str:

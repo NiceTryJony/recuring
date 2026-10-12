@@ -458,3 +458,34 @@ async def test_heavy_effects_are_opt_in(client):
     # анимировать filter нельзя ни в каком режиме — он пересчитывается каждый кадр
     for name, body_ in re.findall(r"@keyframes\s*([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", css):
         assert "filter" not in body_, name
+
+
+async def test_pc_effects_are_loaded_only_by_fx_detector(client):
+    """Анимации для ПК лежат в fx.css/fx.js: в HTML их ссылок нет (телефоны не
+    качают ни байта), их подгружает детектор вместе с классом fx, а в самом
+    fx.css каждое правило начинается с .fx и ни один keyframes не трогает filter."""
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert not re.search(r'(href|src)="/dashboard/static/fx\.', body)
+    m = re.search(r"c\.add\('fx'\);.*?l\.href='(/dashboard/static/fx\.[0-9a-f]+\.css)';s\.src='(/dashboard/static/fx\.[0-9a-f]+\.js)'", body)
+    assert m, "детектор должен подгружать fx.css и fx.js вместе с классом fx"
+
+    css_resp = await client.get(m.group(1))
+    assert css_resp.status == 200 and "immutable" in css_resp.headers["Cache-Control"]
+    css = await css_resp.text()
+    js_resp = await client.get(m.group(2))
+    assert js_resp.status == 200 and js_resp.content_type == "application/javascript"
+    js = await js_resp.text()
+    assert "classList.contains('fx')" in js     # без класса скрипт ничего не делает
+
+    keyframes = re.findall(r"@keyframes\s*([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", css)
+    assert keyframes
+    for name, body_ in keyframes:
+        assert "filter" not in body_, name
+    rest = re.sub(r"@keyframes\s*[\w-]+\s*\{(?:[^{}]*\{[^{}]*\})*\s*\}", "", css)
+    for selectors in re.findall(r"([^{}]+)\{", rest):
+        selectors = selectors.strip()
+        if selectors.startswith("@"):            # @media / @supports — обёртка, не правило
+            continue
+        for sel in selectors.split(","):
+            assert sel.strip().startswith(".fx"), sel

@@ -6,7 +6,7 @@
 
 from aiohttp import web as aioweb
 
-from .assets import DASHBOARD_JS_URL, stylesheets
+from .assets import DASHBOARD_JS_URL, FX_CSS_URL, FX_JS_URL, stylesheets
 from .texts import _dt_flat
 
 # Шрифт — системный (SF Pro на Apple, Roboto на Android, Segoe UI на Windows):
@@ -21,7 +21,8 @@ from .texts import _dt_flat
 #     нормальный современный); блюр только у панели навигации, анимация
 #     раскрытия, лайтбокс из миниатюры со свайпом;
 #   мощное — .mid.fx: вдобавок настольный указатель, широкий экран и >= 8 ГБ;
-#     блюр у панелей и лайтбокса, подсветка при наведении.
+#     блюр у панелей и лайтбокса, подсветка при наведении, а главное — именно тут
+#     подгружаются fx.css и fx.js со всеми анимациями для ПК (текст, блоки, hover).
 # Просьба системы экономить трафик или движение оставляет слабый уровень.
 # Без deviceMemory (Safari, Firefox) считаем 8 — это в основном iPhone/Mac.
 _FX_DETECT = (
@@ -29,9 +30,11 @@ _FX_DETECT = (
     "if(m('(prefers-reduced-motion: reduce)').matches||(n.connection&&n.connection.saveData))return;"
     "var mem=n.deviceMemory||8,cpu=n.hardwareConcurrency||8;"
     "if(mem>=6&&cpu>=6){c.add('mid');"
-    "if(mem>=8&&m('(hover:hover) and (pointer:fine) and (min-width:900px)').matches)c.add('fx')}"
+    "if(mem>=8&&m('(hover:hover) and (pointer:fine) and (min-width:900px)').matches){c.add('fx');"
+    "var h=document.head,l=document.createElement('link'),s=document.createElement('script');"
+    "l.rel='stylesheet';l.href='__FX_CSS__';s.src='__FX_JS__';h.appendChild(l);h.appendChild(s)}}"
     "}catch(e){}})()</script>"
-)
+).replace("__FX_CSS__", FX_CSS_URL).replace("__FX_JS__", FX_JS_URL)
 
 # Иконки в духе SF Symbols — один спрайт на страницу, ссылки <use href="#i-…">
 # только в раскрытой (ленивой) части карточки: в свёрнутой иконок нет вовсе,
