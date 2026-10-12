@@ -1,0 +1,173 @@
+/* Эффекты ТОЛЬКО для ПК. Файл не лежит в HTML: его подключает детектор в
+   pages.py вместе с fx.js, когда ставит класс .fx на <html> (курсор с hover,
+   ширина >= 900px, >= 8 ГБ памяти, >= 6 потоков, нет reduced-motion/saveData).
+   На телефонах он не скачивается вообще.
+
+   Правила: каждое правило начинается с .fx (на это есть тест); скрытое
+   начальное состояние — только под .rv/.sp, которые ставит fx.js (не
+   загрузился скрипт — контент виден); анимируем transform и opacity, filter в
+   keyframes нельзя. Исключения по цене — помечены и дёшевы: ранее одна маленькая
+   надпись или одно кольцо. fill-mode у входных анимаций — backwards, а не both,
+   иначе замороженное значение transform перебивает hover. */
+
+.fx { interpolate-size: allow-keywords; --glow: rgba(0, 122, 255, 0.10); }
+@media (prefers-color-scheme: dark) { .fx { --glow: rgba(10, 132, 255, 0.17); } }
+
+/* ---------- фон: два медленных пятна в пустых полях по бокам колонки ----------
+   Один фиксированный слой на пятно, двигается только transform (композитор). */
+.fx body { background: transparent; }
+.fx body::before, .fx body::after {
+  content: ""; position: fixed; z-index: -1; width: 60vmax; height: 60vmax; border-radius: 50%;
+  pointer-events: none; will-change: transform;
+}
+.fx body::before {
+  left: -26vmax; top: -22vmax;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 17%, transparent), transparent);
+  animation: fx-drift-a 38s ease-in-out infinite alternate;
+}
+.fx body::after {
+  right: -26vmax; bottom: -26vmax;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 11%, transparent), transparent);
+  animation: fx-drift-b 46s ease-in-out infinite alternate;
+}
+@keyframes fx-drift-a { to { transform: translate(20vmax, 14vmax) scale(1.18); } }
+@keyframes fx-drift-b { to { transform: translate(-18vmax, -12vmax) scale(1.12); } }
+
+/* ---------- появление при прокрутке ---------- */
+@keyframes fx-rise { from { opacity: 0; transform: translateY(18px) scale(0.985); } }
+.fx .rv:not(.in) { opacity: 0; }
+.fx .rv.in { animation: fx-rise 0.7s var(--spring) backwards; animation-delay: calc(var(--d, 0) * 55ms); }
+
+/* ---------- большой заголовок: слова выезжают по одному ---------- */
+@keyframes fx-word { from { opacity: 0; transform: translateY(0.55em); } }
+.fx .large-title .w { display: inline-block; transition: transform 0.4s var(--spring); }
+.fx .large-title.sp .w { animation: fx-word 0.85s var(--spring) backwards; animation-delay: calc(var(--i) * 75ms + 60ms); }
+.fx .large-title .w:hover { transform: translateY(-4px); }
+
+/* ---------- карточки: подъём и подсветка за курсором ---------- */
+.fx .task, .fx .event, .fx .chart-block, .fx .day-picker, .fx .new-task-form { position: relative; isolation: isolate; }
+.fx .task, .fx .event {
+  transition: transform 0.4s var(--spring), box-shadow 0.4s var(--ease), background-color 0.15s ease;
+}
+.fx .task::before, .fx .event::before, .fx .chart-block::before, .fx .day-picker::before, .fx .new-task-form::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+  opacity: 0; transition: opacity 0.35s ease;
+  background: radial-gradient(340px circle at var(--mx, 50%) var(--my, 50%), var(--glow), transparent 70%);
+}
+@media (hover: hover) and (pointer: fine) {
+  .fx .task:hover, .fx .event:hover { transform: translateY(-2px); box-shadow: 0 14px 30px -16px rgba(0, 0, 0, 0.32); }
+  .fx .task:hover::before, .fx .event:hover::before, .fx .chart-block:hover::before,
+  .fx .day-picker:hover::before, .fx .new-task-form:hover::before { opacity: 1; }
+
+  /* линия под заголовком выезжает слева и работает на переносах строк */
+  .fx .title {
+    display: inline; padding-bottom: 1px; -webkit-box-decoration-break: clone; box-decoration-break: clone;
+    background: linear-gradient(var(--accent), var(--accent)) no-repeat 0 100% / 0 1.5px;
+    transition: background-size 0.45s var(--ease);
+  }
+  .fx .task-summary:hover .title { background-size: 100% 1.5px; }
+  .fx .task-summary:hover::after { border-color: var(--accent); }
+
+  /* навигация */
+  .fx .nav-link, .fx .nav-back span {
+    background: linear-gradient(currentColor, currentColor) no-repeat 0 100% / 0 1px;
+    transition: background-size 0.4s var(--ease), opacity 0.2s ease;
+  }
+  .fx .nav-link { background-position: 0 calc(50% + 0.75em); }
+  .fx .nav-link:hover, .fx .nav-back:hover span { background-size: 100% 1px; opacity: 1; }
+  .fx .nav-back .i { transition: transform 0.35s var(--spring); }
+  .fx .nav-back:hover .i { transform: translateX(-3px); }
+
+  /* день в выборе дня */
+  .fx .day-item:hover .day-number { background: var(--fill); transform: scale(1.14); }
+  .fx .day-item.day-active:hover .day-number { background: var(--accent); }
+  .fx .check-btn:hover, .fx .subtask-check:hover { border-color: var(--accent); transform: scale(1.1); }
+
+  /* график: остальные приглушаются, выбранный вытягивается */
+  .fx .bars:hover .col:not(:hover) .bar { opacity: 0.4; }
+  .fx .col:hover .bar { transform: scaleY(1.06); }
+  .fx .col:hover .num { color: var(--label); transform: translateY(-2px); }
+
+  /* фото */
+  .fx .task-photo:hover img { transform: scale(1.07); }
+}
+
+/* ---------- раскрытие карточки ---------- */
+@supports selector(::details-content) {
+  .fx .task-details::details-content {
+    block-size: 0; overflow: clip;
+    transition: block-size 0.5s var(--spring), content-visibility 0.5s allow-discrete;
+  }
+  .fx .task-details[open]::details-content { block-size: auto; }
+}
+.fx .task-expanded > * { animation: fx-rise 0.6s var(--spring) backwards; }
+.fx .task-expanded > :nth-child(1) { animation-delay: 0.05s; }
+.fx .task-expanded > :nth-child(2) { animation-delay: 0.09s; }
+.fx .task-expanded > :nth-child(3) { animation-delay: 0.13s; }
+.fx .task-expanded > :nth-child(4) { animation-delay: 0.17s; }
+.fx .task-expanded > :nth-child(5) { animation-delay: 0.21s; }
+.fx .task-expanded > :nth-child(6) { animation-delay: 0.25s; }
+.fx .task-expanded > :nth-child(n+7) { animation-delay: 0.29s; }
+.fx .task-details[open] > .task-summary::after { border-color: var(--accent); }
+
+/* ---------- график ---------- */
+@keyframes fx-grow { from { transform: scaleY(0); } }
+.fx .bar { transform-origin: bottom; transition: transform 0.35s var(--spring), opacity 0.25s ease; }
+.fx .num { transition: transform 0.3s var(--spring), color 0.2s ease; }
+.fx .chart-block.rv:not(.in) .bar { transform: scaleY(0); }
+.fx .chart-block.rv.in .bar { animation: fx-grow 0.95s var(--spring) backwards; animation-delay: calc(var(--i, 0) * 45ms + 120ms); }
+
+/* «Серия дней» переливается — одна маленькая надпись. */
+@keyframes fx-shimmer { to { background-position: -250% 0; } }
+.fx .streak {
+  background: linear-gradient(90deg, var(--orange) 0 35%, #ffd60a 50%, var(--orange) 65% 100%) 0 0 / 250% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: fx-shimmer 5s linear infinite;
+}
+
+/* «Сегодня» пульсирует кольцом три раза и успокаивается. */
+@keyframes fx-ring {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 9px transparent; }
+}
+.fx .day-number { transition: background-color 0.25s ease, transform 0.4s var(--spring); }
+.fx .day-item.day-today:not(.day-active) .day-number { animation: fx-ring 2.6s ease-out 0.8s 3; }
+
+/* ---------- фото: наклон за курсором ---------- */
+.fx .task-photo {
+  transform: perspective(700px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transition: transform 0.3s ease-out;
+}
+.fx .task-photo img { transition: transform 0.6s var(--spring); }
+
+/* ---------- кнопки и поля ---------- */
+.fx .btn-filled { transform: translate(var(--tx, 0px), var(--ty, 0px)); transition: transform 0.3s var(--spring); }
+.fx .btn-filled:active { transform: translate(var(--tx, 0px), var(--ty, 0px)) scale(0.97); }
+
+.fx .new-task-form > input:not([type=hidden]), .fx .new-task-form > textarea {
+  background: linear-gradient(var(--accent), var(--accent)) no-repeat 0 100% / 0 2px;
+  transition: background-size 0.5s var(--spring);
+}
+.fx .new-task-form > input:focus, .fx .new-task-form > textarea:focus { background-size: 100% 2px; box-shadow: none; }
+
+/* кольцо вспыхивает на нажатии чекбокса */
+.fx .check-btn::after {
+  content: ""; position: absolute; inset: -2px; border-radius: 50%; pointer-events: none;
+  border: 2px solid var(--accent); opacity: 0; transform: scale(0.6);
+}
+.fx .check-btn:active::after { opacity: 0.6; transform: scale(1.8); transition: transform 0.5s var(--ease), opacity 0.5s ease; }
+
+/* ---------- прокрутка: заголовок уходит, под панелью растёт линия ---------- */
+@supports (animation-timeline: scroll()) {
+  @keyframes fx-title-out { to { opacity: 0.25; transform: scale(0.95) translateY(-6px); } }
+  @keyframes fx-progress { to { transform: scaleX(1); } }
+  .fx .large-title {
+    transform-origin: left center;
+    animation: fx-title-out linear both; animation-timeline: scroll(root); animation-range: 0 140px;
+  }
+  .fx .navbar::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -0.5px; height: 2px;
+    background: var(--accent); transform-origin: left; transform: scaleX(0);
+    animation: fx-progress linear both; animation-timeline: scroll(root);
+  }
+}

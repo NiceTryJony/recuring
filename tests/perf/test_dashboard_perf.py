@@ -428,8 +428,11 @@ async def test_dashboard_page_performance(server, profile):
         elif metrics[key] > budget:
             failures.append(f"{key} {metrics[key]:.1f} > {budget}")
     # GPU-тяжёлые эффекты эмуляция CPU не ловит — проверяем их отсутствие напрямую.
-    if profile != "strong" and metrics["backdrop_elements"]:
-        failures.append(f"{metrics['backdrop_elements']} элементов с backdrop-filter в облегчённом режиме")
+    # weak — ни одного блюра; mid — только панель навигации (материал iOS).
+    allowed_blur = {"strong": None, "mid": 1, "weak": 0}[profile]
+    if allowed_blur is not None and metrics["backdrop_elements"] > allowed_blur:
+        failures.append(f"{metrics['backdrop_elements']} элементов с backdrop-filter "
+                        f"(на профиле {profile} допустимо {allowed_blur})")
     if metrics["filter_animations"]:
         failures.append(f"{metrics['filter_animations']} анимаций filter при раскрытии карточки")
     assert not failures, "; ".join(failures)
