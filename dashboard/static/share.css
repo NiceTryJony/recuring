@@ -1,0 +1,26 @@
+/* Экран «Общая задача»: одна карточка — название, тег, описание, подзадачи,
+   дата и кнопка добавления. Общие поля, кнопки и навбар — в base.css. */
+.share-card {
+  display: flex; flex-direction: column; gap: var(--s3); padding: var(--s5); margin-bottom: var(--s4);
+  background: var(--surface); border: 1px solid var(--sep); border-radius: var(--radius);
+  animation: rise 0.4s var(--ease) backwards;
+}
+.share-title { margin: 0; font-size: 1.375rem; font-weight: 700; letter-spacing: -0.015em; overflow-wrap: anywhere; }
+.share-card .tag { align-self: flex-start; margin: 0; padding: 2px 10px; border-radius: 999px;
+  background: var(--accent-tint); color: var(--accent); font-size: 0.8125rem; font-weight: 500; }
+.share-card .description-text { margin: 0; font-size: 0.9375rem; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+.share-label { color: var(--label-2); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.share-subtasks { margin: 0; padding: 0; list-style: none; }
+.share-subtasks li {
+  position: relative; padding: 10px 0 10px 28px; border-bottom: 1px solid var(--sep);
+  font-size: 0.9375rem; overflow-wrap: anywhere;
+}
+.share-subtasks li:last-child { border-bottom: none; }
+.share-subtasks li::before {
+  content: ""; position: absolute; left: 4px; top: 50%; width: 12px; height: 12px; margin-top: -6px;
+  border: 1.5px solid var(--label-3); border-radius: 50%;
+}
+.share-card .field-row input { width: auto; max-width: 60%; }
+.share-card .btn-filled { width: 100%; }
+/* В Telegram основное действие — нативная MainButton, HTML-кнопка скрыта (см. dashboard.js). */
+html[data-tg-main] #share-add { display: none; }

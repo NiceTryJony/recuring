@@ -7,11 +7,14 @@
 
 import db
 
+# Код «Поделиться задачей», который отдаёт заглушка; указывает на первую задачу.
+SHARE_CODE = "s_AAAAAAAAAAAA"
+
 
 def make_spy() -> dict:
     """Счётчики обращений к БД и планировщику."""
     return {"photos_bulk": 0, "subtasks_bulk": 0, "photos_single": 0, "subtasks_single": 0,
-            "scheduled": [], "unscheduled": [], "added": []}
+            "scheduled": [], "unscheduled": [], "added": [], "subtasks_added": []}
 
 
 def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict], spy: dict | None = None,
@@ -56,8 +59,19 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
         return subtasks.get(task_id, [])
 
     async def _add_task(owner_id, owner_type, title, due_at, repeat, remind, **kw):
-        spy["added"].append({"title": title, "due_at": due_at, "repeat": repeat})
+        spy["added"].append({"title": title, "due_at": due_at, "repeat": repeat, "owner_id": owner_id,
+                             "owner_type": owner_type, "tag": kw.get("tag"), "description": kw.get("description")})
         return 42
+
+    async def _share_code(task_id, created_by):
+        return SHARE_CODE
+
+    async def _task_by_share_code(code):
+        return tasks[0] if code == SHARE_CODE and tasks else None
+
+    async def _add_subtask(task_id, title):
+        spy["subtasks_added"].append((task_id, title))
+        return 1
 
     async def _users(ids):
         return {i: users[i] for i in ids if i in users}
@@ -102,6 +116,9 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
         "get_task_photos_meta": _photos_single,
         "get_subtasks": _subtasks_single,
         "add_task": _add_task,
+        "get_or_create_task_share": _share_code,
+        "get_task_by_share_code": _task_by_share_code,
+        "add_subtask": _add_subtask,
         "get_telegram_users": _users,
         "get_telegram_user_photo": _user_photo,
         "get_task_photo_thumb": _thumb,

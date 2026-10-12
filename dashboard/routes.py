@@ -3,13 +3,15 @@
 from aiohttp import web as aioweb
 
 from .actions import (
-    handle_subtask_create, handle_subtask_delete, handle_subtask_toggle, handle_task_create,
-    handle_task_edit, handle_task_toggle, handle_telegram_auth, handle_template_apply,
-    handle_template_create, handle_template_delete, handle_webapp_auth,
+    handle_share_accept, handle_subtask_create, handle_subtask_delete, handle_subtask_toggle,
+    handle_task_create, handle_task_edit, handle_task_share, handle_task_toggle, handle_telegram_auth,
+    handle_template_apply, handle_template_create, handle_template_delete, handle_webapp_auth,
 )
 from .assets import compression_middleware, handle_static
 from .photos import handle_avatar, handle_task_photo_delete, handle_task_photo_get, handle_task_photo_upload
-from .views import handle_dashboard, handle_history, handle_templates_page, handle_webapp_entry
+from .views import (
+    handle_dashboard, handle_history, handle_share_preview, handle_templates_page, handle_webapp_entry,
+)
 
 
 def register_dashboard_routes(app: aioweb.Application):
@@ -39,7 +41,11 @@ def register_dashboard_routes(app: aioweb.Application):
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/subtasks/new", handle_subtask_create)
     app.router.add_post("/dashboard/{token}/subtasks/{subtask_id}/toggle", handle_subtask_toggle)
     app.router.add_post("/dashboard/{token}/subtasks/{subtask_id}/delete", handle_subtask_delete)
+    # /share — тоже до общего /{action} (по той же причине, что и /photo).
+    app.router.add_post("/dashboard/{token}/tasks/{task_id}/share", handle_task_share)
     app.router.add_post("/dashboard/{token}/tasks/{task_id}/{action}", handle_task_toggle)
+    app.router.add_get("/dashboard/{token}/share/{code}", handle_share_preview)
+    app.router.add_post("/dashboard/{token}/share/{code}/accept", handle_share_accept)
     app.router.add_get("/dashboard/{token}/avatar/{user_id}", handle_avatar)
     app.router.add_get("/dashboard/{token}/history", handle_history)
     app.router.add_get("/dashboard/{token}/templates", handle_templates_page)

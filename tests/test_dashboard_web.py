@@ -16,7 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import dashboard
 import db
-from tests.dashboard_stubs import install_db_stubs, make_spy
+from tests.dashboard_stubs import SHARE_CODE, install_db_stubs, make_spy
 
 UTC = ZoneInfo("UTC")
 TOKEN = "tok-abc"
@@ -493,10 +493,13 @@ async def test_pc_effects_are_loaded_only_by_fx_detector(client):
 
 # ---------- Telegram Mini App ----------
 
-def _init_data(user_id: int, auth_date: int | None = None, bad_hash: bool = False) -> str:
+def _init_data(user_id: int, auth_date: int | None = None, bad_hash: bool = False,
+               start_param: str | None = None) -> str:
     import hashlib, hmac, json, time
     from urllib.parse import urlencode
     fields = {"auth_date": str(auth_date or int(time.time())), "user": json.dumps({"id": user_id})}
+    if start_param:
+        fields["start_param"] = start_param
     check = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
     secret = hmac.new(b"WebAppData", dashboard.SESSION_SECRET.encode(), hashlib.sha256).digest()
     fields["hash"] = "0" * 64 if bad_hash else hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
@@ -526,6 +529,135 @@ async def test_webapp_auth_rejects_bad_init_data(client, settings, init_data):
     resp = await client.post("/dashboard/webapp-auth", json={"initData": init_data})
     assert resp.status == 403
     assert not resp.cookies
+
+
+# ---------- «Поделиться задачей» ----------
+
+@pytest_asyncio.fixture
+async def share_client(monkeypatch, settings, task, spy):
+    """Как client, но у задачи есть подзадача и включён BOT_USERNAME."""
+    monkeypatch.setattr("dashboard.actions.BOT_USERNAME", "mybot")
+    monkeypatch.setattr("dashboard.render.BOT_USERNAME", "mybot")
+    task.update(tag="дом", description="описание")
+    install_db_stubs(monkeypatch, TOKEN, settings, [task], spy=spy,
+                     subtasks={1: [{"id": 5, "task_id": 1, "title": "шаг 1", "done": False, "position": 0}]})
+    dashboard.set_scheduler_hooks(schedule=lambda task_id, *a, **kw: spy["scheduled"].append(task_id))
+    app = aioweb.Application()
+    dashboard.register_dashboard_routes(app)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    yield test_client
+    await test_client.close()
+    dashboard.set_scheduler_hooks(None, None)
+
+
+async def _login_recipient(client, settings) -> tuple[str, str]:
+    """Получатель открывает Mini App по ссылке с кодом: (url экрана, csrf)."""
+    settings.update(owner_id=999, owner_type="user")
+    resp = await client.post("/dashboard/webapp-auth", json={"initData": _init_data(999, start_param=SHARE_CODE)})
+    url = (await resp.json())["url"]
+    body = await (await client.get(url)).text()
+    return url, re.search(r'name="csrf" value="([0-9a-f]+)"', body).group(1)
+
+
+async def test_webapp_auth_with_share_start_param_opens_share_screen(share_client, settings):
+    settings.update(owner_id=999, owner_type="user")
+    resp = await share_client.post("/dashboard/webapp-auth", json={"initData": _init_data(999, start_param=SHARE_CODE)})
+    assert (await resp.json())["url"] == f"/dashboard/{TOKEN}/share/{SHARE_CODE}"
+
+
+async def test_webapp_auth_ignores_malformed_start_param(share_client, settings):
+    settings.update(owner_id=999, owner_type="user")
+    resp = await share_client.post("/dashboard/webapp-auth", json={"initData": _init_data(999, start_param="../x")})
+    assert (await resp.json())["url"] == f"/dashboard/{TOKEN}"
+
+
+async def test_share_requires_session_and_csrf(share_client):
+    url = f"/dashboard/{TOKEN}/tasks/1/share"
+    assert (await share_client.post(url, data={"csrf": "x"})).status == 403
+    await _login(share_client)
+    assert (await share_client.post(url, data={"csrf": "bad"})).status == 403
+
+
+async def test_share_returns_link_and_code(share_client):
+    csrf = await _login(share_client)
+    resp = await share_client.post(f"/dashboard/{TOKEN}/tasks/1/share", data={"csrf": csrf})
+    data = await resp.json()
+    assert data["link"] == f"https://t.me/mybot?startapp={SHARE_CODE}"
+    assert data["prepared_id"] is None  # у группового дашборда личность Telegram неизвестна
+    assert "общая задача" in data["text"]
+
+
+async def test_share_foreign_task_is_404(share_client, task):
+    csrf = await _login(share_client)
+    task["owner_id"] = 1
+    assert (await share_client.post(f"/dashboard/{TOKEN}/tasks/1/share", data={"csrf": csrf})).status == 404
+
+
+async def test_share_button_rendered_with_bot_username(share_client):
+    await _login(share_client)
+    assert 'class="share-btn"' in await (await share_client.get(f"/dashboard/{TOKEN}")).text()
+
+
+async def test_share_button_hidden_without_bot_username(client):
+    await _login(client)
+    assert 'class="share-btn"' not in await (await client.get(f"/dashboard/{TOKEN}")).text()
+
+
+async def test_share_preview_shows_task(share_client, settings):
+    url, _ = await _login_recipient(share_client, settings)
+    page = await (await share_client.get(url)).text()
+    assert "общая задача" in page and "шаг 1" in page and "описание" in page and "#дом" in page
+    assert "Добавить к своим задачам" in page
+
+
+async def test_share_preview_dead_code(share_client, settings):
+    await _login_recipient(share_client, settings)
+    page = await (await share_client.get(f"/dashboard/{TOKEN}/share/s_BBBBBBBBBBBB")).text()
+    assert "больше недоступна" in page
+
+
+async def test_share_accept_copies_snapshot(share_client, settings, spy):
+    url, csrf = await _login_recipient(share_client, settings)
+    due = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M")
+    resp = await share_client.post(f"{url}/accept", data={"csrf": csrf, "due_at": due}, allow_redirects=False)
+    assert resp.status == 302 and resp.headers["Location"] == f"/dashboard/{TOKEN}"
+    added = spy["added"][0]
+    assert (added["title"], added["owner_id"], added["owner_type"], added["repeat"]) == ("общая задача", 999, "user", "none")
+    assert (added["tag"], added["description"]) == ("дом", "описание")
+    assert spy["subtasks_added"] == [(42, "шаг 1")]
+    assert spy["scheduled"] == [42]
+
+
+async def test_share_accept_rejects_bad_csrf_bad_date_and_group_owner(share_client, settings, spy):
+    url, csrf = await _login_recipient(share_client, settings)
+    assert (await share_client.post(f"{url}/accept", data={"csrf": "bad", "due_at": "2030-01-01T10:00"})).status == 403
+    bad = await share_client.post(f"{url}/accept", data={"csrf": csrf, "due_at": "nope"}, allow_redirects=False)
+    assert bad.status == 302 and "error=bad_due_at" in bad.headers["Location"]
+    assert not spy["added"]
+    settings.update(owner_type="chat")  # групповой дашборд не может принимать чужие задачи
+    assert (await share_client.post(f"{url}/accept", data={"csrf": csrf, "due_at": "2030-01-01T10:00"})).status in (403, 404)
+
+
+async def test_prepare_share_message_degrades_to_none():
+    from dashboard.share_hooks import _prepare_share_message
+    dashboard.set_share_hooks(None)
+    assert await _prepare_share_message(5, "t", "x", "b", "l") is None
+
+    async def ok(*a):
+        return "pid"
+
+    async def boom(*a):
+        raise RuntimeError("api")
+
+    try:
+        dashboard.set_share_hooks(ok)
+        assert await _prepare_share_message(5, "t", "x", "b", "l") == "pid"
+        assert await _prepare_share_message(0, "t", "x", "b", "l") is None
+        dashboard.set_share_hooks(boom)
+        assert await _prepare_share_message(5, "t", "x", "b", "l") is None
+    finally:
+        dashboard.set_share_hooks(None)
 
 
 # ---------- вкладки и группировка ----------

@@ -3,15 +3,22 @@
 владельца + CSRF-токен из формы; объект действия обязан принадлежать
 владельцу дашборда."""
 
+import re
 from datetime import datetime, time as dtime, timedelta
+from urllib.parse import parse_qsl
 
 from aiohttp import web as aioweb
 
 import db
 
-from .config import SESSION_MAX_AGE, UTC, _acting_user_id, _tz_of
+from .config import BOT_USERNAME, SESSION_MAX_AGE, UTC, _acting_user_id, _tz_of
 from .photos import _fetch_and_compress_photo
 from .scheduler_hooks import _schedule_task, _unschedule_task
+from .share_hooks import _prepare_share_message
+from .texts import _dt
+
+# Код из db.get_or_create_task_share: 's_' + token_urlsafe(9) (12 символов).
+SHARE_CODE_RE = re.compile(r"s_[A-Za-z0-9_-]{12}")
 from .security import (
     _client_ip, _login_rate_limited, _record_failed_login, _require_session, _require_session_full,
     _sign_session, _verify_csrf, verify_telegram_login, verify_webapp_init_data,
@@ -201,11 +208,96 @@ async def handle_webapp_auth(request: aioweb.Request) -> aioweb.Response:
     user_id = int(user["id"])
     token, pwd_version = await db.get_or_create_user_dashboard_token(user_id)
     session_value = _sign_session(user_id, "user", tg_user_id=user_id, password_version=pwd_version)
-    resp = aioweb.json_response({"url": f"/dashboard/{token}"})
+    # start_param стоит внутри подписанного initData (проверен выше) — ему можно
+    # верить; формат всё равно сверяем, чтобы не собирать URL из чужой строки.
+    start_param = dict(parse_qsl(init_data)).get("start_param", "")
+    url = f"/dashboard/{token}"
+    if SHARE_CODE_RE.fullmatch(start_param):
+        url += f"/share/{start_param}"
+    resp = aioweb.json_response({"url": url})
     is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
     resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
                     samesite="Strict", secure=is_https)
     return resp
+
+
+async def handle_task_share(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/tasks/{task_id}/share — код ссылки на задачу и
+    (если возможно) id готового сообщения для WebApp.shareMessage."""
+    token = request.match_info["token"]
+    try:
+        task_id = int(request.match_info["task_id"])
+    except ValueError:
+        return aioweb.Response(status=404)
+    if not BOT_USERNAME:
+        return aioweb.Response(status=404)
+
+    owner = await _require_session_full(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    settings, owner_id, owner_type, tg_user_id = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    task = await db.get_task(task_id)
+    if not task or task["owner_id"] != owner_id or task["owner_type"] != owner_type:
+        return aioweb.Response(status=404)
+
+    code = await db.get_or_create_task_share(task_id, _acting_user_id(owner_id, owner_type, tg_user_id))
+    link = f"https://t.me/{BOT_USERNAME}?startapp={code}"
+    # Текст сообщения и подпись кнопки — на языке отправителя: inline-кнопку
+    # нельзя локализовать под каждого получателя. Экран-превью уже на языке получателя.
+    texts = _dt(settings.get("language", "ru"))
+    text = texts["share_message"].format(title=task["title"])
+    prepared_id = await _prepare_share_message(
+        tg_user_id, texts["btn_share"], text, texts["share_add_btn"], link,
+    )
+    return aioweb.json_response({"link": link, "text": text, "prepared_id": prepared_id})
+
+
+async def handle_share_accept(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/share/{code}/accept — копия задачи (название,
+    описание, тег, подзадачи) в личные задачи получателя. Повтор и фото не
+    копируются, дату получатель правит в форме."""
+    token = request.match_info["token"]
+    code = request.match_info["code"]
+    if not SHARE_CODE_RE.fullmatch(code):
+        return aioweb.Response(status=404)
+
+    owner = await _require_session_full(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    settings, owner_id, owner_type, _tg_user_id = owner
+    if owner_type != "user":
+        return aioweb.Response(status=404)
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    src = await db.get_task_by_share_code(code)
+    if not src:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}/share/{code}"})
+
+    tz = _tz_of(settings)
+    due_at = _parse_due_at(data.get("due_at", ""), tz)
+    if due_at is None:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}/share/{code}?error=bad_due_at"})
+
+    task_id = await db.add_task(
+        owner_id, "user", src["title"], due_at, "none", "on_time",
+        tag=src.get("tag"), created_by=owner_id, description=src.get("description"),
+    )
+    for st in await db.get_subtasks(src["id"]):
+        await db.add_subtask(task_id, st["title"])
+    await db.log_history(task_id, owner_id, src["title"], "created")
+    _schedule_task(task_id, owner_id, "user", due_at, "none", "on_time", tz)
+
+    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
 
 def _parse_due_at(raw: str, tz) -> datetime | None:
