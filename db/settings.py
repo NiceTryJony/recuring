@@ -1,6 +1,7 @@
 """Настройки владельца (user_settings / chat_settings) и токены дашборда."""
 
 import secrets
+import time as _time
 from datetime import time
 
 from . import core
@@ -33,6 +34,18 @@ async def get_owner_settings(owner_id: int, owner_type: str = "user") -> dict:
     return await core._with_retry(_run)
 
 
+# Дашборд ищет владельца по токену на КАЖДЫЙ запрос (страница и каждое действие),
+# а меняется он редко. Кэш на 30 секунд экономит поход в БД; любая запись
+# настроек/токена/пароля сбрасывает его целиком, так что смена пароля
+# (dashboard_password_version) и часового пояса видны сразу.
+_DASH_CACHE_TTL = 30.0
+_dash_cache: dict[str, tuple[float, dict]] = {}
+
+
+def invalidate_dashboard_cache():
+    _dash_cache.clear()
+
+
 async def set_owner_timezone(owner_id: int, owner_type: str, tz_name: str):
     table, id_col = _owner_table(owner_type)
 
@@ -44,6 +57,7 @@ async def set_owner_timezone(owner_id: int, owner_type: str, tz_name: str):
                 owner_id, tz_name
             )
     await core._with_retry(_run)
+    invalidate_dashboard_cache()
 
 
 async def set_owner_language(owner_id: int, owner_type: str, lang: str):
@@ -57,6 +71,7 @@ async def set_owner_language(owner_id: int, owner_type: str, lang: str):
                 owner_id, lang
             )
     await core._with_retry(_run)
+    invalidate_dashboard_cache()
 
 
 async def set_owner_quiet_hours(owner_id: int, owner_type: str, start: time | None, end: time | None):
@@ -71,6 +86,7 @@ async def set_owner_quiet_hours(owner_id: int, owner_type: str, start: time | No
                 owner_id, start, end
             )
     await core._with_retry(_run)
+    invalidate_dashboard_cache()
 
 
 async def set_owner_dashboard_credentials(owner_id: int, owner_type: str, password_hash: str) -> str:
@@ -94,6 +110,7 @@ async def set_owner_dashboard_credentials(owner_id: int, owner_type: str, passwo
                 owner_id, token, password_hash
             )
     await core._with_retry(_run)
+    invalidate_dashboard_cache()
     return token
 
 
@@ -114,11 +131,19 @@ async def get_or_create_user_dashboard_token(user_id: int) -> tuple[str, int]:
                 user_id, token
             )
             return row["dashboard_token"], row["dashboard_password_version"]
-    return await core._with_retry(_run)
+    result = await core._with_retry(_run)
+    invalidate_dashboard_cache()
+    return result
 
 
 async def get_owner_by_dashboard_token(token: str) -> dict | None:
-    """Ищет токен сначала среди личных дашбордов, потом среди групповых."""
+    """Ищет токен сначала среди личных дашбордов, потом среди групповых.
+    Найденный владелец кэшируется на _DASH_CACHE_TTL секунд (None не кэшируем:
+    токен может появиться сразу после)."""
+    hit = _dash_cache.get(token)
+    if hit is not None and hit[0] > _time.monotonic():
+        return dict(hit[1])
+
     async def _run():
         async with core._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM user_settings WHERE dashboard_token = $1", token)
@@ -134,7 +159,11 @@ async def get_owner_by_dashboard_token(token: str) -> dict | None:
                 result["owner_type"] = "chat"
                 return result
             return None
-    return await core._with_retry(_run)
+    owner = await core._with_retry(_run)
+    if owner is not None:
+        _dash_cache[token] = (_time.monotonic() + _DASH_CACHE_TTL, owner)
+        return dict(owner)
+    return None
 
 
 async def get_all_known_owners() -> list[dict]:

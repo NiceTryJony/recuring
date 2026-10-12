@@ -1,6 +1,6 @@
 """Задачи: CRUD, выборки, поиск."""
 
-from datetime import datetime
+from datetime import date, datetime
 
 from . import core
 
@@ -59,6 +59,71 @@ async def get_tasks(
 
             rows = await conn.fetch(query, *params)
             return [dict(r) for r in rows]
+    return await core._with_retry(_run)
+
+
+async def get_dashboard_tasks(
+    owner_id: int, owner_type: str, done_limit: int, tag: str | None = None,
+    day_start: datetime | None = None, day_end: datetime | None = None,
+) -> list[dict]:
+    """Задачи для страницы дашборда: ВСЕ активные + `done_limit` последних
+    выполненных (по сроку, новые первыми; при tag — только с этим тегом) +, если
+    задан день, все задачи со сроком в [day_start, day_end). Страница всё равно
+    режет выполненные до done_limit, поэтому грузить годами копившийся архив
+    целиком незачем."""
+    async def _run():
+        async with core._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM tasks
+                   WHERE owner_id = $1 AND owner_type = $2 AND (
+                       done = FALSE
+                       OR id IN (SELECT id FROM tasks
+                                 WHERE owner_id = $1 AND owner_type = $2 AND done = TRUE
+                                   AND ($3::text IS NULL OR tag = $3)
+                                 ORDER BY due_at DESC LIMIT $4)
+                       OR ($5::timestamptz IS NOT NULL AND due_at >= $5 AND due_at < $6)
+                   )
+                   ORDER BY done, due_at""",
+                owner_id, owner_type, tag, done_limit, day_start, day_end,
+            )
+            return [dict(r) for r in rows]
+    return await core._with_retry(_run)
+
+
+async def get_dashboard_stats(
+    owner_id: int, owner_type: str, tz_name: str, tag: str | None,
+    days_from: date, days_to: date,
+) -> dict:
+    """Агрегаты страницы одним запросом (вместо подсчёта по всем загруженным
+    задачам): просроченные, активные на сегодня, прогресс «сегодня», всего
+    выполненных (с учётом tag), дни с задачами в [days_from, days_to] для точек
+    панели дней и активные теги со счётчиками. «Сегодня» и даты — в часовом
+    поясе владельца."""
+    async def _run():
+        async with core._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT
+                       COUNT(*) FILTER (WHERE NOT done AND due_at < now()) AS overdue,
+                       COUNT(*) FILTER (WHERE NOT done AND due_at >= now()
+                                          AND (due_at AT TIME ZONE $3)::date = (now() AT TIME ZONE $3)::date) AS today,
+                       COUNT(*) FILTER (WHERE (due_at AT TIME ZONE $3)::date = (now() AT TIME ZONE $3)::date) AS today_total,
+                       COUNT(*) FILTER (WHERE done AND (due_at AT TIME ZONE $3)::date = (now() AT TIME ZONE $3)::date) AS today_done,
+                       COUNT(*) FILTER (WHERE done AND ($4::text IS NULL OR tag = $4)) AS done_total,
+                       COALESCE(array_agg(DISTINCT (due_at AT TIME ZONE $3)::date)
+                                FILTER (WHERE (due_at AT TIME ZONE $3)::date BETWEEN $5 AND $6), '{}') AS days
+                   FROM tasks WHERE owner_id = $1 AND owner_type = $2""",
+                owner_id, owner_type, tz_name, tag, days_from, days_to,
+            )
+            tag_rows = await conn.fetch(
+                """SELECT tag, COUNT(*) AS n FROM tasks
+                   WHERE owner_id = $1 AND owner_type = $2 AND NOT done AND tag IS NOT NULL
+                   GROUP BY tag""",
+                owner_id, owner_type,
+            )
+            result = dict(row)
+            result["days"] = set(result["days"])
+            result["tags"] = [(r["tag"], r["n"]) for r in tag_rows]
+            return result
     return await core._with_retry(_run)
 
 

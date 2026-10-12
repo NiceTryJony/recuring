@@ -16,9 +16,11 @@ from aiohttp import web as aioweb
 
 import db
 from stats import compute_streak, daily_series
-from task_groups import GROUPS, VIEWS, day_counts, group_tasks, select_tasks, tag_counts, today_progress
+from task_groups import GROUPS, VIEWS, group_tasks, select_tasks
 
-from .config import BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, SHARE_CODE_RE, _tz_of, logger
+from .config import (
+    BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, SHARE_CODE_RE, UTC, _tz_of, logger,
+)
 from .pages import (
     HISTORY_PAGE, SHARE_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER, TEMPLATES_PAGE, WEBAPP_ENTRY_PAGE,
     _login_response,
@@ -217,6 +219,86 @@ async def _safe_chart(owner_id: int, owner_type: str, tz, texts: dict) -> tuple[
         return "", None
 
 
+async def _safe_streak(owner_id: int, owner_type: str, tz) -> int | None:
+    """Стрик нужен сводке над сгибом, а график (второй SQL) — нет: он грузится
+    отдельным фрагментом. Сбой статистики не должен ронять страницу."""
+    user_id, chat_id = (owner_id, None) if owner_type == "user" else (None, owner_id)
+    try:
+        done_days = await db.get_done_days(user_id, tz.key, chat_id=chat_id)
+        return compute_streak(done_days, datetime.now(tz).date())
+    except Exception:
+        logger.exception("Не удалось посчитать стрик owner=%s/%s", owner_type, owner_id)
+        return None
+
+
+def _month_window(anchor: dt.date) -> tuple[dt.date, dt.date]:
+    """Даты, для которых панель дней рисует точки: неделя и месяц вокруг anchor
+    (неделя может заходить в соседние месяцы)."""
+    first = anchor.replace(day=1)
+    last = (first + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
+    return first - dt.timedelta(days=7), last + dt.timedelta(days=7)
+
+
+async def _page_state(owner_id: int, owner_type: str, tz, now, *, view: str, tag: str | None, done_limit: int,
+                      selected_date: dt.date | None, filter_active: bool) -> dict:
+    """Всё, что нужно странице и fetch-ответам от БД, двумя лёгкими запросами
+    (get_dashboard_tasks + get_dashboard_stats) вместо загрузки всех задач за
+    всё время. Возвращает задачи для показа, их локальные сроки и агрегаты."""
+    today = now.date()
+    anchor = selected_date if (filter_active and selected_date) else today
+    days_from, days_to = _month_window(anchor)
+    day_start = day_end = None
+    if filter_active and selected_date:
+        day_start = dt.datetime.combine(selected_date, dt.time.min, tzinfo=tz).astimezone(UTC)
+        day_end = dt.datetime.combine(selected_date + dt.timedelta(days=1), dt.time.min, tzinfo=tz).astimezone(UTC)
+    raw, stats = await asyncio.gather(
+        db.get_dashboard_tasks(owner_id, owner_type, done_limit, tag=tag, day_start=day_start, day_end=day_end),
+        db.get_dashboard_stats(owner_id, owner_type, tz.key, tag, days_from, days_to),
+    )
+    local_due = {t["id"]: t["due_at"].astimezone(tz) for t in raw}
+    tasks, _ = select_tasks(
+        raw, local_due, view=view, today=today, selected_date=anchor,
+        filter_active=filter_active, done_limit=done_limit, tag=tag,
+    )
+    if filter_active or view in ("today", "upcoming"):
+        hidden_done = 0
+    else:
+        hidden_done = max(0, stats["done_total"] - sum(1 for t in tasks if t["done"]))
+    progress = round(100 * stats["today_done"] / stats["today_total"]) if stats["today_total"] else None
+    return {
+        "tasks": tasks, "local_due": local_due, "stats": stats, "hidden_done": hidden_done, "progress": progress,
+        "tags": sorted(stats["tags"], key=lambda kv: kv[0].casefold()),
+    }
+
+
+def _more_done_html(token: str, texts: dict, hidden_done: int, done_limit: int, nojs: bool) -> str:
+    if not hidden_done:
+        return ""
+    nojs_q = "&nojs=1" if nojs else ""
+    return (
+        f'<a class="load-more" href="/dashboard/{token}?done_limit={done_limit + DONE_TASKS_PAGE_SIZE}{nojs_q}">'
+        f'{escape(texts["btn_more_done"].format(n=hidden_done))}</a>'
+    )
+
+
+async def handle_chart(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/chart — блок графика отдельным фрагментом: на
+    телефоне он ниже сгиба, и его два SQL-запроса не должны задерживать
+    первую отрисовку списка (страница подгружает его, когда блок подъезжает)."""
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        return aioweb.Response(status=404)
+    cookie = request.cookies.get(f"session_{token}")
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
+    if session is None or (session[0], session[1]) != (settings["owner_id"], settings["owner_type"]):
+        return aioweb.Response(status=403)
+    chart_html, _streak = await _safe_chart(settings["owner_id"], settings["owner_type"], _tz_of(settings),
+                                            _dt(settings.get("language", "ru")))
+    return aioweb.Response(text=chart_html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
 async def _handle_login_post(request: aioweb.Request, token: str, settings: dict, lang: str) -> aioweb.Response:
     texts = _dt(lang)
     ip = _client_ip(request)
@@ -351,14 +433,6 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     # без JS ленивые карточки было бы не раскрыть.
     nojs = request.query.get("nojs") == "1"
 
-    all_tasks = await db.get_tasks(owner_id, owner_type, include_done=True)
-    # Перевод в зону владельца — один раз на задачу (раньше трижды: для
-    # точек панели, для фильтра и в самом рендере карточки).
-    local_due = {t["id"]: t["due_at"].astimezone(tz) for t in all_tasks}
-    # task_days — для точек-индикаторов под числами панели: на какие дни
-    # вообще есть задачи. Считаем по полному списку, иначе индикаторы видели
-    # бы только дни внутри уже отфильтрованной недели/месяца.
-    task_days = {d.date() for d in local_due.values()}
     view = request.query.get("view", "all")
     if view not in VIEWS:
         view = "all"
@@ -366,34 +440,48 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     if group_mode not in GROUPS:
         group_mode = "none"
     tag = request.query.get("tag") or None
-    tasks, hidden_done = select_tasks(
-        all_tasks, local_due, view=view, today=today, selected_date=selected_date,
-        filter_active=filter_active, done_limit=done_limit, tag=tag,
-    )
-    today_n, overdue_n = day_counts(all_tasks, local_due, now)
-    view_controls_html = _view_controls(token, texts, view, group_mode, tag, tag_counts(all_tasks), nojs)
 
+    state = await _page_state(
+        owner_id, owner_type, tz, now, view=view, tag=tag, done_limit=done_limit,
+        selected_date=selected_date, filter_active=filter_active,
+    )
+    tasks, local_due, stats = state["tasks"], state["local_due"], state["stats"]
+    today_n, overdue_n, hidden_done = stats["today"], stats["overdue"], state["hidden_done"]
+    view_controls_html = _view_controls(token, texts, view, group_mode, tag, state["tags"], nojs)
+
+    # task_days — для точек-индикаторов под числами панели: на какие дни есть задачи.
     day_picker_html = _render_day_picker(
-        selected_date if filter_active else today, today, lang, token, task_days, filter_active=filter_active
+        selected_date if filter_active else today, today, lang, token, stats["days"], filter_active=filter_active
     )
 
-    chart = _safe_chart(owner_id, owner_type, tz, texts)
+    # График — отдельным фрагментом (handle_chart, подгружает dashboard.js); без JS
+    # (?nojs=1) рисуем сразу, как раньше.
+    if nojs:
+        chart_html, streak = await _safe_chart(owner_id, owner_type, tz, texts)
+    else:
+        chart_html = f'<section class="chart-block chart-lazy" data-src="/dashboard/{token}/chart" aria-busy="true"></section>'
+        streak = None
+
     if not tasks:
         tasks_html = f'<div class="empty">{escape(texts["empty"])}</div>'
-        chart_html, streak = await chart
+        if not nojs:
+            streak = await _safe_streak(owner_id, owner_type, tz)
     else:
         async def _creators() -> dict[int, dict]:
             if owner_type != "chat":
                 return {}
             return await db.get_telegram_users(list({t["created_by"] for t in tasks if t.get("created_by")}))
 
+        async def _streak() -> int | None:
+            return streak if nojs else await _safe_streak(owner_id, owner_type, tz)
+
         # Фото и подзадачи — ОДИН запрос на всю страницу каждый (WHERE task_id
         # = ANY(...)), а не по запросу на задачу. И все независимые выборки
-        # (авторы, фото, подзадачи, статистика графика) идут параллельно, а не
-        # друг за другом — время ответа = самый медленный запрос, а не их сумма.
+        # (авторы, фото, подзадачи, стрик) идут параллельно, а не друг за
+        # другом — время ответа = самый медленный запрос, а не их сумма.
         task_ids = [t["id"] for t in tasks]
-        creators, photos_by_task, subtasks_by_task, (chart_html, streak) = await asyncio.gather(
-            _creators(), db.get_task_photos_meta_bulk(task_ids), db.get_subtasks_bulk(task_ids), chart,
+        creators, photos_by_task, subtasks_by_task, streak = await asyncio.gather(
+            _creators(), db.get_task_photos_meta_bulk(task_ids), db.get_subtasks_bulk(task_ids), _streak(),
         )
         def _card(t: dict) -> str:
             return _render_task(
@@ -411,13 +499,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
                 for key, items in group_tasks(tasks, local_due, group_mode)
             )
 
-    more_done_html = ""
-    if hidden_done:
-        nojs_q = "&nojs=1" if nojs else ""
-        more_done_html = (
-            f'<a class="load-more" href="/dashboard/{token}?done_limit={done_limit + DONE_TASKS_PAGE_SIZE}{nojs_q}">'
-            f'{escape(texts["btn_more_done"].format(n=hidden_done))}</a>'
-        )
+    more_done_html = _more_done_html(token, texts, hidden_done, done_limit, nojs)
     nojs_html = "" if nojs else (
         f'<noscript><a class="load-more" href="/dashboard/{token}?nojs=1">'
         f'{escape(texts["nojs_full_version"])}</a></noscript>'
@@ -451,7 +533,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         tasks_html=tasks_html, chart_html=chart_html, heading=heading, nav_html=nav_html,
         token=token, csrf=csrf, new_task_error=new_task_error_html, tg_widget_html=tg_widget_html,
         day_picker_html=day_picker_html, view_controls_html=view_controls_html, tabbar_html=tabbar_html,
-        summary_html=_summary(texts, today_n, overdue_n, streak, today_progress(all_tasks, local_due, today)), add_open=" open" if error_key else "", more_done_html=more_done_html, nojs_html=nojs_html,
+        summary_html=_summary(texts, today_n, overdue_n, streak, state["progress"]), add_open=" open" if error_key else "", more_done_html=more_done_html, nojs_html=nojs_html,
         **_dt_tasks_page(lang),
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})

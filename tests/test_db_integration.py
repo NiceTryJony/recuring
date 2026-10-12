@@ -165,3 +165,82 @@ async def test_bulk_helpers_on_empty_and_unknown_ids(clean_db):
     assert await db.get_subtasks_bulk([]) == {}
     assert await db.get_task_photos_meta_bulk([999999]) == {}
     assert await db.get_subtasks_bulk([999999]) == {}
+
+
+# ---------- выборки для страницы дашборда ----------
+
+async def _dashboard_dataset(owner_id=7):
+    """Разнообразный набор: просроченные, на сегодня, будущие, много выполненных, теги."""
+    now = datetime.now(WAW)
+    rows = [
+        ("overdue", now - timedelta(days=1), False, None),
+        ("soon", now + timedelta(minutes=1), False, "дом"),
+        ("later", now + timedelta(days=3), False, "работа"),
+        ("later2", now + timedelta(days=9), False, "дом"),
+        ("done-today", now - timedelta(minutes=5), True, "дом"),
+    ]
+    rows += [(f"old-{i}", now - timedelta(days=2 + i), True, "дом" if i % 2 else "работа") for i in range(12)]
+    ids = {}
+    for title, due, done, tag in rows:
+        ids[title] = await db.add_task(owner_id, "user", title, due, "none", "0", tag)
+        if done:
+            await db.mark_done(ids[title])
+    return ids
+
+
+async def test_dashboard_tasks_limits_done_but_keeps_all_active(clean_db):
+    ids = await _dashboard_dataset()
+    tasks = await db.get_dashboard_tasks(7, "user", 3)
+    titles = [t["title"] for t in tasks]
+    assert [t for t in titles if not t.startswith(("old-", "done-"))] == ["overdue", "soon", "later", "later2"]
+    done = [t for t in tasks if t["done"]]
+    assert [t["title"] for t in sorted(done, key=lambda t: t["due_at"], reverse=True)] == ["done-today", "old-0", "old-1"]
+    assert all(not t["done"] for t in tasks[:4]) and ids  # порядок как у get_tasks: активные раньше выполненных
+
+
+async def test_dashboard_tasks_tag_filter_and_day_window(clean_db):
+    await _dashboard_dataset()
+    only_home = await db.get_dashboard_tasks(7, "user", 2, tag="дом")
+    done_home = [t for t in only_home if t["done"]]
+    assert len(done_home) == 2 and all(t["tag"] == "дом" for t in done_home)
+
+    old5 = datetime.now(WAW) - timedelta(days=7)          # old-5 выпадает из «последних 2», но день его покрывает
+    start = old5.replace(hour=0, minute=0, second=0, microsecond=0)
+    in_day = await db.get_dashboard_tasks(7, "user", 2, day_start=start, day_end=start + timedelta(days=1))
+    assert "old-5" in [t["title"] for t in in_day]
+
+
+async def test_dashboard_stats_match_python_helpers(clean_db):
+    """SQL-агрегаты обязаны давать то же, что считал Python по всем задачам."""
+    from task_groups import day_counts, tag_counts, today_progress
+
+    await _dashboard_dataset()
+    now = datetime.now(WAW)
+    all_tasks = await db.get_tasks(7, "user", include_done=True)
+    local_due = {t["id"]: t["due_at"].astimezone(WAW) for t in all_tasks}
+    lo, hi = now.date() - timedelta(days=40), now.date() + timedelta(days=40)
+
+    stats = await db.get_dashboard_stats(7, "user", "Europe/Warsaw", None, lo, hi)
+    assert (stats["today"], stats["overdue"]) == day_counts(all_tasks, local_due, now)
+    expected = today_progress(all_tasks, local_due, now.date())
+    got = None if stats["today_total"] == 0 else round(100 * stats["today_done"] / stats["today_total"])
+    assert got == expected
+    assert stats["done_total"] == sum(1 for t in all_tasks if t["done"])
+    assert stats["days"] == {d.date() for d in local_due.values() if lo <= d.date() <= hi}
+    assert sorted(stats["tags"], key=lambda kv: kv[0]) == sorted(tag_counts(all_tasks), key=lambda kv: kv[0])
+
+    tagged = await db.get_dashboard_stats(7, "user", "Europe/Warsaw", "дом", lo, hi)
+    assert tagged["done_total"] == sum(1 for t in all_tasks if t["done"] and t.get("tag") == "дом")
+
+
+async def test_dashboard_owner_cache_is_invalidated_on_password_change(clean_db):
+    token = await db.set_owner_dashboard_credentials(11, "user", "hash-1")
+    first = await db.get_owner_by_dashboard_token(token)
+    assert first["dashboard_password_hash"] == "hash-1" and first["dashboard_password_version"] == 1
+    assert await db.get_owner_by_dashboard_token(token) == first                      # из кэша
+    new_token = await db.set_owner_dashboard_credentials(11, "user", "hash-2")
+    assert await db.get_owner_by_dashboard_token(token) is None                         # старый токен мёртв сразу
+    fresh = await db.get_owner_by_dashboard_token(new_token)
+    assert fresh["dashboard_password_version"] == 2
+    await db.set_owner_timezone(11, "user", "Asia/Almaty")
+    assert (await db.get_owner_by_dashboard_token(new_token))["timezone"] == "Asia/Almaty"

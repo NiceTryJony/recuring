@@ -6,7 +6,7 @@
 
 from aiohttp import web as aioweb
 
-from .assets import DASHBOARD_JS_URL, FX_CSS_URL, FX_JS_URL, stylesheets
+from .assets import BASE_CSS_URL, DASHBOARD_JS_URL, FX_CSS_URL, FX_JS_URL, publish, stylesheets
 from .texts import _dt_flat
 
 # Шрифт — системный (SF Pro на Apple, Roboto на Android, Segoe UI на Windows):
@@ -73,7 +73,7 @@ def _head(title_field: str, css_file: str, with_js: bool = False) -> str:
 <meta name="theme-color" content="#f3f5f9" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
 <meta name="x-err" content="{{action_failed}}">
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script defer src="https://telegram.org/js/telegram-web-app.js"></script>
 {stylesheets(css_file)}{js}
 </head>"""
 
@@ -85,6 +85,7 @@ WEBAPP_ENTRY_PAGE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Dashboard</title>
+<!--PRELOAD-->
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head><body>
 <p id="msg"></p>
@@ -101,6 +102,15 @@ WEBAPP_ENTRY_PAGE = """<!DOCTYPE html>
     .catch(function () { msg.textContent = 'Login failed. Reopen the app.'; });
 })();
 </script></body></html>"""
+
+# Пока entry-страница ждёт webapp-auth, браузер уже качает стили и скрипт страницы
+# задач (файлы с хешем в имени, кеш вечный): переход на дашборд не ждёт сети.
+WEBAPP_ENTRY_PAGE = WEBAPP_ENTRY_PAGE.replace(
+    "<!--PRELOAD-->",
+    f'<link rel="preload" as="style" href="{BASE_CSS_URL}">'
+    f'<link rel="preload" as="style" href="{publish("tasks.css")}">'
+    f'<link rel="preload" as="script" href="{DASHBOARD_JS_URL}">',
+)
 
 
 LOGIN_PAGE = _head("login_title", "login.css") + """

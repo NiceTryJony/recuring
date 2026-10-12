@@ -358,7 +358,7 @@ async def test_thumb_of_foreign_task_is_404(client, photo_rows):
     assert (await client.get(f"/dashboard/{TOKEN}/tasks/999/photo/7?size=thumb")).status == 404
 
 
-async def test_single_lightbox_per_page(client, monkeypatch, task):
+async def test_single_lightbox_per_page(client, monkeypatch, task, spy):
     """Раньше оверлей рендерился на каждую задачу с фото; теперь он один."""
     many = []
     for i in range(1, 6):
@@ -366,13 +366,10 @@ async def test_single_lightbox_per_page(client, monkeypatch, task):
         t["id"] = i
         many.append(t)
 
-    async def _tasks(*a, **kw):
-        return many
-
     async def _photos_bulk(ids):
         return {i: [{"id": i * 10, "mime": "image/jpeg"}] for i in ids}
 
-    monkeypatch.setattr(db, "get_tasks", _tasks)
+    spy["tasks"][:] = many
     monkeypatch.setattr(db, "get_task_photos_meta_bulk", _photos_bulk)
     await _login(client)
     body = await (await client.get(f"/dashboard/{TOKEN}")).text()
@@ -384,7 +381,7 @@ async def test_single_lightbox_per_page(client, monkeypatch, task):
 # ---------- лёгкость страницы: лимит выполненных, ленивые карточки, JS ----------
 
 @pytest.fixture
-def many_done(monkeypatch, task):
+def many_done(client, spy, task):
     """Одна активная задача и 30 выполненных (в порядке ORDER BY done, due_at)."""
     tasks = [task]
     for i in range(30):
@@ -393,10 +390,7 @@ def many_done(monkeypatch, task):
                  due_at=datetime.now(UTC) - timedelta(days=30 - i))
         tasks.append(t)
 
-    async def _tasks(*a, **kw):
-        return tasks
-
-    monkeypatch.setattr(db, "get_tasks", _tasks)
+    spy["tasks"][:] = tasks
     return tasks
 
 
@@ -591,14 +585,9 @@ async def test_json_errors_keep_status_codes(client):
     assert (await _post_json(client, "/tasks/999/done", csrf)).status == 404
 
 
-async def test_create_json_returns_card(client, task, monkeypatch):
+async def test_create_json_returns_card(client, task, spy):
     csrf = await _login(client)
-    new = {**task, "id": 42, "title": "новая"}
-
-    async def tasks(*a, **kw):
-        return [task, new]
-
-    monkeypatch.setattr(db, "get_tasks", tasks)
+    spy["tasks"].append({**task, "id": 42, "title": "новая"})
     resp = await _post_json(client, "/tasks/new", csrf, title="новая", due_at="2027-01-02T08:15", ctx="")
     p = await resp.json()
     assert resp.status == 200 and p["task_id"] == 42 and 'id="task-42"' in p["card"]
@@ -629,6 +618,69 @@ async def test_non_json_requests_still_redirect(client):
     csrf = await _login(client)
     resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/postpone", data={"csrf": csrf}, allow_redirects=False)
     assert resp.status == 302
+
+
+# ---------- график отдельным фрагментом, лёгкая загрузка данных ----------
+
+async def test_chart_is_lazy_on_page_and_served_by_fragment(client, monkeypatch):
+    called = []
+
+    async def history_stats(*a, **kw):
+        called.append(1)
+        return []
+
+    monkeypatch.setattr(db, "get_history_stats", history_stats)
+    await _login(client)
+    page = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert 'data-src="/dashboard/tok-abc/chart"' in page and 'class="bars"' not in page
+    assert not called                                    # график не тормозит первую отрисовку
+    frag = await client.get(f"/dashboard/{TOKEN}/chart")
+    assert frag.status == 200 and 'class="bars"' in await frag.text() and called
+    nojs = await (await client.get(f"/dashboard/{TOKEN}?nojs=1")).text()
+    assert 'class="bars"' in nojs and "chart-lazy" not in nojs
+
+
+async def test_chart_fragment_requires_session(client):
+    assert (await client.get(f"/dashboard/{TOKEN}/chart")).status == 403
+    assert (await client.get("/dashboard/unknown/chart")).status == 404
+
+
+async def test_page_does_not_load_all_tasks(client, monkeypatch):
+    """Регресс производительности: страница берёт лёгкие выборки, а не get_tasks(include_done=True)."""
+    async def forbidden(*a, **kw):
+        raise AssertionError("get_tasks не должен вызываться страницей и fetch-действиями")
+
+    monkeypatch.setattr(db, "get_tasks", forbidden)
+    csrf = await _login(client)
+    assert (await client.get(f"/dashboard/{TOKEN}")).status == 200
+    assert (await _post_json(client, "/tasks/1/postpone", csrf)).status == 200
+
+
+async def test_entry_page_preloads_page_assets_and_keeps_sync_telegram_script(client):
+    body = await (await client.get("/dashboard/app")).text()
+    assert body.count('rel="preload"') == 3 and "/dashboard/static/base." in body
+    assert '<script src="https://telegram.org/js/telegram-web-app.js">' in body   # entry читает initData сразу
+
+
+async def test_telegram_script_does_not_block_rendering_on_pages(client):
+    await _login(client)
+    page = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert '<script defer src="https://telegram.org/js/telegram-web-app.js">' in page
+
+
+async def test_server_timing_header_is_opt_in(client, monkeypatch):
+    assert "Server-Timing" not in (await client.get("/dashboard/app")).headers
+    monkeypatch.setattr("dashboard.timing.SERVER_TIMING", True)
+    assert "app;dur=" in (await client.get("/dashboard/app")).headers["Server-Timing"]
+
+
+async def test_slow_requests_are_logged_without_the_token(client, monkeypatch, caplog):
+    import logging
+    monkeypatch.setattr("dashboard.timing.SLOW_REQUEST_MS", -1)
+    caplog.set_level(logging.WARNING, logger="dashboard")
+    await client.get(f"/dashboard/{TOKEN}")
+    messages = [r.getMessage() for r in caplog.records if "Медленный запрос" in r.getMessage()]
+    assert messages and "/dashboard/{token}" in messages[0] and TOKEN not in messages[0]
 
 
 # ---------- «Поделиться задачей» ----------
@@ -785,5 +837,5 @@ async def test_tasks_page_has_side_panel_before_list(client):
     await _login(client)
     page = await (await client.get(f"/dashboard/{TOKEN}")).text()
     side, lst = page.index('<aside class="side">'), page.index('<main class="list">')
-    assert side < page.index('class="summary"') < page.index('class="bars"') < page.index("</aside>") < lst
+    assert side < page.index('class="summary"') < page.index("chart-lazy") < page.index("</aside>") < lst
     assert page.index("общая задача") > lst
