@@ -489,3 +489,40 @@ async def test_pc_effects_are_loaded_only_by_fx_detector(client):
             continue
         for sel in selectors.split(","):
             assert sel.strip().startswith(".fx"), sel
+
+
+# ---------- Telegram Mini App ----------
+
+def _init_data(user_id: int, auth_date: int | None = None, bad_hash: bool = False) -> str:
+    import hashlib, hmac, json, time
+    from urllib.parse import urlencode
+    fields = {"auth_date": str(auth_date or int(time.time())), "user": json.dumps({"id": user_id})}
+    check = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b"WebAppData", dashboard.SESSION_SECRET.encode(), hashlib.sha256).digest()
+    fields["hash"] = "0" * 64 if bad_hash else hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    return urlencode(fields)
+
+
+async def test_webapp_entry_is_not_swallowed_by_token_route(client):
+    resp = await client.get("/dashboard/app")
+    assert resp.status == 200
+    assert "telegram-web-app.js" in await resp.text()
+
+
+async def test_webapp_auth_logs_user_in_without_password(client, settings):
+    settings.update(owner_id=999, owner_type="user")
+    resp = await client.post("/dashboard/webapp-auth", json={"initData": _init_data(999)})
+    assert resp.status == 200
+    assert (await resp.json())["url"] == f"/dashboard/{TOKEN}"
+    page = await client.get(f"/dashboard/{TOKEN}")
+    assert 'name="csrf"' in await page.text()
+
+
+@pytest.mark.parametrize("init_data", [
+    _init_data(999, bad_hash=True), _init_data(999, auth_date=1), "garbage", "",
+])
+async def test_webapp_auth_rejects_bad_init_data(client, settings, init_data):
+    settings.update(owner_id=999, owner_type="user")
+    resp = await client.post("/dashboard/webapp-auth", json={"initData": init_data})
+    assert resp.status == 403
+    assert not resp.cookies

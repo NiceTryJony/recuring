@@ -6,8 +6,10 @@ Telegram Login Widget и rate-limit попыток входа.
 
 import hashlib
 import hmac
+import json
 import os
 import time
+from urllib.parse import parse_qsl
 
 from aiohttp import web as aioweb
 
@@ -234,6 +236,32 @@ def verify_telegram_login(data: dict) -> bool:
     if time.time() - auth_date > _TG_AUTH_MAX_AGE:
         return False
     return True
+
+
+def verify_webapp_init_data(init_data: str, max_age: int = _TG_AUTH_MAX_AGE) -> dict | None:
+    """Проверка initData Telegram Mini App; возвращает объект user или None.
+    Секрет здесь HMAC("WebAppData", BOT_TOKEN) — не тот, что у Login Widget
+    (https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app)."""
+    try:
+        fields = dict(parse_qsl(init_data, keep_blank_values=True, strict_parsing=True))
+    except ValueError:
+        return None
+    received_hash = fields.pop("hash", None)
+    if not received_hash or "auth_date" not in fields or "user" not in fields:
+        return None
+    data_check_string = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret_key = hmac.new(b"WebAppData", SESSION_SECRET.encode(), hashlib.sha256).digest()
+    computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(computed_hash, received_hash):
+        return None
+    try:
+        if time.time() - int(fields["auth_date"]) > max_age:
+            return None
+        user = json.loads(fields["user"])
+        int(user["id"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    return user
 
 
 def _reset_login_limiter():

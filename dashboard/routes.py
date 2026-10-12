@@ -5,11 +5,11 @@ from aiohttp import web as aioweb
 from .actions import (
     handle_subtask_create, handle_subtask_delete, handle_subtask_toggle, handle_task_create,
     handle_task_edit, handle_task_toggle, handle_telegram_auth, handle_template_apply,
-    handle_template_create, handle_template_delete,
+    handle_template_create, handle_template_delete, handle_webapp_auth,
 )
 from .assets import compression_middleware, handle_static
 from .photos import handle_avatar, handle_task_photo_delete, handle_task_photo_get, handle_task_photo_upload
-from .views import handle_dashboard, handle_history, handle_templates_page
+from .views import handle_dashboard, handle_history, handle_templates_page, handle_webapp_entry
 
 
 def register_dashboard_routes(app: aioweb.Application):
@@ -19,6 +19,10 @@ def register_dashboard_routes(app: aioweb.Application):
     # Статика регистрируется первой: её путь /dashboard/static/... по форме
     # совпадает с /dashboard/{token}/..., а aiohttp матчит в порядке регистрации.
     app.router.add_get("/dashboard/static/{filename}", handle_static)
+    # Mini App: /dashboard/app и /dashboard/webapp-auth — до {token}, иначе
+    # их проглотил бы маршрут токена (токены token_urlsafe(16) так не выглядят).
+    app.router.add_get("/dashboard/app", handle_webapp_entry)
+    app.router.add_post("/dashboard/webapp-auth", handle_webapp_auth)
     app.router.add_get("/dashboard/{token}", handle_dashboard)
     app.router.add_post("/dashboard/{token}", handle_dashboard)
     app.router.add_post("/dashboard/{token}/telegram-auth", handle_telegram_auth)

@@ -970,6 +970,26 @@ async def set_owner_dashboard_credentials(owner_id: int, owner_type: str, passwo
     return token
 
 
+async def get_or_create_user_dashboard_token(user_id: int) -> tuple[str, int]:
+    """Токен и dashboard_password_version личного дашборда; если токена ещё нет
+    (пароль через /dashboard не задавали) — создаёт его БЕЗ пароля. Нужен для
+    входа через Telegram Mini App: личность там подтверждает подпись initData.
+    Существующий токен и версия не меняются, поэтому ссылка с паролем живёт."""
+    token = secrets.token_urlsafe(16)
+
+    async def _run():
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO user_settings (user_id, dashboard_token) VALUES ($1, $2)
+                   ON CONFLICT (user_id) DO UPDATE
+                   SET dashboard_token = COALESCE(user_settings.dashboard_token, $2)
+                   RETURNING dashboard_token, dashboard_password_version""",
+                user_id, token
+            )
+            return row["dashboard_token"], row["dashboard_password_version"]
+    return await _with_retry(_run)
+
+
 async def get_owner_by_dashboard_token(token: str) -> dict | None:
     """Ищет токен сначала среди личных дашбордов, потом среди групповых."""
     async def _run():

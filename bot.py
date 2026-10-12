@@ -19,7 +19,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Chat,
-    BotCommand, BotCommandScopeDefault, BufferedInputFile,
+    BotCommand, BotCommandScopeDefault, BufferedInputFile, MenuButtonWebApp, WebAppInfo,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -2712,6 +2712,11 @@ async def setup_bot_commands():
     ]
     await bot.set_my_commands(fallback_commands, scope=BotCommandScopeDefault())
     logger.info("Меню команд Telegram настроено (ru/en/pl + фолбэк)")
+    # Mini App: кнопка меню в личке открывает дашборд без пароля (вход по
+    # initData). Без DASHBOARD_BASE_URL (Telegram требует https) — не трогаем.
+    if DASHBOARD_BASE_URL.startswith("https://"):
+        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
+            text="📋 Tasks", web_app=WebAppInfo(url=f"{DASHBOARD_BASE_URL.rstrip('/')}/dashboard/app")))
 
 
 # ---------- health-check веб-сервер (нужен Render Web Service, чтобы видеть открытый порт) ----------

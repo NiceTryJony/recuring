@@ -5,6 +5,26 @@
 (function () {
   'use strict';
 
+  // ---------- Telegram Mini App ----------
+  // Вне Telegram initData пуст — блок не делает ничего. Внутри: флаг
+  // html[data-tg] для стилей Mini App и тема Telegram как --tg-* переменные.
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg && tg.initData) {
+    var root = document.documentElement;
+    root.dataset.tg = '1';
+    var applyTheme = function () {
+      var p = tg.themeParams || {};
+      Object.keys(p).forEach(function (k) {
+        root.style.setProperty('--tg-' + k.replace(/_/g, '-'), p[k]);
+      });
+      root.dataset.tgScheme = tg.colorScheme || '';
+    };
+    applyTheme();
+    tg.onEvent('themeChanged', applyTheme);
+    tg.ready();
+    tg.expand();
+  }
+
   // ---------- ленивое раскрытие карточек ----------
   // Содержимое раскрытой карточки (описание, формы, подзадачи, фото) сервер
   // кладёт в <template class="task-x">: браузер разбирает его в инертный

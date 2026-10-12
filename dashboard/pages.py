@@ -68,8 +68,34 @@ def _head(title_field: str, css_file: str, with_js: bool = False) -> str:
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 {stylesheets(css_file)}{js}
 </head>"""
+
+
+# Точка входа Mini App (меню бота → /dashboard/app): отдаёт initData на
+# /dashboard/webapp-auth и переходит на личный дашборд. Вне Telegram initData
+# пуст — показываем подсказку. Строка без .format(), скобки не экранируются.
+WEBAPP_ENTRY_PAGE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dashboard</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head><body>
+<p id="msg"></p>
+<script>
+(function () {
+  var tg = window.Telegram && Telegram.WebApp, msg = document.getElementById('msg');
+  if (!tg || !tg.initData) { msg.textContent = 'Open this page from Telegram.'; return; }
+  tg.ready();
+  fetch('/dashboard/webapp-auth', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({initData: tg.initData}), credentials: 'same-origin'
+  }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (d) { location.replace(d.url); })
+    .catch(function () { msg.textContent = 'Login failed. Reopen the app.'; });
+})();
+</script></body></html>"""
 
 
 LOGIN_PAGE = _head("login_title", "login.css") + """
