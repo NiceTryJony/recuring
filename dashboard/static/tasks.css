@@ -1,299 +1,206 @@
-.task.done { background: rgba(20, 168, 126, 0.1); border-color: rgba(20, 168, 126, 0.3); }
-.task.done .meta { color: var(--ink-soft); opacity: 0.8; }
-.task.overdue .meta { color: var(--stamp); }
-/* line-height: 0 нужен только форме чекбокса (кружок без лишней строки вокруг).
-   Раньше правило висело на ВСЕХ формах карточки, и у формы загрузки фото строка
-   схлопывалась в ноль — подпись налезала на соседнее поле ввода. */
+/* Страница задач. Строка задачи — как в «Напоминаниях»: круглый чекбокс,
+   заголовок обычного начертания, под ним дата вторичным цветом; просроченная
+   дата — красная. Общие карточки, кнопки и форма — в base.css. */
+
+.task.done .title { color: var(--label-2); }
+.task.overdue .meta { color: var(--red); }
+/* line-height: 0 нужен только форме чекбокса (кружок без лишней строки вокруг). */
 .task form { margin: 0; }
 .task > form { line-height: 0; }
-/* Хит-область чекбокса увеличена невидимым ::before на ~44px (минимум для
-   уверенного тапа пальцем) без изменения видимого диаметра кружка — чистый
-   мобильный UX приём, 26px было бы мелковато под палец. */
-.check-btn {
-  width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--ink-soft);
-  background: transparent; cursor: pointer; flex-shrink: 0; margin-top: 2px; padding: 0;
-  position: relative; transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+/* Видимый кружок 22px, хит-область — 44px невидимым ::before. */
+.check-btn, .subtask-check {
+  width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--label-3);
+  background: transparent; flex-shrink: 0; margin-top: 1px; padding: 0; position: relative;
 }
-.check-btn::before { content: ""; position: absolute; inset: -9px; }
-.task.overdue .check-btn { border-color: var(--stamp); }
-.task.done .check-btn { background: var(--ok); border-color: var(--ok); }
-.task.done .check-btn::after {
-  content: ""; position: absolute; left: 8px; top: 4px; width: 6px; height: 11px;
-  border: solid var(--on-accent); border-width: 0 2px 2px 0;
-  transform: rotate(40deg) scale(0); transform-origin: bottom left;
-  animation: check-draw 0.3s ease forwards 0.05s;
+.check-btn::before, .subtask-check::before { content: ""; position: absolute; inset: -11px; }
+.check-btn:active, .subtask-check:active { transform: scale(0.88); }
+/* Выполнено — закрашенный кружок с внутренним кольцом, как в «Напоминаниях». */
+.task.done .check-btn, .subtask-row.done .subtask-check {
+  border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 2.5px var(--surface);
 }
-@keyframes check-draw { to { transform: rotate(40deg) scale(1); } }
-/* Карточка-раскрывашка: <details>/<summary> без единой строчки JS — тап по
-   заголовку/мете (summary) раскрывает описание и действия. Чекбокс живёт
-   вне <details> как отдельная форма, чтобы клик по нему не дублировал
-   toggle раскрытия. */
+
+/* Карточка-раскрывашка: <details>/<summary> без JS. Чекбокс живёт вне
+   <details> отдельной формой, чтобы клик по нему не раскрывал карточку. */
 .task-details { flex: 1; min-width: 0; }
-.task-summary {
-  list-style: none; cursor: pointer; display: block; position: relative;
-  padding-right: 22px; -webkit-tap-highlight-color: transparent;
-}
+.task-summary { list-style: none; display: block; position: relative; padding-right: 24px; transition: opacity 0.2s ease; }
+.task-summary:active { opacity: 0.55; transition-duration: 0s; }
 .task-summary::-webkit-details-marker { display: none; }
+/* Шеврон «›», при раскрытии поворачивается вниз. */
 .task-summary::after {
-  content: ""; position: absolute; right: 2px; top: 6px; width: 8px; height: 8px;
-  border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft);
-  transform: rotate(45deg); transition: transform 0.2s ease; transform-origin: center;
+  content: ""; position: absolute; right: 4px; top: 7px; width: 7px; height: 7px;
+  border-right: 2px solid var(--label-3); border-bottom: 2px solid var(--label-3);
+  transform: rotate(-45deg); transition: transform 0.3s var(--ease);
 }
-.task-details[open] > .task-summary::after { transform: rotate(-135deg); top: 9px; }
-.task-summary:focus-visible { outline: 2px solid var(--stamp); outline-offset: 2px; }
-.title { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; line-height: 1.35; color: var(--ink);
-         position: relative; display: inline-block; }
-.task.done .title { color: var(--ink-soft); }
-.task.done .title::after {
-  content: ""; position: absolute; left: 0; top: 50%; height: 1.5px; width: 100%;
-  background: var(--ok); transform: scaleX(0); transform-origin: left;
-  animation: strike 0.35s ease forwards 0.1s;
+.task-details[open] > .task-summary::after { transform: rotate(45deg); }
+/* Значок повтора в мете — маской, без узла SVG на каждую карточку. */
+.meta.rep::after {
+  content: ""; display: inline-block; width: 0.9em; height: 0.9em; margin-left: 6px; vertical-align: -0.1em;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4'/%3E%3C/svg%3E") center / contain no-repeat;
 }
-@keyframes strike { to { transform: scaleX(1); } }
-.meta { color: var(--ink-soft); font-size: 0.85rem; margin-top: 4px; }
-/* Разделитель — мягкий градиент-растворение вместо пунктира: пунктир
-   читался как "бухгалтерская книга", а не как стекло. */
-.task-expanded {
-  margin-top: 12px; padding-top: 13px; position: relative; transform-origin: top center;
+/* Тег — «#тег» цветом акцента, как в «Напоминаниях». */
+.tag { color: var(--accent); font-size: 0.9375rem; margin-top: 2px; }
+
+.task-expanded { margin-top: 12px; padding-top: 12px; border-top: 0.5px solid var(--sep); }
+/* Раскрытие: на слабых — мгновенно; на .mid — короткое проявление со сдвигом
+   (только opacity/transform), пружиной без отскока. */
+@keyframes expand-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.mid .task-expanded { animation: expand-in 0.45s var(--spring) both; }
+
+.repeat-chip {
+  display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px;
+  padding: 4px 10px; border-radius: 999px; background: var(--fill);
+  color: var(--label-2); font-size: 0.8125rem; letter-spacing: 0;
 }
-.task-expanded::before {
-  content: ""; position: absolute; top: 0; left: -2px; right: -2px; height: 1px;
-  background: linear-gradient(90deg, transparent, var(--rule) 15%, var(--rule) 85%, transparent);
-}
-/* Появление содержимого карточки при раскрытии. Контент нативного
-   <details> не существует в дереве рендера, пока он закрыт, — в момент
-   открытия браузер видит его как "только что вставленный" и проигрывает
-   entrance-animation. Раньше это была 0.65с-анимация filter: blur(12px) плюс
-   каскад из семи отложенных анимаций дочерних блоков: filter пересчитывается
-   на каждом кадре всей площадью карточки, и на слабом телефоне раскрытие
-   ощутимо подтормаживало. Теперь — только opacity/transform (композитор,
-   без перерисовки); многоступенчатый каскад остался только в .fx. */
-@keyframes expand-in {
-  from { opacity: 0; transform: translateY(-8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.task-expanded { animation: expand-in 0.2s ease-out both; }
-.fx .task-expanded { animation: expand-in 0.45s cubic-bezier(.16,1,.3,1) both; }
-.fx .task-expanded > * { animation: fade-up 0.45s cubic-bezier(.16,1,.3,1) both; animation-delay: 0.12s; }
-.fx .task-expanded > *:nth-child(2) { animation-delay: 0.17s; }
-.fx .task-expanded > *:nth-child(3) { animation-delay: 0.22s; }
-.fx .task-expanded > *:nth-child(4) { animation-delay: 0.27s; }
-.fx .task-expanded > *:nth-child(5) { animation-delay: 0.32s; }
-.fx .task-expanded > *:nth-child(6) { animation-delay: 0.37s; }
-.fx .task-expanded > *:nth-child(n+7) { animation-delay: 0.4s; }
-.repeat-chip, .tag {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 11px; border-radius: 999px; font-size: 0.78rem; font-weight: 600;
-  font-family: var(--font-body); font-style: normal; line-height: 1.4;
-}
-.repeat-chip { color: var(--ink-soft); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--card-edge); margin-bottom: 10px; }
-.description-text { color: var(--ink); font-size: 0.92rem; line-height: 1.45; margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
+.task-author { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-size: 0.8125rem; color: var(--label-2); }
+.description-text { font-size: 0.9375rem; line-height: 1.4; margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
 .edit-toggle { margin-bottom: 10px; }
 .edit-toggle summary {
-  list-style: none; cursor: pointer; display: inline-block; -webkit-tap-highlight-color: transparent;
-  color: var(--ink-soft); font-size: 0.82rem; font-family: var(--font-body);
+  list-style: none; display: inline-flex; align-items: center; gap: 6px; min-height: 32px;
+  color: var(--accent); font-size: 0.9375rem;
 }
 .edit-toggle summary::-webkit-details-marker { display: none; }
-.edit-toggle[open] summary { color: var(--stamp); margin-bottom: 8px; }
-.desc-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px;
-    animation: fade-up 0.35s cubic-bezier(.16,1,.3,1) both; }
-.desc-form textarea {
-  width: 100%; padding: 8px; border: 1px solid var(--rule); border-radius: var(--radius-sm);
-  background: rgba(0, 0, 0, 0.22); color: var(--ink); font-family: var(--font-body); font-size: 0.9rem;
-  box-sizing: border-box; resize: vertical; min-height: 44px;
+.edit-toggle[open] summary { margin-bottom: 6px; }
+.desc-form { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.desc-form textarea, .subtask-add-form input[type=text] {
+  width: 100%; padding: 9px 12px; border: none; border-radius: var(--radius-sm);
+  background: var(--fill); color: var(--label); font: inherit; font-size: 0.9375rem; letter-spacing: inherit;
 }
-.desc-form textarea:focus { outline: none; border-color: var(--stamp); }
-.desc-form button {
-  align-self: flex-start; padding: 7px 14px; border-radius: var(--radius-sm); border: none;
-  background: var(--card-edge); color: var(--ink); font-size: 0.82rem; font-weight: 600; cursor: pointer;
-}
-.desc-form button:active { background: var(--card-edge); }
-/* Подзадачи — тот же язык анимации, что и у главного чекбокса задачи
-   (вырисовывающаяся галочка + бегущая линия-зачёркивание), только компактнее,
-   раз пунктов в списке обычно несколько. */
-.subtasks { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-.subtask-row { display: flex; align-items: center; gap: 8px; }
+.desc-form textarea { resize: vertical; min-height: 64px; }
+.desc-form textarea:focus, .subtask-add-form input[type=text]:focus { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.desc-form ::placeholder, .subtask-add-form ::placeholder { color: var(--label-3); }
+
+/* Подзадачи — вложенный список с разделителями. */
+.subtasks { margin-bottom: 10px; }
+.subtask-row { display: flex; align-items: center; gap: 12px; min-height: 40px; border-bottom: 0.5px solid var(--sep); }
 .subtask-row form { margin: 0; line-height: 0; }
-.subtask-check {
-  width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--ink-soft);
-  background: transparent; cursor: pointer; flex-shrink: 0; padding: 0; position: relative;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-.subtask-check::before { content: ""; position: absolute; inset: -11px; }
-.subtask-row.done .subtask-check { background: var(--ok); border-color: var(--ok); }
-.subtask-row.done .subtask-check::after {
-  content: ""; position: absolute; left: 5px; top: 2px; width: 4px; height: 8px;
-  border: solid var(--on-accent); border-width: 0 1.5px 1.5px 0;
-  transform: rotate(40deg) scale(0); transform-origin: bottom left;
-  animation: check-draw 0.3s ease forwards 0.05s;
-}
-.subtask-title {
-  flex: 1; min-width: 0; font-size: 0.9rem; color: var(--ink); position: relative;
-  overflow-wrap: break-word;
-}
-.subtask-row.done .subtask-title { color: var(--ink-soft); }
-.subtask-row.done .subtask-title::after {
-  content: ""; position: absolute; left: 0; top: 50%; height: 1.5px; width: 100%;
-  background: var(--ok); transform: scaleX(0); transform-origin: left;
-  animation: strike 0.35s ease forwards 0.1s;
-}
+.subtask-check { width: 20px; height: 20px; margin: 0; }
+.subtask-title { flex: 1; min-width: 0; font-size: 0.9375rem; overflow-wrap: break-word; }
+.subtask-row.done .subtask-title { color: var(--label-2); }
 .subtask-del-btn {
-  background: none; border: none; color: var(--ink-soft); font-size: 0.8rem; line-height: 1;
-  cursor: pointer; padding: 4px; flex-shrink: 0;
+  background: none; border: none; color: var(--label-3); font-size: 0.8125rem; line-height: 1;
+  padding: 8px; margin-right: -8px; flex-shrink: 0;
 }
-.subtask-del-btn:active { color: var(--stamp-deep); }
+.subtask-del-btn:active { color: var(--red); }
 .subtask-add-form { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
-.subtask-add-form input[type=text] {
-  flex: 1; min-width: 0; padding: 6px 2px; border: none; border-bottom: 1.5px solid var(--rule);
-  background: transparent; color: var(--ink); font-family: var(--font-body); font-size: 0.88rem;
-}
-.subtask-add-form input[type=text]:focus { outline: none; border-bottom-color: var(--stamp); }
-.subtask-add-form input[type=text]::placeholder { color: var(--ink-soft); }
-.subtask-add-form button {
-  flex-shrink: 0; padding: 6px 12px; border-radius: var(--radius-sm); border: none;
-  background: var(--card-edge); color: var(--ink); font-size: 0.8rem; font-weight: 600; cursor: pointer;
-}
-.subtask-add-form button:active { background: var(--card-edge); }
-.tag { color: var(--stamp-deep); background: rgba(217, 122, 38, 0.14); border: 1px solid rgba(217, 122, 38, 0.3); margin-top: 6px; }
-.task-author { display: flex; align-items: center; gap: 6px; margin-top: 8px;
-               font-size: 0.8rem; color: var(--ink-soft); }
-.chart-block { padding: var(--space-4); margin-top: var(--space-5); }
-.chart-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px; }
-.chart-title { font-family: var(--font-display); font-weight: 600; color: var(--ink); }
-.streak { color: var(--stamp-deep); font-size: 0.9rem; font-style: italic; font-family: var(--font-display); }
-.bars { display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 14px;
-        border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+.subtask-add-form input[type=text] { flex: 1; min-width: 0; }
+.subtask-add-form .btn-tinted { flex-shrink: 0; }
+
+/* ---------- график (как «Экранное время»/«Здоровье») ---------- */
+.chart-block { padding: var(--gutter); margin-top: 24px; }
+.chart-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+.chart-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; }
+.streak { color: var(--orange); font-size: 0.9375rem; font-weight: 600; }
+.bars { display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 14px; border-bottom: 0.5px solid var(--sep); }
 .col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; }
-.num { font-size: 0.7rem; color: var(--ink-soft); height: 14px; line-height: 14px; }
-.bar { width: 100%; background: var(--ok); border-radius: 2px 2px 0 0; }
-.bar.zero { background: transparent; border: 1px dashed var(--rule); height: 2px !important; }
-.labels { display: flex; gap: 4px; margin-top: 4px; }
-.labels span { flex: 1; text-align: center; font-size: 0.65rem; color: var(--ink-soft); }
-.new-task-form { margin-bottom: var(--space-4); }
-.new-task-form textarea {
-  width: 100%; padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
-  background: transparent; color: var(--ink); font-family: var(--font-body); font-size: 0.95rem;
-  box-sizing: border-box; resize: vertical; min-height: 44px;
-}
-.new-task-form textarea:focus { outline: none; border-bottom-color: var(--stamp); }
-.new-task-form input[type=datetime-local] {
-  padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
-  background: transparent; color: var(--ink); font-family: var(--font-body); color-scheme: light; box-sizing: border-box;
-}
-.tg-widget-banner { padding: 0.8rem 1rem; margin-bottom: var(--space-4);
-    display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
-.tg-widget-banner span { font-size: 0.85rem; color: var(--ink-soft); font-family: var(--font-body); }
-/* Карусель фото: viewport шириной ровно 3 кадра, остальные уезжают за
-   overflow-x и достаются scroll-snap'ом по клику на стрелки — без JS-таймера
-   и зацикливания, пользователь листает сам. */
-.task-photos-wrap {
-  position: relative; margin-top: 12px; margin-bottom: 14px; padding-top: 10px;
-  padding-left: 30px; padding-right: 30px; border-top: 1px solid var(--rule);
-}
-/* Одно фото: нет карусели — нет и стрелок, боковые поля под них не нужны,
-   а сам кадр растягивается на всю ширину карточки (см. .task-photo-hero). */
-.task-photos-wrap.hero { padding-left: 0; padding-right: 0; }
+.num { font-size: 0.6875rem; color: var(--label-2); height: 14px; line-height: 14px; font-variant-numeric: tabular-nums; }
+.bar { width: 100%; max-width: 22px; background: var(--accent); border-radius: 4px 4px 1px 1px; }
+.bar.zero { background: var(--fill); height: 2px !important; }
+.labels { display: flex; gap: 4px; margin-top: 6px; }
+.labels span { flex: 1; text-align: center; font-size: 0.6875rem; color: var(--label-2); font-variant-numeric: tabular-nums; }
+
+/* ---------- фото ----------
+   Карусель: viewport ровно 3 кадра, остальное — scroll-snap; стрелки только
+   при > 3 фото. Одно фото — крупно во всю ширину карточки. */
+.task-photos-wrap { position: relative; margin: 4px 0 12px; }
 .task-photos-wrap.hero .task-photos { width: 100%; }
 .task-photos {
   display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory;
-  /* Чтобы горизонтальный свайп по карусели не "перетекал" в скролл всей
-     страницы, когда карусель доехала до края — на телефоне это главный
-     источник ощущения "залипающего" скролла. */
-  overscroll-behavior-x: contain;
+  overscroll-behavior-x: contain;   /* свайп по карусели не утаскивает страницу */
   width: calc(3 * 118px + 2 * 8px); max-width: 100%;
-  scrollbar-width: none; -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 .task-photos::-webkit-scrollbar { display: none; }
-.task-photo { position: relative; width: 118px; height: 118px; border-radius: var(--radius-sm); overflow: hidden;
-    border: 1px solid var(--card-edge); flex-shrink: 0; scroll-snap-align: start; cursor: pointer; }
-.task-photo img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.3s ease; }
-/* Одно фото — не мельчим в квадратик карусели, а показываем крупно во всю
-   ширину карточки: это и есть главный выигрыш в "насколько хорошо видно
-   фото" для самого частого случая (одно фото на задачу). */
-.task-photo.task-photo-hero { width: 100%; height: auto; aspect-ratio: 16 / 10; }
-.task-photo form { position: absolute; top: 4px; right: 4px; line-height: 0; }
-.photo-del-btn { width: 20px; height: 20px; border-radius: 50%; border: none; background: rgba(43, 35, 23, 0.65);
-    color: var(--on-accent); font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }
-.photo-del-btn:active { background: var(--stamp-deep); }
-/* Стрелки вынесены в собственные 30px-поля слева/справа (padding на .task-photos-wrap
-   выше) — не наезжают на крайние фото и на крестики удаления. */
+.task-photo {
+  position: relative; width: 118px; height: 118px; border-radius: var(--radius-sm); overflow: hidden;
+  flex-shrink: 0; scroll-snap-align: start; background: var(--fill);
+}
+.task-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.task-photo.task-photo-hero { width: 100%; height: auto; aspect-ratio: 16 / 10; border-radius: 12px; }
+.task-photo form { position: absolute; top: 6px; right: 6px; line-height: 0; }
+.photo-del-btn {
+  width: 26px; height: 26px; border-radius: 50%; border: none; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.5); color: #fff;
+}
+.photo-del-btn .i { width: 14px; height: 14px; stroke-width: 2.6; }
+/* Стрелки — круглые кнопки поверх крайних кадров, как в «Фото». */
 .photo-nav {
-  position: absolute; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; border-radius: 50%;
-  border: 1px solid var(--card-edge); background: var(--card); color: var(--ink); font-size: 16px;
-  line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
-  box-shadow: var(--shadow); padding: 0;
+  position: absolute; top: 50%; margin-top: -14px; width: 28px; height: 28px; border-radius: 50%;
+  border: none; padding: 0; background: rgba(0, 0, 0, 0.5); color: #fff; font-size: 18px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
 }
-.photo-nav-prev { left: 0; }
-.photo-nav-next { right: 0; }
-.photo-nav:active { background: var(--card-edge); }
-/* Полноэкранный просмотр фото — скрыт (display:none) до .open, тап по фону
-   или крестику закрывает. Фон и блюр — в base.css (зависят от режима). */
-.photo-lightbox {
-  display: none; position: fixed; inset: 0; z-index: 1000;
-  align-items: center; justify-content: center; padding: var(--space-4);
+.photo-nav-prev { left: 6px; }
+.photo-nav-next { right: 6px; }
+.photo-upload-form { margin: 0 0 4px; }
+.photo-upload-btn {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 36px;
+  color: var(--accent); font-size: 0.9375rem;
 }
-.photo-lightbox.open { display: flex; }
-@keyframes lightbox-in { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: scale(1); } }
-.photo-lightbox.open img { animation: lightbox-in 0.35s cubic-bezier(.16,1,.3,1) both; }
-.photo-lightbox img { max-width: 100%; max-height: 100%; border-radius: var(--radius);
-    border: 1px solid var(--card-edge); box-shadow: 0 30px 70px -20px rgba(0,0,0,0.7); }
-.photo-lightbox-close {
-  position: absolute; top: max(var(--space-4), env(safe-area-inset-top)); right: var(--space-4);
-  width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--card-edge); background: var(--card-edge);
-  color: var(--on-accent); font-size: 18px; cursor: pointer; line-height: 1; transition: background 0.15s ease;
-}
-.photo-lightbox-close:active { background: var(--stamp-deep); }
-.photo-upload-form { margin-top: 10px; line-height: 1.4; }
-.photo-upload-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 0.82rem; color: var(--ink-soft);
-    font-family: var(--font-body); cursor: pointer; }
 .photo-upload-btn input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
 
-/* Панель выбора дня — адаптация карточки "Upcoming Meetings" с Uiverse под
-   крафт-палитру страницы. Раскрытие до месяца — нативный <details>, стрелка
-   поворачивается чистым CSS от [open], без единой строчки JS. */
-.day-picker { padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3); }
-.day-picker-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.day-picker-month { font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; color: var(--ink);
-    text-transform: capitalize; }
-.day-today-link { color: var(--ink-soft); text-decoration: none; font-size: 0.85rem; border: 1px solid var(--card-edge);
-    border-radius: 999px; padding: 2px 9px; }
-.day-today-link:active { background: rgba(0, 0, 0, 0.22); }
-
-.day-picker-summary { list-style: none; cursor: pointer; display: block; }
-.day-picker-summary::-webkit-details-marker { display: none; }
-.date-nav-container { background: rgba(0, 0, 0, 0.2); border-radius: var(--radius-sm); padding: 10px 6px;
-    display: flex; justify-content: space-between; gap: 2px; }
-.day-item { display: flex; flex-direction: column; align-items: center; text-decoration: none;
-    color: var(--ink); flex: 1; position: relative; padding-bottom: 6px; border-radius: var(--radius-sm); }
-.day-number { font-size: 1.05rem; font-weight: 600; width: 34px; height: 26px; display: flex;
-    align-items: center; justify-content: center; border-radius: 13px; }
-.day-name { font-size: 0.65rem; color: var(--ink-soft); margin-top: 2px; }
-.day-item.day-active .day-number { background: var(--stamp); color: var(--on-accent); }
-.day-item.day-today:not(.day-active) .day-number { border: 1px solid var(--stamp); }
-.day-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--stamp); margin-top: 3px; }
-.day-item.day-active .day-dot { background: transparent; } /* подсветка и так есть — точка лишняя */
-
-/* Стрелка-индикатор раскрытия — отдельный декоративный треугольник под
-   рядом недели, поворачивается через [open] на <details>. */
-.day-picker-expand { position: relative; }
-.day-picker-expand > summary { padding-bottom: 14px; }
-.day-picker-expand > summary::after {
-  content: ""; position: absolute; left: 50%; bottom: -2px; transform: translateX(-50%) rotate(0deg);
-  width: 9px; height: 9px; border-right: 2px solid var(--ink-soft); border-bottom: 2px solid var(--ink-soft);
-  transform-origin: center; transition: transform 0.2s ease;
+/* Лайтбокс: скрыт до .open. Фон — в base.css (зависит от уровня). На слабых
+   появляется кроссфейдом; на .mid его открывает и закрывает dashboard.js —
+   из миниатюры и обратно в неё, со свайпом вниз. */
+.photo-lightbox {
+  display: none; position: fixed; inset: 0; z-index: 1000;
+  align-items: center; justify-content: center; padding: var(--gutter);
 }
-.day-picker-expand[open] > summary::after { transform: translateX(-50%) rotate(-135deg); bottom: 2px; }
+.mid .photo-lightbox { touch-action: none; }  /* свайп ведёт dashboard.js */
+.photo-lightbox.open { display: flex; }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+html:not(.mid) .photo-lightbox.open { animation: fade-in 0.2s ease both; }
+.photo-lightbox img { max-width: 100%; max-height: 100%; border-radius: 12px; user-select: none; -webkit-user-drag: none; }
+.photo-lightbox-close {
+  position: absolute; z-index: 1; top: max(var(--gutter), env(safe-area-inset-top)); right: var(--gutter);
+  width: 36px; height: 36px; border-radius: 50%; border: none; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(118, 118, 128, 0.4); color: #fff;
+}
+.photo-lightbox-close .i { width: 18px; height: 18px; stroke-width: 2.4; }
 
-.day-picker-month-grid { margin-top: 10px; }
-.day-picker-dow-row, .day-picker-month-cells { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
-.day-dow-label { text-align: center; font-size: 0.62rem; color: var(--ink-soft); padding-bottom: 4px; }
-.day-item-month .day-number { width: 28px; height: 24px; font-size: 0.9rem; }
+/* ---------- выбор дня (неделя как в «Календаре» iOS) ---------- */
+.day-picker { padding: 12px var(--gutter) 6px; margin-bottom: 12px; }
+.day-picker-header { display: flex; align-items: center; justify-content: space-between; min-height: 30px; margin-bottom: 8px; }
+.day-picker-month { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; text-transform: capitalize; }
+.day-today-link {
+  width: 30px; height: 30px; border-radius: 50%; background: var(--fill); color: var(--accent);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.day-today-link .i { width: 16px; height: 16px; stroke-width: 2.4; }
+.day-picker-summary { list-style: none; display: block; }
+.day-picker-summary::-webkit-details-marker { display: none; }
+.date-nav-container { display: flex; justify-content: space-between; gap: 2px; }
+.day-item {
+  display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0;
+  color: var(--label); text-decoration: none; transition: transform 0.2s var(--ease);
+}
+.day-item:active { transform: scale(0.9); transition-duration: 0.08s; }
+/* Буквы дня недели — над числом, как в «Календаре». */
+.day-name { order: -1; font-size: 0.6875rem; color: var(--label-2); margin-bottom: 4px; letter-spacing: 0.01em; }
+.day-number {
+  width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 1.0625rem; font-variant-numeric: tabular-nums;
+}
+.day-item.day-today .day-number { color: var(--accent); font-weight: 600; }
+.day-item.day-active .day-number { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+/* Точка «есть задачи» — абсолютно под числом, чтобы ряд не прыгал по высоте. */
+.day-item { position: relative; padding-bottom: 8px; }
+.day-dot { position: absolute; bottom: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--label-3); }
+.day-item.day-active .day-dot { visibility: hidden; }  /* подсветка и так есть */
+
+.day-picker-expand > summary { padding-bottom: 18px; position: relative; }
+.day-picker-expand > summary::after {
+  content: ""; position: absolute; left: 50%; bottom: 6px; width: 7px; height: 7px; margin-left: -4px;
+  border-right: 2px solid var(--label-3); border-bottom: 2px solid var(--label-3);
+  transform: rotate(45deg); transition: transform 0.3s var(--ease);
+}
+.day-picker-expand[open] > summary::after { transform: rotate(-135deg); bottom: 2px; }
+.day-picker-month-grid { padding-bottom: 8px; }
+.mid .day-picker-month-grid { animation: expand-in 0.45s var(--spring) both; }
+.day-picker-dow-row, .day-picker-month-cells { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.day-dow-label { text-align: center; font-size: 0.6875rem; color: var(--label-2); padding-bottom: 4px; }
+.day-item-month .day-number { width: 34px; height: 34px; font-size: 1rem; }
 .day-item-month .day-name { display: none; }
 .day-empty { visibility: hidden; }
-
-.indicator-container { display: flex; justify-content: space-between; position: relative; padding: 0 20px;
-    margin-top: 10px; }
-.indicator-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--card-edge); position: relative; z-index: 2; }
-.indicator-dot.indicator-active { background: var(--stamp); }
-.indicator-line { position: absolute; top: 50%; left: 20px; right: 20px; height: 1px;
-    border-top: 1.5px dashed var(--card-edge); z-index: 1; }

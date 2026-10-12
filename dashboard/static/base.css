@@ -1,255 +1,263 @@
-/* Общая база всех страниц дашборда.
+/* Общая база всех страниц дашборда — в духе iOS: системный шрифт, светлая и
+   тёмная темы по настройке системы, сгруппированные карточки на сером фоне,
+   полупрозрачная панель навигации, отклик на нажатие без задержки.
 
-   ДВА РЕЖИМА ОТРИСОВКИ. По умолчанию страница рисуется в облегчённом режиме:
-   полупрозрачные панели без backdrop-filter, один фоновый градиент, без
-   зерна, короткое появление карточек одной прозрачностью, без каскадов.
-   Класс .fx на <html> (его ставит детектор в <head>, см. pages.py — только
-   на настольных устройствах с запасом мощности) включает «дорогое стекло»:
-   блюр под панелями, зерно, каскадное появление карточек, блики и тени при
-   наведении. Раньше всё это было включено по умолчанию и выключалось лишь
-   частично по ширине экрана — слабые телефоны, планшеты и ноутбуки платили
-   за эффекты, которые они не тянут.
+   ТРИ УРОВНЯ УСТРОЙСТВ (класс на <html> ставит детектор в pages.py):
+     без класса — слабое устройство: все поверхности сплошные, никакого
+       backdrop-filter, анимаций появления нет, только мгновенный отклик;
+     .mid — среднее: материал (блюр) у одной панели навигации, анимация
+       раскрытия карточки, лайтбокс из миниатюры со свайпом (dashboard.js);
+     .mid.fx — мощное: блюр ещё и у панелей и лайтбокса, подсветка при наведении.
 
    Правило для правок: всё, что заставляет композитор пересчитывать пиксели
    на каждый кадр (backdrop-filter, filter, mix-blend-mode, большие тени,
-   анимации с задержками), — только под .fx. Анимировать filter нельзя ни в
-   каком режиме. */
+   анимации с задержками), — только под .mid или .fx. Анимировать filter
+   нельзя ни на каком уровне. */
 
 :root {
-  /* "Тёмное стекло" — матовые полупрозрачные панели над почти чёрным фоном с
-     приглушёнными цветными пятнами (медно-янтарным и глубоким изумрудным).
-     Заголовки — Fraunces (курсивная антиква с характерными засечками). */
-  --bg-0: #0b0a0d;
-  --bg-1: #1a140f;
-  --card: rgba(255, 255, 255, 0.055);
-  --card-edge: rgba(255, 255, 255, 0.12);
-  /* Панели-«херо» (форма, график, панель дней) в облегчённом режиме — без
-     блюра, поэтому чуть плотнее, чтобы текст не ложился прямо на фоновые пятна. */
-  --panel: rgba(34, 29, 23, 0.82);
-  --ink: #f4efe6;
-  --ink-soft: rgba(244, 239, 230, 0.6);
-  --paper: #f4efe6;
-  --paper-soft: rgba(244, 239, 230, 0.56);
-  --stamp: #d97a26;
-  --stamp-deep: #b8631a;
-  --ok: #14a87e;
-  --ok-deep: #0d8565;
-  --on-accent: #fbf5ea;
-  --rule: rgba(255, 255, 255, 0.14);
-  --rule-dark: rgba(255, 255, 255, 0.22);
-  /* Тень с малым радиусом: тень в 48px на каждой карточке — большая область
-     перерисовки при скролле. Крупная тень — только в .fx. */
-  --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 12px 22px -16px rgba(0, 0, 0, 0.8);
-  --glass-blur: none;
-  --radius: 20px;
-  --radius-sm: 12px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 28px;
-  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
-  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Палитра iOS (UIKit semantic colors), светлая тема. */
+  --bg: #f2f2f7;                         /* systemGroupedBackground */
+  --surface: #ffffff;                    /* secondarySystemGroupedBackground */
+  --surface-press: #e5e5ea;
+  --label: #000000;
+  --label-2: rgba(60, 60, 67, 0.6);      /* secondaryLabel */
+  --label-3: rgba(60, 60, 67, 0.3);      /* tertiaryLabel */
+  --sep: rgba(60, 60, 67, 0.29);         /* separator */
+  --fill: rgba(118, 118, 128, 0.12);     /* tertiarySystemFill — поля ввода */
+  --accent: #007aff;                     /* systemBlue */
+  --accent-tint: rgba(0, 122, 255, 0.12);
+  --green: #34c759;
+  --red: #ff3b30;
+  --orange: #ff9500;
+  --on-accent: #ffffff;
+  /* Материал панели навигации (на .mid — с блюром под ней). */
+  --bar: rgba(242, 242, 247, 0.78);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --gutter: 16px;
+  /* Кривая листов iOS. --spring — критически затухающая пружина
+     (damping 1.0, response 0.35 c), разложенная в linear(): без отскока,
+     отскок уместен только после жеста с импульсом. */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --spring: var(--ease);
+  --font: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  color-scheme: light dark;
 }
-.fx {
-  --panel: var(--card);
-  --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 24px 48px -26px rgba(0, 0, 0, 0.75);
-  --glass-blur: blur(14px) saturate(130%);
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    --spring: linear(0, 0.075 5%, 0.227 10%, 0.389 15%, 0.536 20%, 0.75 30%, 0.873 40%,
+                     0.938 50%, 0.971 60%, 0.986 70%, 0.994 80%, 1);
+  }
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --surface: #1c1c1e;
+    --surface-press: #2c2c2e;
+    --label: #ffffff;
+    --label-2: rgba(235, 235, 245, 0.6);
+    --label-3: rgba(235, 235, 245, 0.3);
+    --sep: rgba(84, 84, 88, 0.65);
+    --fill: rgba(118, 118, 128, 0.24);
+    --accent: #0a84ff;
+    --accent-tint: rgba(10, 132, 255, 0.18);
+    --green: #30d158;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+    --bar: rgba(22, 22, 24, 0.78);
+  }
 }
 
 * { box-sizing: border-box; }
-html { background: var(--bg-0); }
+/* clip, а не hidden: hidden ломает position: sticky у панели навигации, а
+   её подложка намеренно шире колонки (см. .navbar::before). */
+html { background: var(--bg); overflow-x: clip; -webkit-text-size-adjust: 100%; }
 body {
-  font-family: var(--font-body);
-  /* Статичный градиент (не background-attachment: fixed — тот в паре с
-     блюром заставлял пересчитывать его на каждый кадр скролла). */
-  background:
-    radial-gradient(640px 420px at 12% -6%, rgba(217, 122, 38, 0.2), transparent 60%),
-    var(--bg-0);
-  color: var(--paper); margin: 0;
-  padding: var(--space-4);
-  padding-top: max(var(--space-4), env(safe-area-inset-top));
-  padding-bottom: max(var(--space-5), env(safe-area-inset-bottom));
-  max-width: 640px; margin-left: auto; margin-right: auto;
+  font-family: var(--font);
+  /* Body iOS: 17 pt, свободный интерлиньяж, трекинг почти ноль. */
+  font-size: 1.0625rem; line-height: 1.35; letter-spacing: -0.01em;
+  background: var(--bg); color: var(--label);
+  margin: 0 auto; max-width: 640px;
+  padding: 0 max(var(--gutter), env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom))
+           max(var(--gutter), env(safe-area-inset-left));
   -webkit-font-smoothing: antialiased;
-  position: relative;
 }
-.fx body {
-  background:
-    radial-gradient(640px 420px at 12% -6%, rgba(217, 122, 38, 0.22), transparent 60%),
-    radial-gradient(560px 460px at 108% 18%, rgba(20, 168, 126, 0.16), transparent 62%),
-    radial-gradient(900px 700px at 50% 115%, rgba(217, 122, 38, 0.08), transparent 70%),
-    var(--bg-0);
-}
-/* Тонкое зерно поверх фона — убирает "идеально гладкий цифровой градиент".
-   mix-blend-mode у фиксированного слоя во всю высоту экрана пересчитывается
-   на каждом кадре скролла, поэтому только .fx. */
-.fx body::before {
-  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
-  opacity: 0.045; mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-.fx body > * { position: relative; z-index: 1; }
-h1 {
-  font-family: var(--font-display); font-weight: 600; font-style: italic;
-  font-size: 1.6rem; margin: 0 0 var(--space-4); letter-spacing: -0.01em;
-  color: var(--paper);
-}
-/* touch-action: manipulation отключает ожидание возможного двойного тапа
-   (double-tap to zoom) — на мобильных браузерах это снимает знаменитую
-   задержку ~300 мс между касанием и реакцией кнопки. */
-button, .task-summary, .day-picker-summary, a { touch-action: manipulation; }
-button { font-family: inherit; -webkit-tap-highlight-color: transparent; transition: transform 0.1s ease; }
-button:active { transform: scale(0.96); }
-a { color: var(--stamp); }
-button:focus-visible, input:focus-visible, a:focus-visible {
-  outline: 2px solid var(--stamp); outline-offset: 2px;
+.i {
+  width: 1.15em; height: 1.15em; flex-shrink: 0; vertical-align: -0.2em;
+  fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
 }
 
-/* ---------- появление ---------- */
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+/* ---------- панель навигации и большой заголовок ----------
+   Как в iOS: пока большой заголовок виден, панель прозрачна; когда он уезжает
+   под неё, проявляются материал, разделитель и компактный заголовок. Связь со
+   скроллом — CSS scroll-driven animation (только opacity — композитор); где её
+   нет, панель просто всегда сплошная, а компактный заголовок скрыт. */
+.navbar {
+  position: sticky; top: 0; z-index: 50; isolation: isolate;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  min-height: 44px; padding-top: env(safe-area-inset-top);
 }
-
-/* ---------- карточки и панели ---------- */
-.task, .event, .chart-block, .tg-widget-banner, .new-task-form, .day-picker {
-  color: var(--ink);
-  border-radius: var(--radius); box-shadow: var(--shadow);
-  border: 1px solid var(--card-edge);
-  /* Только opacity — композиторная анимация, без layout и перерисовки. */
-  animation: fade-in 0.15s ease both;
+.navbar::before {
+  content: ""; position: absolute; z-index: -1; top: 0; bottom: 0;
+  left: calc(50% - 50vw); right: calc(50% - 50vw);
+  background: var(--bg); border-bottom: 0.5px solid var(--sep);
 }
-.task, .event { background: var(--card); }
-.chart-block, .tg-widget-banner, .new-task-form, .day-picker { background: var(--panel); }
-/* content-visibility: браузер пропускает layout/paint карточек, которых
-   сейчас нет на экране (длинный список задач/истории) — почти бесплатное
-   ускорение первой отрисовки и скролла; где не поддерживается — игнорируется. */
-.task, .event { content-visibility: auto; contain-intrinsic-size: 0 120px; }
-
-/* Настоящее стекло — только на одиночных панелях (их на странице одна-две
-   штуки) и только в .fx. У карточек списка блюра нет ни в каком режиме:
-   десятки блюр-слоёв на экране и тормозили страницу. */
-.fx .chart-block, .fx .tg-widget-banner, .fx .new-task-form, .fx .day-picker, .fx #login-form {
-  backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+.navbar-title {
+  font-weight: 600; text-align: center; opacity: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .fx .chart-block, .fx .tg-widget-banner, .fx .new-task-form, .fx .day-picker, .fx #login-form {
-    background: #1c1812;
+.navbar-side { display: flex; align-items: center; gap: 16px; }
+.navbar-right { justify-content: flex-end; }
+@keyframes bar-in { from { opacity: 0; } to { opacity: 1; } }
+@supports (animation-timeline: scroll()) {
+  /* Страница без прокрутки — таймлайн неактивен, анимация не применяется:
+     исходное состояние должно быть «наверху», т. е. без подложки. */
+  .navbar::before { opacity: 0; }
+  .navbar::before, .navbar-title {
+    animation: bar-in linear both; animation-timeline: scroll(root); animation-range: 0 56px;
   }
 }
-.fx .task, .fx .event, .fx .chart-block, .fx .tg-widget-banner, .fx .new-task-form {
-  animation: fade-up 0.3s ease both;
-  transition: transform 0.25s cubic-bezier(.22,1,.36,1), box-shadow 0.25s ease, border-color 0.2s ease;
+.mid .navbar::before {
+  background: var(--bar);
+  backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
-/* Лёгкий stagger для первых карточек — список «выстраивается». */
-.fx .task:nth-child(1), .fx .event:nth-child(1) { animation-delay: 0.035s; }
-.fx .task:nth-child(2), .fx .event:nth-child(2) { animation-delay: 0.070s; }
-.fx .task:nth-child(3), .fx .event:nth-child(3) { animation-delay: 0.105s; }
-.fx .task:nth-child(4), .fx .event:nth-child(4) { animation-delay: 0.140s; }
-.fx .task:nth-child(5), .fx .event:nth-child(5) { animation-delay: 0.175s; }
-.fx .task:nth-child(6), .fx .event:nth-child(6) { animation-delay: 0.210s; }
-.fx .task:nth-child(7), .fx .event:nth-child(7) { animation-delay: 0.245s; }
-.fx .task:nth-child(8), .fx .event:nth-child(8) { animation-delay: 0.280s; }
-.fx .task:nth-child(9), .fx .event:nth-child(9) { animation-delay: 0.315s; }
-.fx .task:nth-child(10), .fx .event:nth-child(10) { animation-delay: 0.350s; }
-.fx .task:nth-child(11), .fx .event:nth-child(11) { animation-delay: 0.385s; }
-.fx .task:nth-child(12), .fx .event:nth-child(12) { animation-delay: 0.420s; }
+.large-title {
+  /* Large Title: 34 pt, жирный, плотный интерлиньяж, трекинг в минус. */
+  font-size: 2.125rem; font-weight: 700; line-height: 1.12; letter-spacing: -0.022em;
+  margin: 2px 0 14px;
+}
+.nav-link, .nav-back {
+  display: inline-flex; align-items: center; gap: 2px; min-height: 44px;
+  color: var(--accent); text-decoration: none; white-space: nowrap;
+}
+.nav-back { margin-left: -6px; }
+.nav-back .i { width: 1.3em; height: 1.3em; stroke-width: 2.4; }
 
-/* ---------- наведение ----------
-   (hover: hover) and (pointer: fine) — эффекты включаются на ПК, а не
-   залипают на телефоне, где :hover срабатывает на тап. Смена цвета —
-   дёшево, поэтому в любом режиме; сдвиги, тени и блик — только .fx. */
-@media (hover: hover) and (pointer: fine) {
-  .task-summary:hover .title { color: var(--stamp); transition: color 0.15s ease; }
-  .edit-toggle summary:hover { color: var(--stamp); }
-  .photo-nav:hover { border-color: var(--stamp); color: var(--stamp); }
-  .photo-lightbox-close:hover { background: var(--stamp); }
-  .check-btn:hover, .subtask-check:hover { border-color: var(--stamp); }
-  .nav-link:hover { opacity: 0.75; }
-  .task-actions button:hover { color: var(--stamp); }
-  .task-actions .del-btn:hover { color: var(--stamp-deep); }
-  .task-summary:hover::after { border-color: var(--stamp); }
-  a.nav-link, button, .task-summary, .check-btn, .subtask-check { cursor: pointer; }
+/* ---------- отклик ----------
+   На нажатие (pointer-down), а не на отпускание: кнопки чуть сжимаются,
+   текстовые — притухают. touch-action: manipulation снимает ~300 мс ожидания
+   двойного тапа. transform и opacity — композитор, это можно на любом уровне. */
+button, a, summary, label { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+button { font: inherit; letter-spacing: inherit; cursor: pointer; transition: transform 0.2s var(--ease), opacity 0.2s ease; }
+button:active { transform: scale(0.97); transition-duration: 0.08s; }
+.nav-link, .nav-back, .task-actions button, .edit-toggle summary, .photo-upload-btn, .day-today-link {
+  transition: opacity 0.2s ease;
+}
+.nav-link:active, .nav-back:active, .task-actions button:active, .edit-toggle summary:active,
+.photo-upload-btn:active, .day-today-link:active { opacity: 0.35; transition-duration: 0s; transform: none; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  .fx .task:hover, .fx .event:hover {
-    transform: translateY(-3px);
-    border-color: rgba(217, 122, 38, 0.35);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 28px 54px -24px rgba(0, 0, 0, 0.8);
-  }
-  .fx .task.done:hover, .fx .event.done:hover { border-color: rgba(20, 168, 126, 0.4); }
-  /* Блик, скользящий по карточке под курсором — анимация background-position
-     одной карточки, а не постоянный эффект на всех сразу. */
-  .fx .task, .fx .event {
-    background-image: linear-gradient(115deg, transparent 20%, rgba(255, 255, 255, 0.07) 36%, transparent 52%);
-    background-size: 220% 100%; background-position: 120% 0; background-repeat: no-repeat;
-    transition: transform 0.25s cubic-bezier(.22,1,.36,1), box-shadow 0.25s ease, border-color 0.2s ease,
-                background-position 0.6s ease;
-  }
-  .fx .task:hover, .fx .event:hover { background-position: -20% 0; }
-  .fx .task-photo:hover img { transform: scale(1.08); }
-  .fx .check-btn:hover { transform: scale(1.1); }
-  .fx .nav-link:hover { transform: translateX(2px); transition: opacity 0.15s ease, transform 0.15s ease; }
-  .fx button[type=submit]:hover, .fx .desc-form button:hover, .fx .subtask-add-form button:hover,
-  .fx .new-task-form button:hover { filter: brightness(1.12); transition: filter 0.15s ease; }
+/* ---------- кнопки ---------- */
+.btn-filled {
+  min-height: 50px; padding: 0 20px; border: none; border-radius: 12px;
+  background: var(--accent); color: var(--on-accent); font-weight: 600;
 }
+.btn-tinted {
+  min-height: 34px; padding: 0 14px; border: none; border-radius: 999px;
+  background: var(--accent-tint); color: var(--accent); font-size: 0.9375rem; font-weight: 600;
+}
+.task-actions { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-top: 12px; }
+.task-actions form { margin: 0; }
+.task-actions button:not(.btn-tinted) {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0;
+  background: none; border: none; color: var(--accent); font-size: 0.9375rem;
+}
+.task-actions .del-btn { color: var(--red) !important; }
 
-/* ---------- общие компоненты (раньше повторялись в CSS каждой страницы) ---------- */
-.nav-link {
-  display: inline-block; color: var(--paper-soft); text-decoration: none; font-size: 0.85rem;
-  margin-bottom: var(--space-4); font-family: var(--font-body);
-  -webkit-tap-highlight-color: transparent; transition: opacity 0.1s ease;
+/* ---------- карточки ---------- */
+.task, .event, .chart-block, .tg-widget-banner, .new-task-form, .day-picker, .load-more {
+  background: var(--surface); color: var(--label); border-radius: var(--radius);
 }
-.nav-link:active { opacity: 0.6; }
-.empty { color: var(--paper-soft); text-align: center; padding: 3rem 1rem; font-family: var(--font-display); font-style: italic; }
-.load-more {
-  display: block; width: 100%; padding: 10px; border-radius: var(--radius-sm); border: 1px dashed var(--rule-dark);
-  background: transparent; color: var(--paper-soft); text-align: center; text-decoration: none; margin-top: 0.5rem;
-  font-family: var(--font-body);
-}
-.load-more:active { border-color: var(--stamp); color: var(--stamp); }
-.avatar {
-  width: 20px; height: 20px; border-radius: 50%; object-fit: cover;
-  background: var(--card-edge); border: 1.5px solid var(--on-accent); outline: 1px solid var(--rule);
-  flex-shrink: 0;
-}
-.avatar-placeholder { display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; }
-.event { padding: 0.85rem 1rem; margin-bottom: 0.6rem; display: flex; gap: 0.65rem; align-items: center; }
+/* content-visibility: браузер пропускает layout/paint карточек вне экрана —
+   почти бесплатное ускорение первой отрисовки и скролла длинного списка. */
+.task, .event { content-visibility: auto; contain-intrinsic-size: auto 64px; }
+.task { padding: 12px var(--gutter); margin-bottom: 8px; display: flex; gap: 12px; align-items: flex-start; }
+.title { font-size: 1.0625rem; line-height: 1.3; color: var(--label); overflow-wrap: anywhere; }
+.meta { color: var(--label-2); font-size: 0.9375rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.event { padding: 12px var(--gutter); margin-bottom: 8px; display: flex; gap: 12px; align-items: center; }
 .event-body { flex: 1; min-width: 0; }
-.event-line { font-size: 0.92rem; color: var(--ink); }
-.event-line .ev-title { font-weight: 600; font-family: var(--font-display); }
-.event-time { color: var(--ink-soft); font-size: 0.78rem; margin-top: 2px; }
-.task { padding: var(--space-4); margin-bottom: var(--space-3); display: flex; gap: var(--space-3); align-items: flex-start; }
-.title { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; line-height: 1.35; color: var(--ink); }
-.meta { color: var(--ink-soft); font-size: 0.85rem; margin-top: 4px; }
-.task-actions { display: flex; gap: 16px; margin-top: 10px; }
-.task-actions button {
-  background: none; border: none; color: var(--ink-soft); font-size: 0.82rem;
-  font-family: var(--font-body); cursor: pointer; padding: 0;
-  transition: color 0.15s ease;
+.event-line { font-size: 0.9375rem; }
+.event-line .ev-title { font-weight: 600; }
+.event-time { color: var(--label-2); font-size: 0.8125rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.avatar {
+  width: 20px; height: 20px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
+  background: var(--fill);
 }
-.task-actions button:active { color: var(--stamp); }
-.task-actions .del-btn:active { color: var(--stamp-deep); }
-.new-task-form { display: flex; flex-direction: column; gap: 10px; padding: var(--space-4); }
-.new-task-form input[type=text], .new-task-form input[type=time], .new-task-form input[type=number] {
-  width: 100%; padding: 8px 2px; border: none; border-bottom: 1.5px solid var(--rule); border-radius: 0;
-  background: transparent; color: var(--ink); font-family: var(--font-body); font-size: 1rem;
+/* Монограмма как в «Контактах». */
+.avatar-placeholder {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: linear-gradient(#a5abb8, #858994); color: #fff;
+  font-size: 0.625rem; font-weight: 600; letter-spacing: 0;
 }
-.new-task-form input::placeholder, .new-task-form textarea::placeholder { color: var(--ink-soft); }
-.new-task-form input:focus { outline: none; border-bottom-color: var(--stamp); }
-.new-task-form button {
-  padding: 10px 16px; border-radius: var(--radius-sm); border: none; background: var(--stamp);
-  color: var(--on-accent); font-weight: 600; cursor: pointer; flex-shrink: 0;
+.empty { color: var(--label-2); text-align: center; padding: 48px 16px; }
+.load-more {
+  display: block; padding: 13px var(--gutter); margin: 8px 0; text-align: center;
+  color: var(--accent); text-decoration: none;
 }
-.new-task-form button:active { background: var(--stamp-deep); }
-.new-task-error { color: var(--stamp); font-size: 0.85rem; margin: -0.5rem 0 0.25rem; font-family: var(--font-body); }
-@media (max-width: 480px) { .new-task-form button { width: 100%; } }
+.load-more:active { background: var(--surface-press); }
+.tg-widget-banner {
+  padding: 12px var(--gutter); margin-bottom: 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+.tg-widget-banner span { font-size: 0.8125rem; color: var(--label-2); }
+
+/* ---------- форма в стиле inset grouped ----------
+   Поля — строки карточки с волосяными разделителями, отбитыми слева, как в
+   «Настройках»; основное действие — закрашенная кнопка внизу. */
+.new-task-form { display: flex; flex-direction: column; padding-bottom: 12px; margin-bottom: 16px; overflow: hidden; }
+.new-task-form > input:not([type=hidden]), .new-task-form > textarea, .field-row {
+  width: calc(100% - var(--gutter)); margin-left: var(--gutter); padding: 11px var(--gutter) 11px 0; min-height: 44px;
+  border: none; border-bottom: 0.5px solid var(--sep); border-radius: 0;
+  background: transparent; color: var(--label); font: inherit; letter-spacing: inherit;
+}
+.new-task-form > textarea { resize: vertical; min-height: 64px; display: block; }
+.new-task-form > input:focus, .new-task-form > textarea:focus { outline: none; }
+.new-task-form > input:focus-visible, .new-task-form > textarea:focus-visible { box-shadow: inset 0 -2px 0 var(--accent); }
+.new-task-form ::placeholder { color: var(--label-3); }
+.new-task-form > .btn-filled { margin: 12px var(--gutter) 0; }
+.field-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.field-row span { color: var(--label-2); font-size: 0.9375rem; }
+.field-row input {
+  width: 5em; padding: 6px 10px; border: none; border-radius: 8px; text-align: right;
+  background: var(--fill); color: var(--label); font: inherit;
+}
+.new-task-error { color: var(--red); font-size: 0.8125rem; margin: 0 var(--gutter) 8px; }
 
 /* ---------- лайтбокс фото ----------
-   Блюр фона во всю площадь экрана — самый дорогой отдельный эффект, и виден
-   он сразу после тапа, когда важна отзывчивость. В облегчённом режиме — без
-   блюра, просто плотный фон (на глаз почти то же). */
-.photo-lightbox { background: rgba(7, 6, 8, 0.95); }
+   Сплошное затемнение на любом уровне; блюр фона во весь экран — самый
+   дорогой отдельный эффект, только на мощных. */
+.photo-lightbox { background: rgba(0, 0, 0, 0.94); }
 .fx .photo-lightbox {
-  background: rgba(7, 6, 8, 0.86);
-  backdrop-filter: blur(14px) saturate(120%); -webkit-backdrop-filter: blur(14px) saturate(120%);
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%);
+}
+
+/* ---------- мощные устройства: стекло у панелей, наведение ---------- */
+.fx .chart-block, .fx .day-picker, .fx .new-task-form {
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: blur(20px) saturate(160%); -webkit-backdrop-filter: blur(20px) saturate(160%);
+}
+@media (hover: hover) and (pointer: fine) {
+  button, .task-summary, summary, .day-item, .task-photo { cursor: pointer; }
+  .task, .event, .load-more { transition: background-color 0.15s ease; }
+  .task:hover, .event:hover, .load-more:hover { background: color-mix(in srgb, var(--surface) 92%, var(--label)); }
+  .nav-link:hover, .nav-back:hover, .task-actions button:hover { opacity: 0.7; }
+}
+
+/* ---------- доступность ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  /* scroll-driven панель не «анимация во времени», её оставляем как есть */
+  .navbar::before, .navbar-title { animation-duration: auto !important; }
+  button:active { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .mid .navbar::before { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .fx .chart-block, .fx .day-picker, .fx .new-task-form { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .fx .photo-lightbox { background: #000; backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  :root { --label-2: var(--label); --sep: var(--label-3); }
+  .task, .event, .chart-block, .tg-widget-banner, .new-task-form, .day-picker, .load-more { border: 1px solid var(--label-3); }
 }

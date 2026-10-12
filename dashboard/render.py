@@ -10,6 +10,18 @@ import db
 
 from .texts import _dows, _dt, _months
 
+
+def _icon(name: str) -> str:
+    """Иконка из спрайта TASKS_PAGE (pages._ICON_SPRITE). Только для раскрытой
+    части карточки — в свёрнутой иконки рисует CSS, без лишних узлов DOM."""
+    return f'<svg class="i" aria-hidden="true"><use href="#i-{name}"/></svg>'
+
+
+def _monogram(name: str) -> str:
+    """Заглушка аватара как в «Контактах»: первая буква имени в кружке."""
+    return f'<span class="avatar avatar-placeholder">{escape(name.lstrip("@")[:1].upper())}</span>'
+
+
 def _render_event(ev: dict, tz, lang: str, token: str, creator: dict | None) -> str:
     texts = _dt(lang)
     local_dt = ev["event_at"].astimezone(tz)
@@ -23,7 +35,7 @@ def _render_event(ev: dict, tz, lang: str, token: str, creator: dict | None) -> 
         avatar_html = (f'<img class="avatar" src="/dashboard/{token}/avatar/{actor_id}" '
                        f'alt="" loading="lazy" decoding="async">')
     else:
-        avatar_html = '<span class="avatar avatar-placeholder">👤</span>'
+        avatar_html = _monogram(name)
     return f"""<div class="event">
 {avatar_html}
 <div class="event-body">
@@ -52,7 +64,7 @@ def _render_template_row(tpl: dict, lang: str, token: str, csrf: str) -> str:
 <div class="task-actions">
 <form method="post" action="/dashboard/{token}/templates/{tpl['id']}/apply">
 <input type="hidden" name="csrf" value="{csrf}">
-<button type="submit">{escape(texts["btn_apply_template"])}</button>
+<button type="submit" class="btn-tinted">{escape(texts["btn_apply_template"])}</button>
 </form>
 <form method="post" action="/dashboard/{token}/templates/{tpl['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_template"])}')">
 <input type="hidden" name="csrf" value="{csrf}">
@@ -65,14 +77,14 @@ def _render_template_row(tpl: dict, lang: str, token: str, csrf: str) -> str:
 
 def _render_day_picker(selected: "dt.date", today: "dt.date", lang: str, token: str, task_days: set,
                         filter_active: bool = True) -> str:
-    """Панель выбора дня дашборда (фильтр по due_at), в стиле карточки
-    'Upcoming Meetings' с Uiverse: неделя вокруг selected + стрелка вниз,
-    раскрывающая блок до полного месяца. Раскрытие — чистый HTML
+    """Панель выбора дня дашборда (фильтр по due_at), как неделя в «Календаре»
+    iOS: выбранный день — закрашенный круг, сегодняшний — число цветом
+    акцента; стрелка вниз раскрывает полный месяц. Раскрытие — чистый HTML
     <details>/<summary> (без JS): браузер сам переключает видимость и
     поворот стрелки по CSS от атрибута [open], сервер ничего не считает
     по клику — вся навигация это обычные ссылки с ?date=YYYY-MM-DD.
     task_days — set дат (date), на которые есть хотя бы одна задача, для
-    точек-индикаторов под числами (как у dot-индикаторов в оригинале)."""
+    точек под числами."""
     month_name = _months(lang)[selected.month - 1]
     dow_names = _dows(lang)
 
@@ -95,10 +107,6 @@ def _render_day_picker(selected: "dt.date", today: "dt.date", lang: str, token: 
 </a>"""
 
     week_html = "".join(_day_link(d) for d in week_days)
-    week_dots = "".join(
-        f'<div class="indicator-dot{" indicator-active" if (filter_active and d == selected) else ""}"></div>'
-        for d in week_days
-    )
 
     # Полный месяц selected — те же ссылки-дни, сеткой 7 колонок, с пустыми
     # ячейками в начале/конце для выравнивания по дню недели.
@@ -112,7 +120,9 @@ def _render_day_picker(selected: "dt.date", today: "dt.date", lang: str, token: 
 
     # Ссылка сброса видна всегда, когда фильтр активен (вернуться к полному
     # списку задач) — а не только когда выбранный день не сегодня.
-    reset_html = f'<a class="day-today-link" href="/dashboard/{token}">↺</a>' if filter_active else ""
+    reset_html = (f'<a class="day-today-link" href="/dashboard/{token}" aria-label="reset">'
+                  f'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v5h5M5.5 15a7 7 0 1 0 0-6"/></svg></a>'
+                  if filter_active else "")
 
     return f"""<div class="day-picker">
 <div class="day-picker-header">
@@ -128,7 +138,6 @@ def _render_day_picker(selected: "dt.date", today: "dt.date", lang: str, token: 
 <div class="day-picker-month-cells">{month_html}</div>
 </div>
 </details>
-<div class="indicator-container"><div class="indicator-line"></div>{week_dots}</div>
 </div>"""
 
 
@@ -146,7 +155,7 @@ def _render_author(created_by: int | None, creator: dict | None, token: str) -> 
         avatar_html = (f'<img class="avatar" src="/dashboard/{token}/avatar/{created_by}" '
                        f'alt="" loading="lazy" decoding="async">')
     else:
-        avatar_html = '<span class="avatar avatar-placeholder">👤</span>'
+        avatar_html = _monogram(name)
     return f'<div class="task-author">{avatar_html}<span>{escape(name)}</span></div>'
 
 
@@ -182,7 +191,7 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
 <img src="{src}?size=thumb" alt="" loading="lazy" decoding="async" fetchpriority="low">
 <form method="post" action="{src}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_photo"])}')">
 <input type="hidden" name="csrf" value="{csrf}">
-<button type="submit" class="photo-del-btn" aria-label="delete photo">✕</button>
+<button type="submit" class="photo-del-btn" aria-label="delete photo"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
 </form>
 </div>""")
 
@@ -213,7 +222,7 @@ def _render_upload_form(token: str, task_id: int, csrf: str, texts: dict, photo_
         return ""
     return f"""<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo" enctype="multipart/form-data" class="photo-upload-form">
 <input type="hidden" name="csrf" value="{csrf}">
-<label class="photo-upload-btn">📷 {escape(texts["btn_add_photo"])}
+<label class="photo-upload-btn">{_icon("cam")}{escape(texts["btn_add_photo"])}
 <input type="file" name="photo" accept="image/*" onchange="this.form.submit()">
 </label>
 </form>"""
@@ -242,7 +251,7 @@ def _render_subtasks(subtasks: list[dict], token: str, task_id: int, csrf: str, 
     add_form = f"""<form class="subtask-add-form" method="post" action="/dashboard/{token}/tasks/{task_id}/subtasks/new">
 <input type="hidden" name="csrf" value="{csrf}">
 <input type="text" name="title" placeholder="{escape(texts["new_subtask_placeholder"])}" maxlength="200" required>
-<button type="submit">{escape(texts["btn_add_subtask"])}</button>
+<button type="submit" class="btn-tinted">{escape(texts["btn_add_subtask"])}</button>
 </form>"""
     return list_html + add_form
 
@@ -275,14 +284,16 @@ def _render_task(
     elif local_due < now and task["repeat"] == "none":
         css_class += " overdue"
 
-    tag_html = f'<div class="tag">🏷 {escape(task["tag"])}</div>' if task.get("tag") else ""
+    # Тег — как в «Напоминаниях»: «#тег» цветом акцента, без плашки-эмодзи.
+    tag_html = f'<div class="tag">#{escape(task["tag"])}</div>' if task.get("tag") else ""
     repeat_label = texts["repeat"].get(task["repeat"], task["repeat"])
-    # Короткий значок повтора — виден уже в свёрнутой шапке карточки (summary);
-    # полная формулировка ("🔁 Повторяется: раз в месяц") — только внутри,
-    # в .repeat-info, чтобы не раздувать и так плотную строку меты.
-    repeat_html = " · 🔁" if task["repeat"] != "none" and repeat_label else ""
+    # Короткий значок повтора — виден уже в свёрнутой шапке карточки (summary):
+    # класс .rep, саму иконку рисует CSS (::after), чтобы не плодить узлы SVG
+    # на каждую карточку длинного списка. Полная формулировка («Повторяется:
+    # раз в месяц») — только внутри, в .repeat-chip.
+    meta_class = "meta rep" if task["repeat"] != "none" and repeat_label else "meta"
     repeat_info_html = (
-        f'<div class="repeat-chip">{escape(texts["repeats_label"].format(label=repeat_label))}</div>'
+        f'<div class="repeat-chip">{_icon("rep")}{escape(texts["repeats_label"].format(label=repeat_label))}</div>'
         if task["repeat"] != "none" and repeat_label
         else f'<div class="repeat-chip">{escape(texts["no_repeat_label"])}</div>'
     )
@@ -305,11 +316,11 @@ def _render_task(
     description_text_html = f'<p class="description-text">{escape(description)}</p>' if description else ""
     edit_label = texts["edit_description_label"] if description else texts["add_description_label"]
     desc_form_html = f"""<details class="edit-toggle">
-<summary>{escape(edit_label)}</summary>
+<summary>{_icon("pen")}{escape(edit_label)}</summary>
 <form class="desc-form" method="post" action="/dashboard/{token}/tasks/{task['id']}/edit">
 <input type="hidden" name="csrf" value="{csrf}">
 <textarea name="description" placeholder="{escape(texts["description_placeholder"])}" maxlength="4000" rows="2">{escape(description)}</textarea>
-<button type="submit">{escape(texts["btn_save_description"])}</button>
+<button type="submit" class="btn-tinted">{escape(texts["btn_save_description"])}</button>
 </form>
 </details>"""
     subtasks_html = _render_subtasks(subtasks or [], token, task["id"], csrf, texts)
@@ -326,7 +337,7 @@ def _render_task(
         postpone_html = (
             f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/postpone">
 <input type="hidden" name="csrf" value="{csrf}">
-<button type="submit">⏭ {escape(texts["btn_postpone"])}</button>
+<button type="submit">{_icon("fwd")}{escape(texts["btn_postpone"])}</button>
 </form>"""
             if task["repeat"] == "none" else ""
         )
@@ -334,7 +345,7 @@ def _render_task(
 {postpone_html}
 <form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
 <input type="hidden" name="csrf" value="{csrf}">
-<button type="submit" class="del-btn">🗑 {escape(texts["btn_delete"])}</button>
+<button type="submit" class="del-btn">{_icon("trash")}{escape(texts["btn_delete"])}</button>
 </form>
 </div>"""
 
@@ -359,7 +370,7 @@ def _render_task(
 <details class="task-details">
 <summary class="task-summary">
 <div class="title">{escape(task["title"])}</div>
-<div class="meta">📅 {local_due.strftime('%d.%m.%Y %H:%M')}{repeat_html}</div>
+<div class="{meta_class}">{local_due.strftime('%d.%m.%Y %H:%M')}</div>
 {tag_html}
 </summary>
 {expanded_html}

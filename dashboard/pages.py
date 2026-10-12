@@ -9,32 +9,47 @@ from aiohttp import web as aioweb
 from .assets import DASHBOARD_JS_URL, stylesheets
 from .texts import _dt_flat
 
-# Шрифты: было 11 отдельных начертаний (Fraunces 6 + Inter 5) — 11 файлов и
-# render-blocking CSS-запрос на сторонний домен перед первой отрисовкой. Стало
-# три вариативных файла по реально используемым диапазонам (Fraunces 600-700
-# прямой + 400-600 курсив, Inter 400-600), а сама таблица стилей грузится
-# неблокирующе: media="print" + onload переключает её на all, когда она
-# приехала. Текст виден сразу системным шрифтом и подменяется по display=swap,
-# не задерживая первый кадр.
-_FONT_CSS_URL = ("https://fonts.googleapis.com/css2?"
-                 "family=Fraunces:ital,wght@0,600..700;1,400..600&family=Inter:wght@400..600&display=swap")
+# Шрифт — системный (SF Pro на Apple, Roboto на Android, Segoe UI на Windows):
+# ни одного стороннего запроса перед первой отрисовкой, а оптический размер и
+# трекинг система подбирает сама. Раньше грузили Fraunces + Inter с Google Fonts.
 
-# Детектор мощного устройства — синхронно, до таблиц стилей, чтобы не было
-# «мигания» дешёвого вида перед дорогим. По умолчанию страница рисуется в
-# облегчённом режиме (без backdrop-filter, зерна, каскадных анимаций — см.
-# base.css); класс fx на <html> включает эти эффекты, только если это похоже
-# на настольный компьютер с запасом мощности: точный указатель с hover,
-# широкий экран, >= 8 ГБ памяти и >= 6 потоков, и человек не просил систему
-# экономить трафик или движение. Телефон уровня Snapdragon 645 (8 ядер, но
-# 4 ГБ и сенсорный экран) сюда не попадает.
+# Детектор уровня устройства — синхронно, до таблиц стилей, чтобы не было
+# «мигания» дешёвого вида перед дорогим. Три уровня (см. base.css):
+#   слабое — без класса: сплошные поверхности, только короткие кроссфейды;
+#   среднее — .mid: >= 6 ГБ памяти и >= 6 потоков (deviceMemory браузеры
+#     округляют: 4 ГБ — это слабый телефон уровня Snapdragon 645, 8 ГБ —
+#     нормальный современный); блюр только у панели навигации, анимация
+#     раскрытия, лайтбокс из миниатюры со свайпом;
+#   мощное — .mid.fx: вдобавок настольный указатель, широкий экран и >= 8 ГБ;
+#     блюр у панелей и лайтбокса, подсветка при наведении.
+# Просьба системы экономить трафик или движение оставляет слабый уровень.
+# Без deviceMemory (Safari, Firefox) считаем 8 — это в основном iPhone/Mac.
 _FX_DETECT = (
-    "<script>(function(){try{var n=navigator,m=window.matchMedia;"
-    "if(m('(hover:hover) and (pointer:fine) and (min-width:900px)').matches"
-    "&&!m('(prefers-reduced-motion: reduce)').matches"
-    "&&!(n.connection&&n.connection.saveData)"
-    "&&(n.deviceMemory||8)>=8&&(n.hardwareConcurrency||8)>=6)"
-    "document.documentElement.classList.add('fx')}catch(e){}})()</script>"
+    "<script>(function(){try{var n=navigator,m=window.matchMedia,c=document.documentElement.classList;"
+    "if(m('(prefers-reduced-motion: reduce)').matches||(n.connection&&n.connection.saveData))return;"
+    "var mem=n.deviceMemory||8,cpu=n.hardwareConcurrency||8;"
+    "if(mem>=6&&cpu>=6){c.add('mid');"
+    "if(mem>=8&&m('(hover:hover) and (pointer:fine) and (min-width:900px)').matches)c.add('fx')}"
+    "}catch(e){}})()</script>"
 )
+
+# Иконки в духе SF Symbols — один спрайт на страницу, ссылки <use href="#i-…">
+# только в раскрытой (ленивой) части карточки: в свёрнутой иконок нет вовсе,
+# чтобы не умножать DOM на длину списка.
+_ICON_SPRITE = (
+    '<svg width="0" height="0" style="position:absolute" aria-hidden="true">'
+    '<symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>'
+    '<symbol id="i-fwd" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>'
+    '<symbol id="i-cam" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2l2-2.5h6L17 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/></symbol>'
+    '<symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/></symbol>'
+    '<symbol id="i-rep" viewBox="0 0 24 24"><path d="M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4"/></symbol>'
+    '<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>'
+    '</svg>'
+)
+
+# Шеврон «назад» для панели навигации вторичных страниц.
+_BACK_CHEVRON = ('<svg class="i" viewBox="0 0 24 24" aria-hidden="true">'
+                 '<path d="M15 4l-8 8 8 8"/></svg>')
 
 
 def _head(title_field: str, css_file: str, with_js: bool = False) -> str:
@@ -44,14 +59,12 @@ def _head(title_field: str, css_file: str, with_js: bool = False) -> str:
     fx_detect = _FX_DETECT.replace("{", "{{").replace("}", "}}")
     return f"""<!DOCTYPE html>
 <html lang="{{html_lang}}"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{{title_field}}}</title>
 {fx_detect}
-<meta name="color-scheme" content="dark">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="{_FONT_CSS_URL}" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="{_FONT_CSS_URL}"></noscript>
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 {stylesheets(css_file)}{js}
 </head>"""
 
@@ -59,6 +72,7 @@ def _head(title_field: str, css_file: str, with_js: bool = False) -> str:
 LOGIN_PAGE = _head("login_title", "login.css") + """
 <body>
 <form method="post" action="{login_action}" id="login-form">
+<div class="login-badge" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg></div>
 <h2>{login_heading}</h2>
 <input type="password" name="password" placeholder="{password_placeholder}" autofocus>
 <button type="submit">{btn_login}</button>
@@ -91,10 +105,24 @@ TELEGRAM_WIDGET_BANNER = """<div class="tg-widget-banner" data-token="{token}" d
 </div>"""
 
 
+def _navbar(title_field: str, left: str = "", right: str = "") -> str:
+    """Панель навигации iOS: слева «назад», по центру компактный заголовок,
+    справа ссылки. Компактный заголовок и материал под панелью проявляются,
+    когда большой заголовок уезжает под неё, — это CSS scroll-driven
+    animation (base.css), без единой строчки JS."""
+    return (f'<nav class="navbar"><div class="navbar-side">{left}</div>'
+            f'<div class="navbar-title">{{{title_field}}}</div>'
+            f'<div class="navbar-side navbar-right">{right}</div></nav>\n'
+            f'<h1 class="large-title">{{{title_field}}}</h1>')
+
+
+def _back_link() -> str:
+    return f'<a class="nav-back" href="/dashboard/{{token}}">{_BACK_CHEVRON}<span>{{nav_back}}</span></a>'
+
+
 TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 <body>
-<h1>{heading}</h1>
-{nav_html}
+""" + _ICON_SPRITE + "\n" + _navbar("heading", right="{nav_html}") + """
 {tg_widget_html}
 {new_task_error}
 <form class="new-task-form" method="post" action="/dashboard/{token}/tasks/new">
@@ -102,7 +130,7 @@ TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 <input type="text" name="title" placeholder="{new_title_placeholder}" maxlength="200" required>
 <textarea name="description" placeholder="{new_description_placeholder}" maxlength="4000" rows="2"></textarea>
 <input type="datetime-local" name="due_at" required>
-<button type="submit">{btn_add}</button>
+<button type="submit" class="btn-filled">{btn_add}</button>
 </form>
 {day_picker_html}
 {tasks_html}
@@ -111,8 +139,8 @@ TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 {nojs_html}
 <!-- Один оверлей на всю страницу вместо отдельного на каждую задачу с фото;
      открывается делегированным обработчиком из dashboard.js. -->
-<div class="photo-lightbox" id="ph-lb">
-<button type="button" class="photo-lightbox-close" aria-label="close">✕</button>
+<div class="photo-lightbox" id="ph-lb" role="dialog" aria-modal="true">
+<button type="button" class="photo-lightbox-close" aria-label="close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
 <!-- без src: пустой src="" некоторые браузеры трактуют как ссылку на саму
      страницу и уходят за ней лишним запросом -->
 <img alt="">
@@ -122,8 +150,7 @@ TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 
 HISTORY_PAGE = _head("history_page_title", "history.css") + """
 <body>
-<a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
-<h1>{history_heading}</h1>
+""" + _navbar("history_heading", left=_back_link()) + """
 {events_html}
 {load_more_html}
 </body></html>"""
@@ -131,16 +158,15 @@ HISTORY_PAGE = _head("history_page_title", "history.css") + """
 
 TEMPLATES_PAGE = _head("templates_page_title", "templates.css") + """
 <body>
-<a class="nav-link" href="/dashboard/{token}">{nav_back}</a>
-<h1>{templates_heading}</h1>
+""" + _navbar("templates_heading", left=_back_link()) + """
 {new_template_error}
 {templates_html}
 <form class="new-task-form" method="post" action="/dashboard/{token}/templates/new">
 <input type="hidden" name="csrf" value="{csrf}">
 <input type="text" name="title" placeholder="{new_template_title_placeholder}" maxlength="200" required>
-<label>{new_template_offset_label}</label>
 <input type="time" name="time_of_day" required>
-<input type="number" name="day_offset" min="0" max="365" value="0" required>
-<button type="submit">{btn_save_template}</button>
+<label class="field-row"><span>{new_template_offset_label}</span>
+<input type="number" name="day_offset" min="0" max="365" value="0" required></label>
+<button type="submit" class="btn-filled">{btn_save_template}</button>
 </form>
 </body></html>"""

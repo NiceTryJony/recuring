@@ -1,5 +1,4 @@
 /* Страница шаблонов. Карточка, кнопки действий, форма — в base.css. */
 .task-body { flex: 1; min-width: 0; }
-.nav-link { margin-right: var(--space-3); }
-.new-task-form { margin-top: var(--space-4); }
-.new-task-form label { font-size: 0.8rem; color: var(--ink-soft); }
+.task-body .task-actions { align-items: center; }
+.new-task-form { margin-top: 16px; }

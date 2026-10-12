@@ -275,13 +275,11 @@ async def test_static_route_does_not_shadow_dashboard_token(client):
     assert (await client.get(f"/dashboard/{TOKEN}/templates")).status == 200
 
 
-async def test_fonts_do_not_block_first_paint(client):
-    """Таблица стилей шрифтов грузится неблокирующе (media=print + onload),
-    а начертаний запрашивается ровно столько, сколько используется."""
+async def test_no_third_party_fonts(client):
+    """Шрифт системный: ни одного стороннего запроса перед первой отрисовкой."""
     body = await (await client.get(f"/dashboard/{TOKEN}")).text()
-    assert 'media="print" onload="this.media=' in body
-    assert "<noscript>" in body
-    assert "wght@0,600..700;1,400..600" in body and "Inter:wght@400..600" in body
+    assert "fonts.googleapis" not in body and "fonts.gstatic" not in body
+    assert 'content="light dark"' in body
 
 
 # ---------- фото: превью вместо полного кадра ----------
@@ -446,15 +444,17 @@ async def test_page_js_is_external_cached_file(client):
 
 
 async def test_heavy_effects_are_opt_in(client):
-    """Дорогие эффекты (блюр, зерно) — только под .fx, которую ставит детектор
-    мощного устройства; по умолчанию страница облегчённая."""
+    """Дорогие эффекты (блюр) — только под .mid/.fx, которые ставит детектор
+    среднего и мощного устройства; по умолчанию страница облегчённая."""
     await _login(client)
     body = await (await client.get(f"/dashboard/{TOKEN}")).text()
-    assert "classList.add('fx')" in body
+    assert "c.add('mid')" in body and "c.add('fx')" in body
     css_urls = re.findall(r'href="(/dashboard/static/[^"]+\.css)"', body)
     css = "".join([await (await client.get(u)).text() for u in css_urls])
-    for rule in re.findall(r"([^{}]*)\{[^{}]*backdrop-filter:\s*(?!none)[^;{}]+", css):
-        assert ".fx" in rule, rule
+    blur_rules = re.findall(r"([^{}]*)\{[^{}]*backdrop-filter:\s*(?!none)[^;{}]+", css)
+    assert blur_rules
+    for rule in blur_rules:
+        assert ".mid" in rule or ".fx" in rule, rule
     # анимировать filter нельзя ни в каком режиме — он пересчитывается каждый кадр
     for name, body_ in re.findall(r"@keyframes\s*([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}", css):
         assert "filter" not in body_, name
