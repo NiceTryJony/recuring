@@ -106,7 +106,7 @@ LOGIN_PAGE = _head("login_title", "login.css") + """
 <form method="post" action="{login_action}" id="login-form">
 <div class="login-badge" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg></div>
 <h2>{login_heading}</h2>
-<input type="password" name="password" placeholder="{password_placeholder}" autofocus>
+<div class="form-control"><input type="password" name="password" aria-label="{password_placeholder}" required autofocus><label>{password_placeholder_fl}</label></div>
 <button type="submit">{btn_login}</button>
 {error}
 </form>
@@ -175,7 +175,7 @@ TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 <h2>{btn_new_task}</h2>
 {new_task_error}
 <input type="hidden" name="csrf" value="{csrf}">
-<input type="text" name="title" placeholder="{new_title_placeholder}" maxlength="200" required>
+<div class="form-control"><input type="text" name="title" aria-label="{new_title_placeholder}" maxlength="200" required><label>{new_title_placeholder_fl}</label></div>
 <textarea name="description" placeholder="{new_description_placeholder}" maxlength="4000" rows="2"></textarea>
 <input type="datetime-local" name="due_at" required>
 <button type="submit" class="btn-filled">{btn_add}</button>
@@ -208,7 +208,7 @@ TEMPLATES_PAGE = _head("templates_page_title", "templates.css") + """
 {templates_html}
 <form class="new-task-form" method="post" action="/dashboard/{token}/templates/new">
 <input type="hidden" name="csrf" value="{csrf}">
-<input type="text" name="title" placeholder="{new_template_title_placeholder}" maxlength="200" required>
+<div class="form-control"><input type="text" name="title" aria-label="{new_template_title_placeholder}" maxlength="200" required><label>{new_template_title_placeholder_fl}</label></div>
 <input type="time" name="time_of_day" required>
 <label class="field-row"><span>{new_template_offset_label}</span>
 <input type="number" name="day_offset" min="0" max="365" value="0" required></label>

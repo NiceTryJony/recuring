@@ -105,7 +105,7 @@
   /* день в выборе дня */
   .fx .day-item:hover .day-number { background: var(--fill); transform: scale(1.14); }
   .fx .day-item.day-active:hover .day-number { background: var(--accent); }
-  .fx .check-btn:hover, .fx .subtask-check:hover { border-color: var(--accent); transform: scale(1.1); }
+  .fx .check-btn:hover, .fx .subtask-check:hover { transform: scale(1.1); }
 
   /* график: остальные приглушаются, выбранный вытягивается */
   .fx .bars:hover .col:not(:hover) .bar { opacity: 0.4; }

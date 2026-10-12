@@ -8,7 +8,12 @@ from html import escape
 
 import db
 
-from .texts import _dows, _dt, _months
+from .texts import _dows, _dt, _float_label, _months
+
+# Чекбокс WhiteNervosa (uiverse): контур-«капля» стирается, галочка дорисовывается.
+CHECK_SVG = ('<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M 1 9 L 1 9 c 0 -5 3 -8 8 -8 L 9 1 '
+             'C 14 1 17 5 17 9 L 17 9 c 0 4 -4 8 -8 8 L 9 17 C 5 17 1 14 1 9 L 1 9 Z"/>'
+             '<polyline points="1 9 7 14 15 4"/></svg>')
 
 
 def _icon(name: str) -> str:
@@ -239,7 +244,7 @@ def _render_subtasks(subtasks: list[dict], token: str, task_id: int, csrf: str, 
         rows.append(f"""<div class="{row_class}">
 <form method="post" action="/dashboard/{token}/subtasks/{st['id']}/toggle">
 <input type="hidden" name="csrf" value="{csrf}">
-<button type="submit" class="subtask-check" aria-label="toggle"></button>
+<button type="submit" class="subtask-check" aria-label="toggle">{CHECK_SVG}</button>
 </form>
 <span class="subtask-title">{escape(st["title"])}</span>
 <form method="post" action="/dashboard/{token}/subtasks/{st['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_subtask"])}')">
@@ -250,7 +255,7 @@ def _render_subtasks(subtasks: list[dict], token: str, task_id: int, csrf: str, 
     list_html = f'<div class="subtasks">{"".join(rows)}</div>' if rows else ""
     add_form = f"""<form class="subtask-add-form" method="post" action="/dashboard/{token}/tasks/{task_id}/subtasks/new">
 <input type="hidden" name="csrf" value="{csrf}">
-<input type="text" name="title" placeholder="{escape(texts["new_subtask_placeholder"])}" maxlength="200" required>
+<div class="form-control"><input type="text" name="title" aria-label="{escape(texts["new_subtask_placeholder"])}" maxlength="200" required><label>{_float_label(texts["new_subtask_placeholder"])}</label></div>
 <button type="submit" class="btn-tinted">{escape(texts["btn_add_subtask"])}</button>
 </form>"""
     return list_html + add_form
@@ -365,7 +370,7 @@ def _render_task(
     return f"""<div class="{css_class}" id="task-{task['id']}">
 <form method="post" action="/dashboard/{token}/tasks/{task['id']}/{toggle_action}">
 <input type="hidden" name="csrf" value="{csrf}">
-<button type="submit" class="check-btn" aria-label="toggle"></button>
+<button type="submit" class="check-btn" aria-label="toggle">{CHECK_SVG}</button>
 </form>
 <details class="task-details">
 <summary class="task-summary">

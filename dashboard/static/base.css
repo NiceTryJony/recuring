@@ -300,6 +300,23 @@ a { color: var(--accent); }
   display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); margin-bottom: var(--s4);
   background: var(--surface); border: 1px solid var(--sep); border-radius: var(--radius);
 }
+/* Поле с плавающей подписью по буквам (uiverse, liyaxu123): подпись — <label>
+   после <input required>; поднимается при фокусе и когда поле непустое. */
+.form-control { position: relative; margin: 20px 0 8px; width: 100%; text-align: left; }
+.form-control input {
+  display: block; width: 100%; padding: 15px 0 8px; border: 0; border-bottom: 2px solid var(--label-3);
+  border-radius: 0; background: transparent; color: var(--label); font: inherit; font-size: 1.125rem;
+  letter-spacing: inherit; transition: border-color 0.3s ease;
+}
+.form-control input:focus, .form-control input:valid { outline: 0; border-bottom-color: var(--accent); }
+.form-control label { position: absolute; top: 15px; left: 0; pointer-events: none; white-space: nowrap; }
+.form-control label span {
+  display: inline-block; min-width: 5px; font-size: 1.125rem; color: var(--label-3);
+  transition: 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+.form-control input:focus + label span, .form-control input:valid + label span {
+  color: var(--accent); transform: translateY(-30px);
+}
 .new-task-form > input:not([type=hidden]), .new-task-form > textarea, .field-row {
   width: 100%; min-height: 48px; padding: var(--s3) var(--s4);
   border: 1px solid transparent; border-radius: 12px;
