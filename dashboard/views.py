@@ -219,10 +219,14 @@ def _summary(texts: dict, today_n: int, overdue_n: int, streak: int | None, prog
     stats = [("today", today_n, texts["stat_today"]), ("overdue", overdue_n, texts["stat_overdue"])]
     if streak is not None:
         stats.append(("streak", streak, texts["stat_streak"]))
-    cells = "".join(
-        f'<div class="stat stat-{cls}"{f" style=\"--p:{progress}\"" if cls == "today" and progress is not None else ""}><span class="stat-num">{n}</span><span class="stat-label">{escape(label)}</span></div>'
-        for cls, n, label in stats
-    )
+    cells = []
+    for cls, n, label in stats:
+        ring = f' style="--p:{progress}"' if cls == "today" and progress is not None else ""
+        cells.append(
+            f'<div class="stat stat-{cls}"{ring}><span class="stat-num">{n}</span>'
+            f'<span class="stat-label">{escape(label)}</span></div>'
+        )
+    cells = "".join(cells)
     return f'<section class="summary">{cells}</section>'
 
 
