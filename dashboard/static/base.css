@@ -104,6 +104,16 @@ body {
 @keyframes pop { from { opacity: 0; transform: scale(0.6); } }
 
 /* ---------- панель навигации и заголовок ---------- */
+/* Переход между страницами дашборда (View Transitions между документами):
+   без JS и без перезагрузочного «мигания». Панели остаются на месте, меняется
+   только содержимое. Поддержка — Chrome/Safari 18+; остальные просто грузят
+   страницу как раньше. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+  ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 0.2s; }
+  .navbar { view-transition-name: navbar; }
+  .tabbar { view-transition-name: tabbar; }
+}
 .navbar {
   position: sticky; top: 0; z-index: 50;
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s2);
@@ -332,6 +342,19 @@ a { color: var(--accent); }
   background: var(--fill); color: var(--label); font: inherit;
 }
 .new-task-error { color: var(--red); font-size: 0.875rem; }
+
+/* ---------- fetch-действия: ожидание ответа и тост ---------- */
+.task.pending, .subtask-row.pending { opacity: 0.5; pointer-events: none; transition: opacity 0.15s ease; }
+.toast {
+  position: fixed; z-index: 3000; left: 50%; max-width: min(90vw, 420px); padding: 10px 16px;
+  bottom: calc(var(--tabbar-h) + var(--s4) + env(safe-area-inset-bottom));
+  transform: translateX(-50%); border-radius: 999px; background: var(--label); color: var(--bg);
+  font-size: 0.9375rem; text-align: center; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  animation: toast-in 0.35s var(--spring);
+}
+.toast.out { opacity: 0; transition: opacity 0.3s ease; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 12px); } }
+@media (min-width: 900px) { .toast { bottom: var(--s5); } }
 
 /* ---------- нижняя панель разделов (телефон / Mini App) ---------- */
 .tabbar {

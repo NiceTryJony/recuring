@@ -72,6 +72,7 @@ def _head(title_field: str, css_file: str, with_js: bool = False) -> str:
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#f3f5f9" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+<meta name="x-err" content="{{action_failed}}">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 {stylesheets(css_file)}{js}
 </head>"""
@@ -172,7 +173,7 @@ TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 {nojs_html}
 <details class="add-sheet"{add_open}>
 <summary class="fab" aria-label="{btn_new_task}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus"/></svg></summary>
-<form class="new-task-form" method="post" action="/dashboard/{token}/tasks/new">
+<form class="new-task-form" method="post" action="/dashboard/{token}/tasks/new" data-ajax="create">
 <h2>{btn_new_task}</h2>
 {new_task_error}
 <input type="hidden" name="csrf" value="{csrf}">

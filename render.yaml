@@ -15,3 +15,5 @@ services:
         sync: false
       - key: DASHBOARD_BASE_URL
         sync: false
+      - key: BOT_USERNAME
+        sync: false

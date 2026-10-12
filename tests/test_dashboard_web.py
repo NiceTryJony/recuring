@@ -531,6 +531,106 @@ async def test_webapp_auth_rejects_bad_init_data(client, settings, init_data):
     assert not resp.cookies
 
 
+# ---------- действия без перезагрузки (Accept: application/json) ----------
+
+JSON = {"Accept": "application/json"}
+
+
+async def _post_json(client, path, csrf, **fields):
+    return await client.post(f"/dashboard/{TOKEN}{path}", data={"csrf": csrf, **fields}, headers=JSON)
+
+
+async def test_page_marks_forms_for_ajax_and_cards_with_due(client):
+    await _login(client)
+    page = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert 'data-ajax="task"' in page and 'data-ajax="create"' in page
+    assert re.search(r'id="task-1" data-due="\d+"', page)
+    assert 'name="x-err"' in page
+
+
+async def test_done_json_returns_card_stats_and_chart(client, spy):
+    csrf = await _login(client)
+    resp = await _post_json(client, "/tasks/1/done", csrf, ctx="")
+    assert resp.status == 200 and resp.content_type == "application/json"
+    p = await resp.json()
+    assert (p["task_id"], p["action"]) == (1, "done")
+    assert 'id="task-1"' in p["card"] and p["empty"] is None
+    assert {"today", "overdue", "progress"} <= set(p["stats"]) and "chart" in p
+    assert 'class="view-tab active"' in p["controls"]
+    assert spy["unscheduled"] == [1]          # побочные эффекты те же, что у обычной формы
+
+
+async def test_json_card_is_null_when_task_leaves_current_view(client):
+    """Задача на завтра не входит во вкладку «Сегодня» -> клиент уберёт карточку."""
+    csrf = await _login(client)
+    p = await (await _post_json(client, "/tasks/1/done", csrf, ctx="?view=today")).json()
+    assert p["card"] is None and p["empty"]
+
+
+async def test_delete_json_has_no_card(client):
+    csrf = await _login(client)
+    p = await (await _post_json(client, "/tasks/1/delete", csrf)).json()
+    assert p["card"] is None and p["action"] == "delete" and p["task_id"] == 1
+
+
+async def test_postpone_json_skips_chart(client):
+    csrf = await _login(client)
+    p = await (await _post_json(client, "/tasks/1/postpone", csrf)).json()
+    assert "chart" not in p and p["action"] == "postpone"
+
+
+async def test_json_garbage_ctx_falls_back_to_defaults(client):
+    csrf = await _login(client)
+    resp = await _post_json(client, "/tasks/1/done", csrf, ctx="?view=zzz&group=zzz&date=bad&done_limit=x")
+    assert resp.status == 200 and (await resp.json())["card"]
+
+
+async def test_json_errors_keep_status_codes(client):
+    csrf = await _login(client)
+    assert (await _post_json(client, "/tasks/1/done", "bad")).status == 403
+    assert (await _post_json(client, "/tasks/999/done", csrf)).status == 404
+
+
+async def test_create_json_returns_card(client, task, monkeypatch):
+    csrf = await _login(client)
+    new = {**task, "id": 42, "title": "новая"}
+
+    async def tasks(*a, **kw):
+        return [task, new]
+
+    monkeypatch.setattr(db, "get_tasks", tasks)
+    resp = await _post_json(client, "/tasks/new", csrf, title="новая", due_at="2027-01-02T08:15", ctx="")
+    p = await resp.json()
+    assert resp.status == 200 and p["task_id"] == 42 and 'id="task-42"' in p["card"]
+
+
+async def test_create_json_validation_errors_are_422(client, spy):
+    csrf = await _login(client)
+    empty = await _post_json(client, "/tasks/new", csrf, title="  ", due_at="2027-01-02T08:15")
+    bad = await _post_json(client, "/tasks/new", csrf, title="x", due_at="nope")
+    assert empty.status == 422 and (await empty.json())["error"]
+    assert bad.status == 422 and (await bad.json())["error"]
+    assert not spy["added"]
+
+
+async def test_description_json_returns_block(client):
+    csrf = await _login(client)
+    p = await (await _post_json(client, "/tasks/1/edit", csrf, description="текст <b>")).json()
+    assert 'class="desc-block"' in p["description"] and "текст &lt;b&gt;" in p["description"]
+
+
+async def test_subtask_create_json_returns_block(client):
+    csrf = await _login(client)
+    p = await (await _post_json(client, "/tasks/1/subtasks/new", csrf, title="шаг")).json()
+    assert p["task_id"] == 1 and 'class="subtasks-block"' in p["subtasks"]
+
+
+async def test_non_json_requests_still_redirect(client):
+    csrf = await _login(client)
+    resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/postpone", data={"csrf": csrf}, allow_redirects=False)
+    assert resp.status == 302
+
+
 # ---------- «Поделиться задачей» ----------
 
 @pytest_asyncio.fixture

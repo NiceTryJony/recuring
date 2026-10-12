@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 from zoneinfo import ZoneInfo
 
 UTC = ZoneInfo("UTC")
@@ -28,6 +29,9 @@ AVATAR_CACHE_SECONDS = 3600  # getFile-ссылка живёт ~1ч, чтобы 
 # Домен, на котором крутится дашборд, должен быть прописан боту через
 # /setdomain в BotFather, иначе виджет откажется логинить.
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
+
+# Код из db.get_or_create_task_share: 's_' + token_urlsafe(9) (12 символов).
+SHARE_CODE_RE = re.compile(r"s_[A-Za-z0-9_-]{12}")
 
 # Сколько выполненных задач показывать на главной странице за раз. Активные
 # выводятся все; выполненные копятся годами, и раньше страница рендерила их
