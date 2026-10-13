@@ -10,34 +10,14 @@
    надпись или одно кольцо. fill-mode у входных анимаций — backwards, а не both,
    иначе замороженное значение transform перебивает hover. */
 
-.fx { interpolate-size: allow-keywords; --glow: color-mix(in srgb, var(--accent) 16%, transparent); }
+.fx { interpolate-size: allow-keywords; }
 
-/* ---------- фон: аврора из трёх пятен + сетка с виньеткой ----------
-   По одному фиксированному слою на пятно, двигается только transform
-   (композитор); параллакс по скроллу — отдельным свойством translate, чтобы не
-   спорить с дрейфом. Сетка — один статичный слой (градиенты, без картинок). */
+/* ---------- фон: статичная сетка и подсветка под курсором ----------
+   Сетка — один неподвижный слой (ниже), рисуется один раз. Подсветка линий —
+   маленький слой .fx-hot (его создаёт fx.js), который двигается ТОЛЬКО через
+   transform: ни маска, ни линии внутри не перерисовываются. Дрейфующих
+   цветных пятен больше нет — они отвлекали. */
 .fx body { background: transparent; }
-.fx body::before, .fx body::after, .fx::before {
-  content: ""; position: fixed; z-index: -1; width: 60vmax; height: 60vmax; border-radius: 50%;
-  pointer-events: none; will-change: transform;
-}
-.fx body::before {
-  left: -26vmax; top: -22vmax;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 20%, transparent), transparent);
-  animation: fx-drift-a 38s ease-in-out infinite alternate;
-}
-.fx body::after {
-  right: -26vmax; bottom: -26vmax;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 60%, #22d3ee 40%) 0%, transparent 100%);
-  opacity: 0.16;
-  animation: fx-drift-b 46s ease-in-out infinite alternate;
-}
-.fx::before {
-  right: -20vmax; top: -30vmax; width: 50vmax; height: 50vmax;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 55%, #c084fc 45%) 0%, transparent 100%);
-  opacity: 0.12;
-  animation: fx-drift-c 52s ease-in-out infinite alternate;
-}
 .fx::after {
   content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.55;
   background-image:
@@ -47,14 +27,18 @@
   -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000, transparent 75%);
   mask-image: radial-gradient(ellipse 70% 60% at 50% 25%, #000, transparent 75%);
 }
-@keyframes fx-drift-a { to { transform: translate(20vmax, 14vmax) scale(1.18); } }
-@keyframes fx-drift-b { to { transform: translate(-18vmax, -12vmax) scale(1.12); } }
-@keyframes fx-drift-c { to { transform: translate(-14vmax, 18vmax) scale(1.25); } }
-@supports (animation-timeline: scroll()) {
-  @keyframes fx-par-a { to { translate: 0 -12vmax; } }
-  @keyframes fx-par-b { to { translate: 0 10vmax; } }
-  .fx body::before { animation: fx-drift-a 38s ease-in-out infinite alternate, fx-par-a linear both; animation-timeline: auto, scroll(root); }
-  .fx body::after { animation: fx-drift-b 46s ease-in-out infinite alternate, fx-par-b linear both; animation-timeline: auto, scroll(root); }
+.fx .fx-hot {
+  position: fixed; left: 0; top: 0; width: 520px; height: 520px; z-index: -1; pointer-events: none;
+  overflow: hidden; opacity: 0; transition: opacity 0.3s ease; will-change: transform;
+  -webkit-mask-image: radial-gradient(circle closest-side, #000, transparent);
+  mask-image: radial-gradient(circle closest-side, #000, transparent);
+}
+.fx .fx-hot.on { opacity: 0.55; }
+.fx .fx-hot i {
+  position: absolute; left: 0; top: 0; width: 576px; height: 576px; will-change: transform;
+  background-image: linear-gradient(color-mix(in srgb, var(--accent) 55%, transparent) 1px, transparent 1px),
+                    linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
 }
 
 /* ---------- появление при прокрутке ---------- */
@@ -73,15 +57,29 @@
 .fx .task, .fx .event {
   transition: transform 0.4s var(--spring), box-shadow 0.4s var(--ease), background-color 0.15s ease;
 }
-.fx .task::before, .fx .event::before, .fx .chart-block::before, .fx .day-picker::before, .fx .new-task-form::before {
-  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
-  opacity: 0; transition: opacity 0.35s ease;
-  background: radial-gradient(340px circle at var(--mx, 50%) var(--my, 50%), var(--glow), transparent 70%);
+.fx .fx-sp {
+  position: absolute; inset: 0; z-index: -1; overflow: hidden; border-radius: inherit; pointer-events: none;
+  opacity: 0; transition: opacity 0.3s ease;
 }
+.fx .fx-sp b {
+  position: absolute; left: 0; top: 0; width: 320px; height: 320px; margin: -160px 0 0 -160px; border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%);
+}
+.fx .fx-sp.fx-ring {
+  padding: 1px; -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.fx .fx-sp.fx-ring b {
+  width: 260px; height: 260px; margin: -130px 0 0 -130px;
+  background: radial-gradient(circle, var(--accent), transparent 70%);
+}
+.fx .task:hover > .fx-sp, .fx .event:hover > .fx-sp, .fx .chart-block:hover > .fx-sp,
+.fx .day-picker:hover > .fx-sp, .fx .stat:hover > .fx-sp { opacity: 1; }
+.fx .task:hover > .fx-sp b, .fx .stat:hover > .fx-sp b { will-change: transform; }
+/* Пока курсор над карточкой, наклон следует за ним без «хвоста». */
+.fx .tilting { transition: transform 0.12s ease-out !important; }
 @media (hover: hover) and (pointer: fine) {
-  .fx .task:hover, .fx .event:hover { transform: translateY(-2px); box-shadow: 0 14px 30px -16px rgba(0, 0, 0, 0.32); }
-  .fx .task:hover::before, .fx .event:hover::before, .fx .chart-block:hover::before,
-  .fx .day-picker:hover::before, .fx .new-task-form:hover::before { opacity: 1; }
+  .fx .task:hover, .fx .event:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
 
   /* линия под заголовком выезжает слева и работает на переносах строк */
   .fx .title {
@@ -116,25 +114,8 @@
   .fx .task-photo:hover img { transform: scale(1.07); }
 }
 
-/* ---------- градиентная рамка за курсором ----------
-   Появляется только у карточки под курсором (pseudo без content не строится
-   вовсе) — на остальных карточках страницы это не стоит ничего. */
+/* Плитки сводки: подсветка и рамка — те же .fx-sp, что у карточек. */
 .fx .stat { position: relative; isolation: isolate; }
-.fx .stat {
-  background: linear-gradient(155deg, color-mix(in srgb, var(--surface) 90%, var(--accent)), var(--surface) 70%);
-}
-.fx .stat-num { text-shadow: 0 0 22px color-mix(in srgb, currentColor 40%, transparent); }
-@keyframes fx-edge { from { opacity: 0; } }
-@media (hover: hover) and (pointer: fine) {
-  .fx .task:hover::after, .fx .event:hover::after, .fx .chart-block:hover::after,
-  .fx .day-picker:hover::after, .fx .stat:hover::after {
-    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; pointer-events: none;
-    background: radial-gradient(280px circle at var(--mx, 50%) var(--my, 50%), color-mix(in srgb, var(--accent) 85%, #fff), transparent 65%);
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor; mask-composite: exclude;
-    animation: fx-edge 0.35s ease backwards;
-  }
-}
 
 /* ---------- раскрытие карточки ---------- */
 @supports selector(::details-content) {
@@ -161,13 +142,6 @@
 .fx .chart-block.rv:not(.in) .bar { transform: scaleY(0); }
 .fx .chart-block.rv.in .bar { animation: fx-grow 0.95s var(--spring) backwards; animation-delay: calc(var(--i, 0) * 45ms + 120ms); }
 
-/* «Серия дней» переливается — одна маленькая надпись. */
-@keyframes fx-shimmer { to { background-position: -250% 0; } }
-.fx .streak {
-  background: linear-gradient(90deg, var(--orange) 0 35%, #ffd60a 50%, var(--orange) 65% 100%) 0 0 / 250% 100%;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: fx-shimmer 5s linear infinite;
-}
 
 /* «Сегодня» пульсирует кольцом три раза и успокаивается. */
 @keyframes fx-ring {
@@ -233,7 +207,7 @@
 }
 
 /* ---------- график: градиентные столбики и тултип ---------- */
-.fx .bar { background: linear-gradient(to top, var(--accent), color-mix(in srgb, var(--accent) 55%, #22d3ee)); }
+.fx .bar { background: var(--accent); }
 .fx .bar.zero { background: var(--fill); }
 .fx .col { position: relative; }
 @media (hover: hover) and (pointer: fine) {
@@ -245,12 +219,8 @@
   }
 }
 
-/* ---------- заголовок: градиентный текст ---------- */
+/* ---------- заголовок ---------- */
 .fx .large-title { text-wrap: balance; }
-.fx .large-title .w {
-  background: linear-gradient(100deg, var(--label) 30%, color-mix(in srgb, var(--accent) 75%, #22d3ee));
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-}
 
 /* ---------- подсказка по клавишам ---------- */
 .fx .fx-help {
@@ -263,3 +233,53 @@
   animation: rise 0.3s var(--spring) backwards;
 }
 .fx .task-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 6px; }
+
+/* ---------- выполнение: волна света по карточке ---------- */
+.fx .fx-wave { position: absolute; inset: 0; z-index: 1; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.fx .fx-wave b {
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--accent) 30%, transparent) 50%, transparent 70%);
+  transform: translateX(-100%); animation: fx-wave 0.95s cubic-bezier(0.22, 0.9, 0.3, 1) forwards;
+}
+@keyframes fx-wave { 80% { opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+
+/* ---------- кнопка «+»: тянется к курсору, рядом проступает свет ---------- */
+.fx .fx-fabglow {
+  position: fixed; z-index: 69; width: 220px; height: 220px; margin: -110px 0 0 -110px; border-radius: 50%;
+  pointer-events: none; opacity: 0; will-change: transform, opacity; transition: opacity 0.25s ease;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 42%, transparent), transparent 60%);
+}
+
+/* ---------- палитра команд: Ctrl/Cmd + K ---------- */
+.fx .fx-pal-back {
+  position: fixed; inset: 0; z-index: 3100; display: flex; justify-content: center; align-items: flex-start;
+  padding-top: 14vh; background: color-mix(in srgb, var(--label) 30%, transparent);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  opacity: 0; visibility: hidden; transition: opacity 0.2s ease, visibility 0s linear 0.2s;
+}
+.fx .fx-pal-back.open { opacity: 1; visibility: visible; transition-delay: 0s; }
+.fx .fx-pal {
+  width: min(620px, 92vw); border-radius: 18px; overflow: hidden; background: var(--surface); border: 1px solid var(--sep);
+  box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.45), 0 0 0 6px color-mix(in srgb, var(--accent) 12%, transparent);
+  transform: translateY(-14px) scale(0.96); transition: transform 0.4s var(--ease);
+}
+.fx .fx-pal-back.open .fx-pal { transform: none; }
+.fx .fx-pal input {
+  width: 100%; height: 62px; padding: 0 22px; border: 0; border-bottom: 1px solid var(--sep);
+  background: transparent; color: var(--label); font: inherit; font-size: 1.125rem; font-weight: 700; outline: none;
+}
+.fx .fx-pal input::placeholder { color: var(--label-2); font-weight: 600; }
+.fx .fx-pal-list { max-height: min(380px, 50vh); overflow: auto; padding: var(--s2); }
+.fx .fx-pal-h { padding: 10px 12px 4px; font-size: 0.75rem; font-weight: 800; color: var(--label-2); }
+.fx .fx-pal-i {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 0 12px; border: 0;
+  border-radius: 10px; background: transparent; color: var(--label); text-align: left; font-weight: 700; font-size: 0.9375rem;
+  transition: background-color 0.12s ease;
+}
+.fx .fx-pal-i.on { background: var(--accent-tint); }
+.fx .fx-pal-i small { margin-left: auto; color: var(--label-2); font-weight: 700; font-size: 0.75rem; }
+.fx .fx-pal-i.on small { color: var(--accent); }
+.fx .fx-pal-empty { padding: 28px 12px; text-align: center; color: var(--label-2); font-weight: 600; }
+
+/* мягкая объёмность карточек — только на ПК (на телефонах рамка без теней) */
+.fx .task, .fx .event, .fx .stat, .fx .chart-block, .fx .day-picker { box-shadow: var(--shadow); }

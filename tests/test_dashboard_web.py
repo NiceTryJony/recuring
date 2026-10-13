@@ -263,6 +263,48 @@ async def test_static_css_is_immutable_and_revalidates_with_etag(client):
     assert await again.read() == b""
 
 
+async def test_font_files_referenced_by_css_are_served_without_gzip(client):
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    css_url = re.search(r'href="(/dashboard/static/base\.[0-9a-f]+\.css)"', body).group(1)
+    css = await (await client.get(css_url)).text()
+    fonts = re.findall(r'url\("?(/dashboard/static/[^")]+\.woff2)"?\)', css)
+    assert len(fonts) == 6 and len(set(fonts)) == 6   # Manrope и Source Serif 4: латиница, кириллица, latin-ext
+    for url in fonts:
+        resp = await client.get(url, headers={"Accept-Encoding": "gzip"})
+        assert resp.status == 200 and resp.content_type == "font/woff2"
+        assert "Content-Encoding" not in resp.headers
+        assert "immutable" in resp.headers["Cache-Control"]
+
+
+async def test_tasks_page_has_performance_sheet_and_detector_override(client):
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert 'id="perf-open"' in body and 'id="perf-back"' in body
+    for level in ("auto", "full", "lite", "min"):
+        assert f'data-l="{level}"' in body
+    # ручной выбор уровня главнее автоматики детектора
+    assert "localStorage.getItem('perf')" in body and "c.add('min')" in body
+
+
+def test_performance_sheet_texts_exist_in_every_language():
+    from dashboard.texts import DASHBOARD_TEXTS
+
+    keys = {"perf_open", "perf_title", "perf_desc", "perf_auto", "perf_full", "perf_lite", "perf_min",
+            "perf_haptic", "perf_swipe"}
+    for lang, texts in DASHBOARD_TEXTS.items():
+        assert keys <= texts.keys(), (lang, keys - texts.keys())
+
+
+async def test_minimal_level_disables_all_transitions_in_base_css(client):
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    url = re.search(r'href="(/dashboard/static/base\.[0-9a-f]+\.css)"', body).group(1)
+    css = await (await client.get(url)).text()
+    rule = re.search(r"\.min \*[^{]*\{([^}]*)\}", css)
+    assert rule and re.search(r"transition:none\s*!important", rule.group(1)) and re.search(r"animation:none\s*!important", rule.group(1))
+
+
 async def test_unknown_static_file_is_404(client):
     assert (await client.get("/dashboard/static/nope.css")).status == 404
 

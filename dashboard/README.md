@@ -9,7 +9,7 @@
 | `views.py` | GET-страницы | `handle_dashboard` (список), `handle_chart` (график отдельно), `handle_history`, `handle_templates_page`, `handle_share_preview`; `_page_state` — единый загрузчик данных страницы |
 | `actions.py` | POST-действия | задачи, подзадачи, шаблоны, вход (Telegram Login / Mini App), «Поделиться». У каждого: сессия + CSRF + проверка владения |
 | `fragments.py` | JSON-ответы для действий без перезагрузки | `wants_json` (`Accept: application/json`), `state_payload` (карточка + сводка + вкладки), `subtasks_payload`, `description_payload` |
-| `pages.py` | HTML-каркасы страниц | `TASKS_PAGE`, `LOGIN_PAGE`, `SHARE_PAGE`, `WEBAPP_ENTRY_PAGE`, спрайт иконок, детектор мощности устройства (`.mid` / `.fx`) |
+| `pages.py` | HTML-каркасы страниц | `TASKS_PAGE`, `LOGIN_PAGE`, `SHARE_PAGE`, `WEBAPP_ENTRY_PAGE`, спрайт иконок, детектор мощности устройства (`.mid` / `.fx` / `.min`; ручной выбор из шторки «Производительность» в `localStorage 'perf'` главнее автоматики), разметка этой шторки |
 | `render.py` | HTML кусков | `_render_task` (карточка), подзадачи, описание, фото, график, панель дней |
 | `texts.py` | Переводы (ru/en/pl) | `DASHBOARD_TEXTS`, `_dt(lang)`; `*_fl` — подписи полей по буквам |
 | `security.py` | Защита | пароли (PBKDF2), подписанные cookie-сессии, CSRF, проверка Telegram Login и `initData`, ограничение попыток входа |
