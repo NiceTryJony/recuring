@@ -24,13 +24,18 @@ from .texts import _dt_flat
 #     блюр у панелей и лайтбокса, подсветка при наведении, а главное — именно тут
 #     подгружаются fx.css и fx.js со всеми анимациями для ПК (текст, блоки, hover).
 # Просьба системы экономить трафик или движение оставляет слабый уровень.
+# Ручной выбор в шторке «Производительность» (localStorage 'perf': auto / full / lite / min)
+# главнее автоматики: lite — слабый уровень, min — вдобавок без единой анимации (класс .min),
+# full — как «мощное» устройство, но fx-эффекты только при мыши и широком экране.
 # Без deviceMemory (Safari, Firefox) считаем 8 — это в основном iPhone/Mac.
 _FX_DETECT = (
-    "<script>(function(){try{var n=navigator,m=window.matchMedia,c=document.documentElement.classList;"
+    "<script>(function(){try{var n=navigator,m=window.matchMedia,c=document.documentElement.classList,p='';"
+    "try{p=localStorage.getItem('perf')||''}catch(e){}"
+    "if(p==='min'){c.add('min');return}if(p==='lite')return;"
     "if(m('(prefers-reduced-motion: reduce)').matches||(n.connection&&n.connection.saveData))return;"
-    "var mem=n.deviceMemory||8,cpu=n.hardwareConcurrency||8;"
-    "if(mem>=6&&cpu>=6){c.add('mid');"
-    "if(mem>=8&&m('(hover:hover) and (pointer:fine) and (min-width:900px)').matches){c.add('fx');"
+    "var mem=n.deviceMemory||8,cpu=n.hardwareConcurrency||8,full=p==='full';"
+    "if(full||(mem>=6&&cpu>=6)){c.add('mid');"
+    "if((full||mem>=8)&&m('(hover:hover) and (pointer:fine) and (min-width:900px)').matches){c.add('fx');"
     "var h=document.head,l=document.createElement('link'),s=document.createElement('script');"
     "l.rel='stylesheet';l.href='__FX_CSS__';s.src='__FX_JS__';h.appendChild(l);h.appendChild(s)}}"
     "}catch(e){}})()</script>"
@@ -47,6 +52,7 @@ _ICON_SPRITE = (
     '<symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/></symbol>'
     '<symbol id="i-rep" viewBox="0 0 24 24"><path d="M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4"/></symbol>'
     '<symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V3M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></symbol>'
+    '<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>'
     '<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>'
     '<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>'
     '<symbol id="i-tpl" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 10v10"/></symbol>'
@@ -70,8 +76,8 @@ def _head(title_field: str, css_file: str, with_js: bool = False) -> str:
 <title>{{{title_field}}}</title>
 {fx_detect}
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f3f5f9" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3efe6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151716" media="(prefers-color-scheme: dark)">
 <meta name="x-err" content="{{action_failed}}">
 <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
 {stylesheets(css_file)}{js}
@@ -149,14 +155,14 @@ TELEGRAM_WIDGET_BANNER = """<div class="tg-widget-banner" data-token="{token}" d
 </div>"""
 
 
-def _navbar(title_field: str, left: str = "", right: str = "") -> str:
+def _navbar(title_field: str, left: str = "", right: str = "", tools: str = "") -> str:
     """Панель навигации iOS: слева «назад», по центру компактный заголовок,
     справа ссылки. Компактный заголовок и материал под панелью проявляются,
     когда большой заголовок уезжает под неё, — это CSS scroll-driven
     animation (base.css), без единой строчки JS."""
     return (f'<nav class="navbar"><div class="navbar-side">{left}</div>'
             f'<div class="navbar-title">{{{title_field}}}</div>'
-            f'<div class="navbar-side navbar-right">{right}</div></nav>\n'
+            f'<div class="navbar-side navbar-right"><span class="nav-links">{right}</span>{tools}</div></nav>\n'
             f'<h1 class="large-title">{{{title_field}}}</h1>')
 
 
@@ -166,7 +172,7 @@ def _back_link() -> str:
 
 TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 <body>
-""" + _ICON_SPRITE + "\n" + _navbar("heading", right="{nav_html}") + """
+""" + _ICON_SPRITE + "\n" + _navbar("heading", right="{nav_html}", tools='<button type="button" class="perf-btn" id="perf-open" aria-label="{perf_open}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sliders"/></svg></button>') + """
 {tg_widget_html}
 <div class="layout">
 <aside class="side">
@@ -193,6 +199,17 @@ TASKS_PAGE = _head("page_title", "tasks.css", with_js=True) + """
 <button type="submit" class="btn-filled">{btn_add}</button>
 </form>
 </details>
+<div class="perf-back" id="perf-back" aria-hidden="true">
+<div class="perf-sheet" role="dialog" aria-modal="true" aria-labelledby="perf-t">
+<h2 id="perf-t">{perf_title}</h2>
+<p>{perf_desc}</p>
+<div class="perf-lv" role="group" aria-labelledby="perf-t">
+<button type="button" data-l="auto">{perf_auto}</button><button type="button" data-l="full">{perf_full}</button><button type="button" data-l="lite">{perf_lite}</button><button type="button" data-l="min">{perf_min}</button>
+</div>
+<button type="button" class="perf-sw" role="switch" data-k="haptic"><b>{perf_haptic}</b><i></i></button>
+<button type="button" class="perf-sw" role="switch" data-k="swipe"><b>{perf_swipe}</b><i></i></button>
+</div>
+</div>
 {tabbar_html}
 <!-- Один оверлей на всю страницу вместо отдельного на каждую задачу с фото;
      открывается делегированным обработчиком из dashboard.js. -->

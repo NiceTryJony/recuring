@@ -20,9 +20,9 @@ from aiohttp import web as aioweb
 
 STATIC_DIR = Path(__file__).with_name("static")
 _STATIC_CACHE_SECONDS = 365 * 24 * 3600
-_CONTENT_TYPES = {".css": "text/css", ".js": "application/javascript"}
-# имя файла -> (тело, ETag, предсжатое gzip-тело, content-type)
-_STATIC: dict[str, tuple[bytes, str, bytes, str]] = {}
+_CONTENT_TYPES = {".css": "text/css", ".js": "application/javascript", ".woff2": "font/woff2"}
+# имя файла -> (тело, ETag, предсжатое gzip-тело или None, content-type)
+_STATIC: dict[str, tuple[bytes, str, bytes | None, str]] = {}
 
 
 def _minify_css(css: str) -> str:
@@ -64,6 +64,17 @@ def publish(filename: str) -> str:
     return f"/dashboard/static/{name}"
 
 
+def publish_font(filename: str) -> None:
+    """Шрифты .woff2 отдаются под своим именем (версия шрифта — в имени файла,
+    на него ссылается @font-face в base.css) и без gzip: woff2 уже сжат."""
+    body = (STATIC_DIR / filename).read_bytes()
+    digest = hashlib.sha256(body).hexdigest()[:12]
+    _STATIC[filename] = (body, f'"{digest}"', None, _CONTENT_TYPES[".woff2"])
+
+
+for _font in sorted(STATIC_DIR.glob("*.woff2")):
+    publish_font(_font.name)
+
 BASE_CSS_URL = publish("base.css")
 DASHBOARD_JS_URL = publish("dashboard.js")
 # Эффекты для ПК: в HTML их нет, детектор в pages.py подгружает оба файла
@@ -93,7 +104,7 @@ async def handle_static(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=304, headers={"ETag": etag})
     headers = {"Cache-Control": f"public, max-age={_STATIC_CACHE_SECONDS}, immutable",
                "ETag": etag, "Vary": "Accept-Encoding"}
-    if "gzip" in request.headers.get("Accept-Encoding", "").lower():
+    if gz_body is not None and "gzip" in request.headers.get("Accept-Encoding", "").lower():
         headers["Content-Encoding"] = "gzip"
         body = gz_body
     return aioweb.Response(body=body, content_type=content_type, charset="utf-8", headers=headers)

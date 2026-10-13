@@ -59,10 +59,18 @@
   var errMeta = document.querySelector('meta[name=x-err]');
   var ERR_TEXT = errMeta ? errMeta.content : 'Error';
 
+  // Настройки из шторки «Производительность» (localStorage; в приватном режиме может бросать).
+  function pref(k, def) {
+    try { var v = localStorage.getItem(k); return v === null ? def : v; } catch (e) { return def; }
+  }
   function haptic(kind) {
-    if (!(tg && tg.HapticFeedback)) return;
-    if (kind === 'success') tg.HapticFeedback.notificationOccurred('success');
-    else tg.HapticFeedback.impactOccurred('light');
+    if (html.classList.contains('min') || pref('perf-haptic', '1') === '0') return;
+    if (tg && tg.HapticFeedback) {
+      if (kind === 'success') tg.HapticFeedback.notificationOccurred('success');
+      else tg.HapticFeedback.impactOccurred('light');
+    } else if (navigator.vibrate) {
+      try { navigator.vibrate(kind === 'success' ? [10, 30, 10] : 10); } catch (e) { /* не поддерживается */ }
+    }
   }
 
   function toast(text) {
@@ -599,4 +607,88 @@
       body: JSON.stringify(user)
     }).then(function (r) { if (r.ok) location.reload(); });
   };
+
+  // ---------- шторка «Производительность» ----------
+  // Уровень (auto / full / lite / min) читает детектор из <head> — он решает, какие
+  // классы повесить на <html>, поэтому смена уровня перезагружает страницу.
+  (function () {
+    var openBtn = document.getElementById('perf-open'), back = document.getElementById('perf-back');
+    if (!openBtn || !back) return;
+    var lv = back.querySelector('.perf-lv'), level = pref('perf', 'auto'), lastFocus = null;
+    function set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* приватный режим */ } }
+    function paint() {
+      Array.prototype.forEach.call(lv.children, function (b) { b.setAttribute('aria-pressed', String(b.dataset.l === level)); });
+      Array.prototype.forEach.call(back.querySelectorAll('.perf-sw'), function (b) {
+        b.setAttribute('aria-checked', String(pref('perf-' + b.dataset.k, '1') !== '0'));
+      });
+    }
+    function show() {
+      lastFocus = document.activeElement; paint();
+      back.classList.add('open'); back.setAttribute('aria-hidden', 'false');
+      var on = lv.querySelector('[aria-pressed=true]'); if (on) on.focus({preventScroll: true});
+    }
+    function hide() {
+      back.classList.remove('open'); back.setAttribute('aria-hidden', 'true');
+      if (lastFocus && lastFocus.focus) lastFocus.focus({preventScroll: true});
+    }
+    openBtn.addEventListener('click', show);
+    back.addEventListener('click', function (e) { if (e.target === back) hide(); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && back.classList.contains('open')) hide(); });
+    lv.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b || b.dataset.l === level) return;
+      set('perf', b.dataset.l); location.reload();
+    });
+    back.addEventListener('click', function (e) {
+      var b = e.target.closest('.perf-sw'); if (!b) return;
+      set('perf-' + b.dataset.k, b.getAttribute('aria-checked') === 'true' ? '0' : '1'); paint();
+    });
+  })();
+
+  // ---------- свайп вправо по карточке = выполнить (touch/pen) ----------
+  // Мышь не трогаем (выделение текста). Двигается только transform одной
+  // карточки, по порогу срабатывает обычная кнопка-галочка — то есть тот же
+  // fetch, оптимистичный UI и откат, что и при клике.
+  (function () {
+    var list = document.querySelector('.list');
+    if (!list || !window.PointerEvent) return;
+    var TH = 90, drag = null, swiped = false;
+    list.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse' || pref('perf-swipe', '1') === '0') return;
+      var card = e.target.closest('.task');
+      if (!card || card.classList.contains('pending') || e.target.closest('button, a, input, textarea, select, .task-expanded')) return;
+      drag = {card: card, x: e.clientX, y: e.clientY, dx: 0, on: false, id: e.pointerId, f: 0, ready: false};
+    });
+    list.addEventListener('pointermove', function (e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!drag.on) {
+        if (dx > 10 && dx > Math.abs(dy) * 1.5) {
+          drag.on = true; drag.card.classList.remove('snap'); drag.card.classList.add('drag');
+          try { drag.card.setPointerCapture(e.pointerId); } catch (_) { /* карточку уже убрали */ }
+        } else { if (Math.abs(dy) > 10 || dx < -10) drag = null; return; }
+      }
+      drag.dx = Math.max(0, dx);
+      if (!drag.f) drag.f = requestAnimationFrame(function () {
+        if (!drag) return;
+        drag.f = 0;
+        drag.card.style.transform = 'translate3d(' + drag.dx + 'px,0,0)';
+        var r = drag.dx >= TH;
+        if (r !== drag.ready) { drag.ready = r; drag.card.classList.toggle('swipe-ready', r); if (r) haptic('light'); }
+      });
+    });
+    function end() {
+      if (!drag) return;
+      var d = drag; drag = null;
+      cancelAnimationFrame(d.f);
+      if (!d.on) return;
+      swiped = true; setTimeout(function () { swiped = false; }, 350);
+      d.card.classList.remove('drag', 'swipe-ready');
+      d.card.classList.add('snap'); d.card.style.transform = '';
+      setTimeout(function () { d.card.classList.remove('snap'); }, 250);
+      if (d.dx >= TH) { var b = d.card.querySelector('.check-btn'); if (b) b.click(); }
+    }
+    list.addEventListener('pointerup', end); list.addEventListener('pointercancel', end);
+    // после жеста браузер шлёт click на карточку — он не должен раскрыть её
+    list.addEventListener('click', function (e) { if (swiped && e.isTrusted) { e.preventDefault(); e.stopPropagation(); } }, true);
+  })();
 })();

@@ -60,8 +60,8 @@
 }
 /* Тег — плашка цветом акцента. */
 .tag {
-  display: inline-block; margin-top: var(--s2); padding: 2px 10px; border-radius: 999px;
-  background: var(--accent-tint); color: var(--accent); font-size: 0.8125rem; font-weight: 500;
+  display: inline-block; margin-top: var(--s2); padding: 2px 10px; border-radius: 7px;
+  background: var(--accent-tint); color: var(--accent); font-size: 0.8125rem; font-weight: 600;
 }
 
 .task-expanded { margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--sep); }
@@ -76,7 +76,7 @@
   color: var(--label-2); font-size: 0.8125rem; letter-spacing: 0;
 }
 .task-author { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-size: 0.8125rem; color: var(--label-2); }
-.description-text { font-size: 0.9375rem; line-height: 1.4; margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
+.description-text { font-size: 0.9375rem; line-height: 1.5; max-width: 65ch; text-wrap: pretty; margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; }
 .edit-toggle { margin-bottom: 10px; }
 .edit-toggle summary {
   list-style: none; display: inline-flex; align-items: center; gap: 6px; min-height: 32px;
@@ -114,14 +114,14 @@
 /* Пока график подгружается, рамка держит место — страница не «прыгает». */
 .chart-lazy { min-height: 200px; }
 .chart-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
-.chart-title { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; }
+.chart-title { font-family: var(--serif); font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
 .streak { color: var(--orange); font-size: 0.9375rem; font-weight: 600; }
 .bars { display: flex; align-items: flex-end; gap: 6px; height: 120px; margin-top: var(--s4); border-bottom: 1px solid var(--sep); }
 .col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; }
 .num { font-size: 0.75rem; color: var(--label-2); height: 14px; line-height: 14px; font-variant-numeric: tabular-nums; }
 .bar {
   width: 100%; max-width: 26px; background: var(--accent); border-radius: 6px 6px 2px 2px;
-  transform-origin: bottom; animation: grow 0.6s var(--spring) backwards;
+  transform-origin: bottom;
 }
 .bar.zero { background: var(--fill); height: 2px !important; }
 .labels { display: flex; gap: 4px; margin-top: 6px; }
@@ -190,7 +190,7 @@ html:not(.mid) .photo-lightbox.open { animation: fade-in 0.2s ease both; }
 /* ---------- выбор дня (неделя + месяц) ---------- */
 .day-picker { padding: var(--s3) var(--gutter) var(--s2); margin-bottom: var(--s4); }
 .day-picker-header { display: flex; align-items: center; justify-content: space-between; min-height: 30px; margin-bottom: 8px; }
-.day-picker-month { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.015em; text-transform: capitalize; }
+.day-picker-month { font-family: var(--serif); font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; text-transform: capitalize; }
 .day-today-link {
   width: 30px; height: 30px; border-radius: 50%; background: var(--fill); color: var(--accent);
   display: inline-flex; align-items: center; justify-content: center;
@@ -244,12 +244,20 @@ html:not(.mid) .photo-lightbox.open { animation: fade-in 0.2s ease both; }
 .list { order: 4; min-width: 0; }
 .chart-block { order: 5; }
 @media (min-width: 1100px) {
-  body { max-width: 1120px; }
-  .layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: var(--s5); align-items: start; }
-  .side {
+  body { max-width: 1240px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: var(--s5) 40px; align-items: start; }
+  .list { grid-column: 1; grid-row: 1; }
+  .side { grid-column: 2; grid-row: 1;
     display: flex; flex-direction: column; position: sticky; top: calc(56px + env(safe-area-inset-top));
     max-height: calc(100dvh - 72px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
     padding-bottom: var(--s4);
   }
   .chart-block { margin-top: 0; }
 }
+
+/* ---------- свайп вправо = выполнить (touch) ----------
+   Двигается только transform одной карточки; will-change — на время жеста. */
+.task { touch-action: pan-y; }
+.task.drag { transition: none; will-change: transform; }
+.task.snap { transition: transform 0.2s var(--ease); }
+.task.swipe-ready { box-shadow: inset 0 0 0 2px var(--accent); }
