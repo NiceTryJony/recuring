@@ -57,6 +57,7 @@ _ICON_SPRITE = (
     '<symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>'
     '<symbol id="i-tpl" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 10v10"/></symbol>'
     '<symbol id="i-hist" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 3-6.2M4 4v4h4M12 8v4l3 2"/></symbol>'
+    '<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></symbol>'
     '</svg>'
 )
 
@@ -100,9 +101,10 @@ WEBAPP_ENTRY_PAGE = """<!DOCTYPE html>
   var tg = window.Telegram && Telegram.WebApp, msg = document.getElementById('msg');
   if (!tg || !tg.initData) { msg.textContent = 'Open this page from Telegram.'; return; }
   tg.ready();
+  var task = (/[?&]task=(\\d+)/.exec(location.search) || [])[1];
   fetch('/dashboard/webapp-auth', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({initData: tg.initData}), credentials: 'same-origin'
+    body: JSON.stringify({initData: tg.initData, task: task}), credentials: 'same-origin'
   }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function (d) { location.replace(d.url); })
     .catch(function () { msg.textContent = 'Login failed. Reopen the app.'; });
@@ -235,6 +237,35 @@ HISTORY_PAGE = _head("history_page_title", "history.css") + """
 {events_html}
 {load_more_html}
 </body></html>"""
+
+
+SETTINGS_PAGE = _head("settings_page_title", "settings.css", with_js=True) + """
+<body>
+""" + _navbar("settings_heading", left=_back_link()) + """
+{status_html}
+<form class="settings-form" method="post" action="/dashboard/{token}/settings">
+<input type="hidden" name="csrf" value="{csrf}">
+<label class="field-row"><span>{settings_lang}</span>
+<select name="language">{lang_options}</select></label>
+<label class="field-row"><span>{settings_tz}</span>
+<input type="text" name="timezone" list="tz-list" value="{timezone}" required autocomplete="off" spellcheck="false"></label>
+<datalist id="tz-list">{tz_options}</datalist>
+<button type="button" class="tz-detect" hidden>{settings_tz_device}</button>
+<fieldset class="settings-group">
+<label class="check-row"><input type="checkbox" name="quiet_on"{quiet_checked}> {settings_quiet}</label>
+<div class="time-pair"><span>{settings_from}</span><input type="time" name="quiet_start" value="{quiet_start}">
+<span>{settings_to}</span><input type="time" name="quiet_end" value="{quiet_end}"></div>
+</fieldset>
+{morning_html}
+<button type="submit" class="btn-filled">{settings_save}</button>
+</form>
+</body></html>"""
+
+# Только для личного дашборда: сводка — личная настройка человека, не группы
+SETTINGS_MORNING_BLOCK = """<fieldset class="settings-group">
+<label class="check-row"><input type="checkbox" name="morning_on"{morning_checked}> {settings_morning}</label>
+<div class="time-pair"><span>{settings_at}</span><input type="time" name="morning_time" value="{morning_time}"></div>
+</fieldset>"""
 
 
 TEMPLATES_PAGE = _head("templates_page_title", "templates.css") + """

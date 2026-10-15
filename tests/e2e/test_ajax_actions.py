@@ -108,7 +108,9 @@ async def env(monkeypatch):
     await client.close()
 
 
-async def _open(pw, env, profile: str, *, javascript: bool = True):
+async def _open(pw, env, profile: str, *, javascript: bool = True, path: str = "?view=all"):
+    """По умолчанию — вкладка «Все»: на «Ближайших» (вкладка по умолчанию) выполненная
+    задача исчезает из вида, а тесты проверяют именно поведение карточки."""
     client, cookie, _ = env
     spec = PROFILES[profile]
     base = str(client.make_url("")).rstrip("/")
@@ -124,11 +126,13 @@ async def _open(pw, env, profile: str, *, javascript: bool = True):
                      if not route.request.url.startswith(base) else route.continue_())
     navigations: list[str] = []
     page.on("framenavigated", lambda f: navigations.append(f.url) if f == page.main_frame else None)
-    await page.goto(f"{base}/dashboard/{TOKEN}")
+    await page.goto(f"{base}/dashboard/{TOKEN}{path}")
     return browser, page, navigations
 
 
-ORDER = "[...document.querySelectorAll('.list > .task')].map(e => e.id).join(',')"
+# Карточки в порядке на экране — и в плоском списке, и внутри групп по дате
+ORDER = "[...document.querySelectorAll('.list .task')].map(e => e.id).join(',')"
+DONE = "document.querySelector('#task-1').classList.contains('done')"
 
 
 @pytest.mark.parametrize("profile", list(PROFILES))
@@ -138,30 +142,33 @@ async def test_actions_do_not_reload_the_page(env, profile):
         try:
             base_nav = len(nav)
             assert await page.evaluate(ORDER) == "task-1,task-2,task-3"
+            assert await page.evaluate("document.querySelectorAll('.list .task-group').length") == 3  # по дню на задачу
 
-            # выполнить: карточка отмечается и переезжает к выполненным
+            # выполнить: в группировке по дате карточка отмечается и остаётся в своём дне
             await page.click("#task-1 .check-btn")
-            await page.wait_for_function(f"{ORDER} === 'task-2,task-3,task-1'")
-            assert await page.evaluate("document.querySelector('#task-1').classList.contains('done')")
+            await page.wait_for_function(DONE)
+            assert await page.evaluate(ORDER) == "task-1,task-2,task-3"
 
-            # вернуть: снова первая среди активных
+            # вернуть
             await page.click("#task-1 .check-btn")
-            await page.wait_for_function(f"{ORDER} === 'task-1,task-2,task-3'")
+            await page.wait_for_function(f"!{DONE}")
 
-            # создать: шторка закрывается, карточка встаёт по сроку (последней)
+            # создать: шторка закрывается, карточка встаёт в новую группу своего дня — последней
             await page.click(".fab")
             await page.fill(".add-sheet input[name=title]", "новая из браузера")
             await page.fill(".add-sheet input[name=due_at]", "2031-01-01T10:00")
             await page.click(".add-sheet button[type=submit]")
             await page.wait_for_function(f"{ORDER}.split(',').length === 4")
-            assert "новая из браузера" in await page.inner_text(".list > .task:last-of-type")
+            assert "новая из браузера" in await page.inner_text(".list .task-group:last-of-type .task")
+            assert await page.inner_text(".list .task-group:last-of-type .group-title") == "01.01 1"
             assert not await page.evaluate("document.querySelector('.add-sheet').open")
 
-            # удалить (confirm принимаем)
+            # удалить (confirm принимаем): вместе с карточкой уходит и опустевшая группа её дня
             page.on("dialog", lambda d: d.accept())
             await page.click("#task-2 .task-summary")
             await page.click("#task-2 .del-btn")
             await page.wait_for_function("!document.getElementById('task-2')")
+            await page.wait_for_function("document.querySelectorAll('.list .task-group').length === 3")
 
             assert len(nav) == base_nav, f"страница перезагружалась: {nav[base_nav:]}"
         finally:

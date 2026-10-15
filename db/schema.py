@@ -116,6 +116,12 @@ async def init_db():
                 f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS dashboard_password_version INTEGER NOT NULL DEFAULT 0"
             )
 
+        # Кому из участников группы поручена задача (NULL — общая, как раньше)
+        await conn.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assigned_to BIGINT")
+
+        # Название группы — для переключателя «Мои / Группа X» в Mini App
+        await conn.execute("ALTER TABLE chat_settings ADD COLUMN IF NOT EXISTS title TEXT")
+
         # «Повторять напоминание, пока не выполню»
         await conn.execute(
             "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remind_until_done BOOLEAN NOT NULL DEFAULT FALSE"

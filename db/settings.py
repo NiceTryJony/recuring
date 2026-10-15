@@ -136,6 +136,51 @@ async def get_or_create_user_dashboard_token(user_id: int) -> tuple[str, int]:
     return result
 
 
+async def set_chat_title(chat_id: int, title: str | None):
+    async def _run():
+        async with core._pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO chat_settings (chat_id, title) VALUES ($1, $2)
+                   ON CONFLICT (chat_id) DO UPDATE SET title = $2""",
+                chat_id, title
+            )
+    await core._with_retry(_run)
+
+
+async def get_user_group_dashboards(user_id: int, create_missing: bool = False) -> list[dict]:
+    """Дашборды групп, где состоит пользователь: [{chat_id, title, token,
+    password_version}], по названию. create_missing=True создаёт токен группам
+    без него (без пароля — как get_or_create_user_dashboard_token): вход из
+    Mini App подтверждён подписью Telegram и членством в chat_members."""
+    async def _run():
+        async with core._pool.acquire() as conn:
+            if create_missing:
+                chat_ids = await conn.fetch(
+                    """SELECT m.chat_id FROM chat_members m
+                       LEFT JOIN chat_settings s ON s.chat_id = m.chat_id
+                       WHERE m.user_id = $1 AND s.dashboard_token IS NULL""", user_id
+                )
+                for r in chat_ids:
+                    await conn.execute(
+                        """INSERT INTO chat_settings (chat_id, dashboard_token) VALUES ($1, $2)
+                           ON CONFLICT (chat_id) DO UPDATE
+                           SET dashboard_token = COALESCE(chat_settings.dashboard_token, $2)""",
+                        r["chat_id"], secrets.token_urlsafe(16)
+                    )
+            rows = await conn.fetch(
+                """SELECT s.chat_id, s.title, s.dashboard_token, s.dashboard_password_version
+                   FROM chat_members m JOIN chat_settings s ON s.chat_id = m.chat_id
+                   WHERE m.user_id = $1 AND s.dashboard_token IS NOT NULL
+                   ORDER BY s.title NULLS LAST, s.chat_id""", user_id
+            )
+            return [{"chat_id": r["chat_id"], "title": r["title"], "token": r["dashboard_token"],
+                     "password_version": r["dashboard_password_version"]} for r in rows]
+    result = await core._with_retry(_run)
+    if create_missing:
+        invalidate_dashboard_cache()
+    return result
+
+
 async def get_owner_by_dashboard_token(token: str) -> dict | None:
     """Ищет токен сначала среди личных дашбордов, потом среди групповых.
     Найденный владелец кэшируется на _DASH_CACHE_TTL секунд (None не кэшируем:

@@ -17,7 +17,7 @@ from task_groups import GROUPS, VIEWS
 
 from .config import DONE_TASKS_PAGE_SIZE, _tz_of
 from .render import _render_description, _render_subtasks, _render_task
-from .security import _csrf_token
+from .security import _csrf_token, _verify_session
 from .texts import _dt
 from .views import _more_done_html, _page_state, _safe_chart, _view_controls
 
@@ -78,15 +78,18 @@ async def state_payload(request: aioweb.Request, token: str, settings: dict, own
     task = next((t for t in tasks if t["id"] == task_id), None) if task_id is not None else None
     if task is not None:
         cookie = request.cookies.get(f"session_{token}", "")
+        session = _verify_session(cookie)    # подпись уже проверена вызывающим действием; нужен только tg_user_id
         creators = {}
-        if owner_type == "chat" and task.get("created_by"):
-            creators = await db.get_telegram_users([task["created_by"]])
+        people = [task[k] for k in ("created_by", "assigned_to") if task.get(k)]
+        if owner_type == "chat" and people:
+            creators = await db.get_telegram_users(people)
         photos = await db.get_task_photos_meta_bulk([task["id"]])
         subtasks = await db.get_subtasks_bulk([task["id"]])
         payload["card"] = _render_task(
             task, tz, lang, token, _csrf_token(cookie), creator=creators.get(task.get("created_by")),
             owner_type=owner_type, photos=photos.get(task["id"]), subtasks=subtasks.get(task["id"]),
             now=now, local_due=local_due[task["id"]], lazy=not ctx["nojs"],
+            assignee=creators.get(task.get("assigned_to")), viewer_id=session[2] if session else 0,
         )
     return payload
 

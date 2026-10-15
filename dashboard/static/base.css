@@ -222,7 +222,7 @@ a { color: var(--accent); }
 .task-actions .del-btn { color: var(--red) !important; }
 
 /* ---------- карточки ---------- */
-.task, .event, .chart-block, .tg-widget-banner, .day-picker, .load-more, .stat, .empty {
+.task, .event, .chart-block, .tg-widget-banner, .tz-hint, .day-picker, .load-more, .stat, .empty {
   background: var(--surface); color: var(--label); border: 1px solid var(--sep); border-radius: var(--radius);
 }
 /* content-visibility: браузер пропускает layout/paint карточек вне экрана —
@@ -254,11 +254,14 @@ a { color: var(--accent); }
   color: var(--accent); text-decoration: none; font-weight: 500; min-height: 48px;
 }
 .load-more:active { background: var(--surface-press); }
-.tg-widget-banner {
+.tg-widget-banner, .tz-hint {
   padding: var(--s3) var(--gutter); margin-bottom: var(--s3);
   display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap;
 }
-.tg-widget-banner span { font-size: 0.8125rem; color: var(--label-2); }
+.tz-hint[hidden] { display: none; }
+.tg-widget-banner span, .tz-hint span { font-size: 0.8125rem; color: var(--label-2); }
+.tz-hint a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.tz-hint button { background: none; border: 0; color: var(--label-2); font-size: 1.1rem; min-width: 44px; min-height: 44px; }
 
 /* ---------- сводка ---------- */
 .summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2); margin-bottom: var(--s4); }
@@ -446,6 +449,8 @@ a { color: var(--accent); }
 @media (max-width: 899px) {
   .nav-links { display: none; }  /* дублируются нижней панелью; кнопка настроек остаётся */
 }
+/* Ссылки, которые работают только внутри Telegram Mini App (html[data-tg] ставит dashboard.js) */
+html:not([data-tg]) .tg-only { display: none; }
 
 /* ---------- доступность ---------- */
 @media (prefers-reduced-motion: reduce) {

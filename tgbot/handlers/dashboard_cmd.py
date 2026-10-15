@@ -34,7 +34,7 @@ async def dashboard_set_password(message: Message, state: FSMContext):
     data = await state.get_data()
     owner_id, owner_type = data["owner_id"], data["owner_type"]
     lang = await owner_lang(owner_id, owner_type)
-    password = message.text.strip()
+    password = (message.text or "").strip()  # стикер/фото вместо текста — text is None
     if len(password) < 4:
         await message.answer(t(lang, "dashboard_password_short"))
         return

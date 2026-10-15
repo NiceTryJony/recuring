@@ -3,17 +3,21 @@
 владельца + CSRF-токен из формы; объект действия обязан принадлежать
 владельцу дашборда."""
 
+import re
 from datetime import datetime, time as dtime, timedelta
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import web as aioweb
 
 import db
+from date_parser import parse_quiet_hours
 
 from .config import BOT_USERNAME, SESSION_MAX_AGE, SHARE_CODE_RE, UTC, _acting_user_id, _tz_of
 from .fragments import description_payload, state_payload, subtasks_payload, wants_json
 from .photos import _fetch_and_compress_photo
 from .scheduler_hooks import _schedule_task, _unschedule_task
+from .settings_hooks import settings_hooks
 from .share_hooks import _prepare_share_message
 from .texts import _dt
 
@@ -21,6 +25,17 @@ from .security import (
     _client_ip, _login_rate_limited, _record_failed_login, _require_session, _require_session_full,
     _sign_session, _verify_csrf, verify_telegram_login, verify_webapp_init_data,
 )
+
+
+def _back_to_list(request: aioweb.Request, token: str) -> str:
+    """Куда вернуть после действия без JS: на ту же вкладку/группировку/день,
+    откуда пришли. Referer берём только если это страница задач ЭТОГО дашборда
+    на нашем же хосте — иначе (чужой сайт, другой путь) это был бы open redirect."""
+    base = f"/dashboard/{token}"
+    ref = urlsplit(request.headers.get("Referer", ""))
+    if ref.netloc == request.host and ref.path == base and ref.query:
+        return f"{base}?{ref.query}"
+    return base
 
 
 def _resolve_template_due_at(time_of_day: str, day_offset: int, tz) -> datetime:
@@ -205,18 +220,122 @@ async def handle_webapp_auth(request: aioweb.Request) -> aioweb.Response:
 
     user_id = int(user["id"])
     token, pwd_version = await db.get_or_create_user_dashboard_token(user_id)
-    session_value = _sign_session(user_id, "user", tg_user_id=user_id, password_version=pwd_version)
+    # Группы, где человек состоит: подпись Telegram подтверждает личность,
+    # chat_members — членство. Сессия группы короче (сутки): вышедший из группы
+    # теряет доступ не позже чем через день, а Mini App при открытии её обновляет.
+    groups = await db.get_user_group_dashboards(user_id, create_missing=True)
     # start_param стоит внутри подписанного initData (проверен выше) — ему можно
     # верить; формат всё равно сверяем, чтобы не собирать URL из чужой строки.
     start_param = dict(parse_qsl(init_data)).get("start_param", "")
     url = f"/dashboard/{token}"
     if SHARE_CODE_RE.fullmatch(start_param):
         url += f"/share/{start_param}"
+    elif str(payload.get("task", "")).isdigit():
+        # Кнопка «Открыть» из напоминания. task — не из подписи, поэтому только
+        # выбирает, КУДА перейти; доступ всё равно решают сессии ниже.
+        task = await db.get_task(int(payload["task"]))
+        target = None
+        if task and (task["owner_type"], task["owner_id"]) == ("user", user_id):
+            target = token
+        elif task and task["owner_type"] == "chat":
+            target = next((g["token"] for g in groups if g["chat_id"] == task["owner_id"]), None)
+        if target:
+            url = f"/dashboard/{target}?view=all#task-{task['id']}"
     resp = aioweb.json_response({"url": url})
-    is_https = request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
-    resp.set_cookie(f"session_{token}", session_value, max_age=SESSION_MAX_AGE, httponly=True,
-                    samesite="Strict", secure=is_https)
+    _set_webapp_cookie(request, resp, token,
+                       _sign_session(user_id, "user", tg_user_id=user_id, password_version=pwd_version),
+                       SESSION_MAX_AGE)
+    for g in groups:
+        _set_webapp_cookie(request, resp, g["token"],
+                           _sign_session(g["chat_id"], "chat", tg_user_id=user_id,
+                                         password_version=g["password_version"], max_age=GROUP_SESSION_MAX_AGE),
+                           GROUP_SESSION_MAX_AGE)
     return resp
+
+
+GROUP_SESSION_MAX_AGE = 24 * 60 * 60
+
+
+def _set_webapp_cookie(request: aioweb.Request, resp: aioweb.Response, token: str, value: str, max_age: int):
+    if request.headers.get("X-Forwarded-Proto", request.scheme) == "https":
+        # Mini App в Telegram Web/Desktop живёт во фрейме чужого сайта: cookie
+        # SameSite=Strict/Lax там не сохраняется и не отправляется — после входа
+        # страница видела «нет сессии» и показывала форму пароля. Поэтому
+        # SameSite=None + Partitioned (CHIPS: работает и при блокировке сторонних
+        # cookie). CSRF от этого не слабеет: все POST проверяют csrf-токен.
+        # Partitioned руками — set_cookie в aiohttp 3.10 этого атрибута не знает.
+        resp.headers.add("Set-Cookie", (
+            f"session_{token}={value}; Max-Age={max_age}; Path=/; HttpOnly; Secure; SameSite=None; Partitioned"
+        ))
+    else:
+        # локально по http: Secure (обязательный для SameSite=None) недоступен
+        resp.set_cookie(f"session_{token}", value, max_age=max_age, httponly=True, samesite="Lax")
+
+
+def _parse_hhmm(value: str) -> tuple[int, int] | None:
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", (value or "").strip())
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+async def handle_settings_save(request: aioweb.Request) -> aioweb.Response:
+    """POST /dashboard/{token}/settings. Сначала проверяем ВСЕ поля (ошибка в
+    одном — не применяем ничего), потом применяем только изменившиеся: смена
+    пояса перепланирует все задачи владельца, незачем делать это на каждое
+    «Сохранить». Применяют функции бота (settings_hooks): там сброс кэша и
+    перестановка джоб — те же, что у /timezone, /lang, /quiet, /morning."""
+    token = request.match_info["token"]
+    owner = await _require_session_full(request, token)
+    if owner is None:
+        return aioweb.Response(status=403)
+    settings, owner_id, owner_type, _tg_user_id = owner
+
+    cookie = request.cookies.get(f"session_{token}", "")
+    data = await request.post()
+    if not _verify_csrf(data.get("csrf", ""), cookie):
+        return aioweb.Response(status=403)
+
+    def back(query: str) -> aioweb.Response:
+        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}/settings?{query}"})
+
+    hooks = settings_hooks()
+    if hooks is None:
+        return back("error=unavailable")
+
+    lang = data.get("language", "")
+    tz_name = data.get("timezone", "").strip()
+    try:
+        ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return back("error=tz")
+
+    quiet = None
+    if data.get("quiet_on"):
+        quiet = parse_quiet_hours(f"{data.get('quiet_start', '')}-{data.get('quiet_end', '')}")
+        if quiet is None:
+            return back("error=quiet")
+
+    morning = None
+    if owner_type == "user" and data.get("morning_on"):
+        morning = _parse_hhmm(data.get("morning_time", ""))
+        if morning is None:
+            return back("error=time")
+
+    if lang != settings.get("language") and not await hooks.language(owner_id, owner_type, lang):
+        return back("error=unavailable")
+    if tz_name != settings.get("timezone"):
+        await hooks.timezone(owner_id, owner_type, tz_name)
+    current_quiet = (settings.get("quiet_hours_start"), settings.get("quiet_hours_end"))
+    if (quiet or (None, None)) != current_quiet:
+        await hooks.quiet(owner_id, owner_type, quiet)
+    if owner_type == "user":
+        cur = await db.get_morning_summary_settings(owner_id) or {}
+        current = ((cur["morning_summary_hour"], cur["morning_summary_minute"])
+                   if cur.get("morning_summary_enabled") else None)
+        if morning != current:
+            await hooks.morning(owner_id, morning)
+    return back("saved=1")
 
 
 async def handle_task_share(request: aioweb.Request) -> aioweb.Response:
@@ -362,7 +481,7 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
     if wants_json(request):
         return aioweb.json_response(
             await state_payload(request, token, settings, owner_id, owner_type, data, task_id=task_id))
-    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+    return aioweb.Response(status=302, headers={"Location": _back_to_list(request, token)})
 
 
 async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
@@ -374,7 +493,7 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
         task_id = int(request.match_info["task_id"])
     except ValueError:
         return aioweb.Response(status=404)
-    if action not in ("done", "undone", "postpone", "delete"):
+    if action not in ("done", "undone", "postpone", "delete", "assign"):
         return aioweb.Response(status=404)
 
     owner = await _require_session_full(request, token)
@@ -428,6 +547,12 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
         await db.delete_task(task_id)
         await db.log_history(task_id, acting_user_id, task["title"], "deleted")
         _unschedule_task(task_id)
+    elif action == "assign":
+        # «Беру / Снять с себя»: только для задачи группы и только участнику —
+        # личность из сессии (Mini App / виджет), членство проверяем в БД
+        if owner_type != "chat" or not tg_user_id or not await db.is_chat_member(owner_id, tg_user_id):
+            return aioweb.Response(status=403)
+        await db.update_task(task_id, assigned_to=None if task.get("assigned_to") == tg_user_id else tg_user_id)
 
     if wants_json(request):
         payload = await state_payload(
@@ -438,7 +563,7 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
         payload["task_id"] = task_id
         payload["action"] = action
         return aioweb.json_response(payload)
-    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+    return aioweb.Response(status=302, headers={"Location": _back_to_list(request, token)})
 
 
 async def handle_task_edit(request: aioweb.Request) -> aioweb.Response:

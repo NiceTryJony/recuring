@@ -63,6 +63,11 @@
   display: inline-block; margin-top: var(--s2); padding: 2px 10px; border-radius: 7px;
   background: var(--accent-tint); color: var(--accent); font-size: 0.8125rem; font-weight: 600;
 }
+/* Исполнитель задачи группы — рядом с тегом, нейтральным цветом */
+.assignee {
+  display: inline-block; margin-top: var(--s2); margin-left: var(--s1, 4px); padding: 2px 10px; border-radius: 7px;
+  background: var(--fill); color: var(--label-2); font-size: 0.8125rem; font-weight: 600;
+}
 
 .task-expanded { margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--sep); }
 /* Раскрытие: короткое проявление со сдвигом (только opacity/transform) на

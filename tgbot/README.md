@@ -4,7 +4,7 @@
 
 Порядок зависимостей (сверху вниз, импортировать «вверх» нельзя — будет цикл):
 
-`constants` → `app` → `owner` → `formatting` / `keyboards` → `scheduling` → `handlers/*` → `server`
+`constants` → `app` → `owner` → `formatting` / `keyboards` → `scheduling` → `settings_apply` → `handlers/*` → `server`
 
 | Файл | Зачем | Главное |
 |---|---|---|
@@ -16,9 +16,12 @@
 | `formatting.py` | Текст задач для сообщений | `fmt_task`, `fmt_task_line`, `fmt_repeat/remind`, `_current_streak` |
 | `keyboards.py` | Все inline-клавиатуры | `task_kb`, `list_nav_kb`, `subtasks_kb`, `repeat_kb`, … Префиксы `callback_data` (`done_`, `del_`, `listpage_`) должны совпадать с фильтрами в `handlers/` |
 | `templates.py` | Встроенные шаблоны (данные) | `BUILTIN_TEMPLATES`, `builtin_templates_for_lang` |
-| `scheduling.py` | Всё про время | `schedule_task` (джобы напоминаний/повторов/«мучить до выполнения»), `send_due/send_reminder`, тихий час, утренняя и вечерняя сводки, `purge_done_tasks` (ежедневно 04:00 UTC и при старте — чистка выполненных старше 7 дней), `restore_jobs()` при старте |
-| `middleware.py` | Защита от спама | `ThrottlingMiddleware` — не чаще 1 сообщения за 0,7 с |
-| `server.py` | Запуск | меню команд Telegram, health-сервер + дашборд (`set_scheduler_hooks`, `set_share_hooks`), `prepare_share_message`, graceful shutdown, `main()` |
+| `scheduling.py` | Всё про время | `schedule_task` (джобы напоминаний/повторов/«мучить до выполнения»), `send_due/send_reminder`, тихий час, утренняя (с кнопкой «просроченные → сегодня») и вечерняя сводки (по воскресеньям — итог недели), чистые `snooze_target` / `overdue_before_today` / `move_to_today`, `purge_done_tasks` (ежедневно 04:00 UTC и при старте — чистка выполненных старше 7 дней), `restore_jobs()` при старте |
+| `settings_apply.py` | Применение настроек | `apply_timezone/language/quiet/morning` — запись + сброс кэша + перепланирование джоб; общие для команд `/timezone /lang /quiet /morning` и страницы настроек дашборда (через `dashboard.set_settings_hooks`) |
+| `photo_store.py` | Фото из Telegram → задача | `attach_photo` — скачать, сжать (как дашборд), сохранить; общая для кнопки «📷 Фото» и задачи из фото |
+| `alerts.py` | Алерты админу | `install(bot, ADMIN_CHAT_ID)` — каждая запись лога уровня ERROR уходит в чат админа (дедуп 30 мин, не больше 5 за 10 мин); без `ADMIN_CHAT_ID` — no-op |
+| `middleware.py` | Защита от спама, имена | `ThrottlingMiddleware` — не чаще 1 сообщения за 0,7 с; `MemberNamesMiddleware` — запоминает имена участников групп (`telegram_users`) для списка «Поручить» |
+| `server.py` | Запуск | меню команд Telegram, health-сервер + дашборд (`set_scheduler_hooks`, `set_share_hooks`), `prepare_share_message`, graceful shutdown, `main()`; `/health` (для Render), `/health/deep` (БД + планировщик, 503 при сбое — для внешнего мониторинга), `keep_alive` (раз в 10 мин пингует свой публичный адрес на Render, чтобы free-инстанс не засыпал) |
 
 ## Правила
 - Без SQL: только `db.*`.

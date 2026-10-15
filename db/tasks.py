@@ -232,7 +232,7 @@ async def delete_task(task_id: int):
 # через имя колонки. Белый список — дешёвая страховка от этого класса багов.
 _UPDATABLE_TASK_FIELDS = {
     "title", "due_at", "repeat", "remind", "tag", "done", "done_at",
-    "last_notified_at", "remind_until_done", "description",
+    "last_notified_at", "remind_until_done", "description", "assigned_to",
 }
 
 

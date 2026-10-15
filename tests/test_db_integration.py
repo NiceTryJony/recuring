@@ -244,3 +244,53 @@ async def test_dashboard_owner_cache_is_invalidated_on_password_change(clean_db)
     assert fresh["dashboard_password_version"] == 2
     await db.set_owner_timezone(11, "user", "Asia/Almaty")
     assert (await db.get_owner_by_dashboard_token(new_token))["timezone"] == "Asia/Almaty"
+
+
+# ---------- czyszczenie danych i grupy (Mini App) ----------
+
+async def test_purge_done_tasks_removes_only_old_done_and_cascades(clean_db):
+    due = datetime.now(WAW) + timedelta(days=1)
+    old_done = await db.add_task(1, "user", "stare", due, "none", "0")
+    new_done = await db.add_task(1, "user", "świeże", due, "none", "0")
+    active = await db.add_task(1, "user", "aktywne", due, "none", "0")
+    await db.add_subtask(old_done, "podzadanie")
+    for tid in (old_done, new_done):
+        await db.mark_done(tid)
+    async with db._pool.acquire() as conn:
+        await conn.execute("UPDATE tasks SET done_at = now() - interval '8 days' WHERE id = $1", old_done)
+    assert await db.purge_done_tasks(7) == 1
+    assert await db.get_task(old_done) is None
+    assert await db.get_task(new_done) and await db.get_task(active)
+    assert await db.get_subtasks(old_done) == []                  # kaskada
+
+
+async def test_purge_old_history(clean_db):
+    await add_event(1, 1, "done", days_ago=100)
+    await add_event(1, 1, "done", days_ago=3)
+    assert await db.purge_old_history(90) == 1
+    assert len(await db.get_history(1)) == 1
+
+
+async def test_user_group_dashboards_membership_and_removal(clean_db):
+    await db.add_chat_member(-10, 5)
+    await db.add_chat_member(-20, 6)
+    await db.set_chat_title(-10, "Rodzina")
+    groups = await db.get_user_group_dashboards(5, create_missing=True)
+    assert [(g["chat_id"], g["title"]) for g in groups] == [(-10, "Rodzina")]
+    assert groups[0]["token"]
+    again = await db.get_user_group_dashboards(5, create_missing=True)
+    assert again[0]["token"] == groups[0]["token"]                # token stabilny
+    await db.remove_chat_member(-10, 5)
+    assert await db.get_user_group_dashboards(5) == []
+    assert await db.is_chat_member(-20, 6)                        # cudza grupa nietknięta
+    await db.forget_chat_members(-20)
+    assert not await db.is_chat_member(-20, 6)
+
+
+async def test_assigned_to_roundtrip(clean_db):
+    tid = await db.add_task(-10, "chat", "wspólne", datetime.now(WAW) + timedelta(days=1), "none", "0")
+    assert (await db.get_task(tid))["assigned_to"] is None
+    await db.update_task(tid, assigned_to=5)
+    assert (await db.get_task(tid))["assigned_to"] == 5
+    await db.update_task(tid, assigned_to=None)
+    assert (await db.get_task(tid))["assigned_to"] is None

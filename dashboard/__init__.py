@@ -5,6 +5,7 @@
 * config.py          — окружение и константы (BOT_TOKEN, секрет сессий, лимиты);
 * security.py        — пароли, cookie-сессии, CSRF, Telegram Login, rate-limit входа;
 * scheduler_hooks.py — связь с APScheduler бота;
+* settings_hooks.py  — применение настроек (пояс, язык, тихий час, сводка) из бота;
 * texts.py           — переводы страниц;
 * assets.py          — статика (static/*.css, static/*.js) и gzip-сжатие;
 * pages.py           — HTML-скелеты страниц;
@@ -24,6 +25,7 @@ from .photos import compress_task_photo, make_task_photo_thumb
 from .render import _render_chart, _render_day_picker, _render_task
 from .routes import register_dashboard_routes
 from .scheduler_hooks import _schedule_task, _unschedule_task, set_scheduler_hooks
+from .settings_hooks import set_settings_hooks
 from .share_hooks import set_share_hooks
 from .security import (
     _LOGIN_ATTEMPTS, _LOGIN_LOCKOUT_SECONDS, _LOGIN_MAX_ATTEMPTS, _LOGIN_WINDOW_SECONDS,

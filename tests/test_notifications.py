@@ -27,7 +27,8 @@ async def env(monkeypatch):
     sent, tasks = [], {}
 
     async def fake_send(chat_id, text, **kw):
-        sent.append(SimpleNamespace(chat_id=chat_id, text=text, silent=kw.get("disable_notification")))
+        sent.append(SimpleNamespace(chat_id=chat_id, text=text, silent=kw.get("disable_notification"),
+                                    markup=kw.get("reply_markup")))
 
     async def get_task(task_id):
         return tasks.get(task_id)
@@ -183,7 +184,45 @@ def summary_env(env, monkeypatch):
     async def chats_for_user(user_id):
         return []
     monkeypatch.setattr(db, "get_chats_for_user", chats_for_user)
+
+    async def history_stats(*a, **kw):     # niedzielny «итог недели» — bez prawdziwej bazy
+        return [{"day": None, "event": "done", "cnt": 4}]
+    monkeypatch.setattr(db, "get_history_stats", history_stats)
     return env
+
+
+class _Sunday(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(2026, 10, 18, 20, 0, tzinfo=tz)   # niedziela
+
+
+async def test_sunday_summary_includes_week_total(summary_env, monkeypatch):
+    async def done_days(*a, **kw):
+        return []
+    monkeypatch.setattr(db, "get_done_days", done_days)
+    monkeypatch.setattr(scheduling, "datetime", _Sunday)
+    await scheduling.send_daily_summary(1)
+    assert t("ru", "weekly_line", done=4).strip() in summary_env.sent[-1].text
+
+
+async def test_morning_summary_offers_moving_overdue_to_today(env, monkeypatch):
+    now = datetime.now(UTC)
+    tasks = [{"id": 1, "title": "stare", "due_at": now - timedelta(days=2), "done": False, "repeat": "none"}]
+
+    async def get_tasks(owner_id, owner_type="user", include_done=False):
+        return tasks
+
+    async def chats_for_user(user_id):
+        return []
+    monkeypatch.setattr(db, "get_tasks", get_tasks)
+    monkeypatch.setattr(db, "get_chats_for_user", chats_for_user)
+    await scheduling.send_morning_summary(1)
+    button = env.sent[-1].markup.inline_keyboard[0][0]
+    assert button.callback_data == "ovd_today" and "1" in button.text
+    tasks.clear()
+    await scheduling.send_morning_summary(1)
+    assert env.sent[-1].markup is None                     # nie ma zaległych — nie ma przycisku
 
 
 async def test_summary_includes_streak_line(summary_env, monkeypatch):

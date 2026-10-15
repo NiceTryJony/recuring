@@ -96,7 +96,7 @@ async def subtask_add_start(call: CallbackQuery, state: FSMContext):
     await call.message.answer(t(lang, "subtask_prompt"))
     await call.answer()
 
-@router.message(AddSubtasks.collecting)
+@router.message(AddSubtasks.collecting, F.text)
 async def subtask_add_collect(message: Message, state: FSMContext):
     # task_id пришёл из state, установленного в subtask_add_start, который уже
     # проверил права для (chat, user) этого FSM-диалога — повторная проверка
@@ -105,7 +105,11 @@ async def subtask_add_collect(message: Message, state: FSMContext):
     data = await state.get_data()
     task_id = data["task_id"]
     task = await db.get_task(task_id)
-    lang = await owner_lang(task["owner_id"], task["owner_type"]) if task else "ru"
+    if task is None:
+        # задачу удалили посреди ввода — add_subtask упал бы на внешнем ключе
+        await state.clear()
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
     if message.text.strip() == "/done":
         await state.clear()
         subtasks = await db.get_subtasks(task_id)
@@ -124,5 +128,5 @@ async def subtasks_back(call: CallbackQuery):
         return
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     text = await fmt_task(task)
-    await call.message.edit_text(text, reply_markup=task_kb(task_id, lang, done=task["done"]), parse_mode="HTML")
+    await call.message.edit_text(text, reply_markup=task_kb(task_id, lang, done=task["done"], assign=task["owner_type"] == "chat"), parse_mode="HTML")
     await call.answer()

@@ -2,7 +2,7 @@
 
 from aiogram import Dispatcher
 
-from ..middleware import ThrottlingMiddleware
+from ..middleware import MemberNamesMiddleware, ThrottlingMiddleware
 from . import (
     add_task,
     basic,
@@ -23,6 +23,7 @@ def register(dp: Dispatcher):
     """Порядок include_router = порядок срабатывания хендлеров, как было в
     одном файле: fallback (ловит всё остальное) обязан быть последним."""
     dp.message.middleware(ThrottlingMiddleware())
+    dp.message.middleware(MemberNamesMiddleware())
     dp.callback_query.middleware(ThrottlingMiddleware())
     for module in (templates, basic, add_task, listing, find, tags, history, dashboard_cmd,
                    task_actions, subtasks, photos, fallback):

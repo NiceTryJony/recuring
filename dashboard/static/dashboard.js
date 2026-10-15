@@ -145,23 +145,58 @@
   }
 
   // Куда вставить карточку: активные по возрастанию срока, выполненные — по убыванию.
-  function placeCard(card) {
-    var list = document.querySelector('.list');
-    if (!list || list.querySelector('.task-group')) return false;   // сгруппированный вид — на месте
+  function insertSorted(box, card, tail) {
     var due = Number(card.dataset.due), done = card.classList.contains('done'), ref = null;
-    var cards = list.querySelectorAll(':scope > .task');
+    var cards = box.querySelectorAll(':scope > .task');
     for (var i = 0; i < cards.length; i++) {
       var c = cards[i];
       if (c === card) continue;
       var cDone = c.classList.contains('done'), cDue = Number(c.dataset.due);
       if (done ? (cDone && cDue < due) : (cDone || cDue > due)) { ref = c; break; }
     }
-    if (!ref) ref = list.querySelector(':scope > .load-more');
-    list.insertBefore(card, ref);
+    box.insertBefore(card, ref || tail);
+  }
+
+  function placeCard(card) {
+    var list = document.querySelector('.list');
+    if (!list) return false;
+    var groups = list.querySelectorAll(':scope > .task-group');
+    if (!groups.length) {
+      insertSorted(list, card, list.querySelector(':scope > .load-more'));
+      return true;
+    }
+    // Группы по дате: в секцию своего дня (нет такой — создаём на своём месте).
+    // Группы по тегу так не умеем — карточка остаётся там, где была.
+    var day = card.dataset.day;
+    if (!day || !groups[0].dataset.day) return false;
+    var sec = list.querySelector(':scope > .task-group[data-day="' + day + '"]');
+    if (!sec) {
+      var after = null;
+      for (var i = 0; i < groups.length; i++) if (groups[i].dataset.day > day) { after = groups[i]; break; }
+      var p = day.split('-');
+      sec = document.createElement('section');
+      sec.className = 'task-group';
+      sec.dataset.day = day;
+      sec.innerHTML = '<h2 class="group-title">' + p[2] + '.' + p[1] + ' <span class="group-count"></span></h2>';
+      list.insertBefore(sec, after || list.querySelector(':scope > .load-more'));
+    }
+    insertSorted(sec, card, null);
+    tidyGroups();
     return true;
   }
 
+  // Счётчики в заголовках групп и пустые группы — после вставки/удаления карточки
+  function tidyGroups() {
+    var groups = document.querySelectorAll('.list > .task-group');
+    for (var i = 0; i < groups.length; i++) {
+      var n = groups[i].querySelectorAll(':scope > .task').length, cnt = groups[i].querySelector('.group-count');
+      if (!n) groups[i].remove();
+      else if (cnt) cnt.textContent = n;
+    }
+  }
+
   function syncEmpty(p) {
+    tidyGroups();
     var list = document.querySelector('.list');
     if (!list) return;
     var empty = list.querySelector(':scope > .empty');
@@ -607,6 +642,34 @@
       body: JSON.stringify(user)
     }).then(function (r) { if (r.ok) location.reload(); });
   };
+
+  // ---------- часовой пояс устройства ≠ пояс бота ----------
+  // Неверный пояс = напоминания не в то время, а заметить это сложно. Сравниваем
+  // пояс браузера с сохранённым и предлагаем исправить (на странице задач —
+  // баннер, в настройках — кнопка «Взять с устройства»).
+  var deviceTz = '';
+  try { deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
+  var tzHint = document.querySelector('.tz-hint');
+  if (tzHint && deviceTz && deviceTz !== tzHint.dataset.tz) {
+    var tzKey = 'tzHintOff:' + deviceTz, tzOff = false;
+    try { tzOff = localStorage.getItem(tzKey) === '1'; } catch (e) {}
+    if (!tzOff) {
+      tzHint.querySelector('span').textContent =
+        tzHint.dataset.text.replace('{tz}', deviceTz).replace('{saved}', tzHint.dataset.tz);
+      tzHint.querySelector('a').href = tzHint.dataset.href + encodeURIComponent(deviceTz);
+      tzHint.hidden = false;
+      tzHint.querySelector('button').addEventListener('click', function () {
+        tzHint.hidden = true;
+        try { localStorage.setItem(tzKey, '1'); } catch (e) {}
+      });
+    }
+  }
+  var tzBtn = document.querySelector('.tz-detect'), tzInput = document.querySelector('input[name="timezone"]');
+  if (tzBtn && tzInput && deviceTz && deviceTz !== tzInput.value) {
+    tzBtn.hidden = false;
+    tzBtn.textContent += ' (' + deviceTz + ')';
+    tzBtn.addEventListener('click', function () { tzInput.value = deviceTz; tzBtn.hidden = true; });
+  }
 
   // ---------- шторка «Производительность» ----------
   // Уровень (auto / full / lite / min) читает детектор из <head> — он решает, какие

@@ -1,6 +1,6 @@
 """Inline-клавиатуры."""
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from i18n import t
 
@@ -48,7 +48,10 @@ def quiet_kb(lang: str):
     kb.append([InlineKeyboardButton(text=t(lang, "btn_quiet_off"), callback_data="quiet_off")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-def task_kb(task_id: int, lang: str, done: bool = False):
+def task_kb(task_id: int, lang: str, done: bool = False, open_url: str | None = None, assign: bool = False):
+    """open_url — кнопка Mini App сразу на эту задачу (только в личке:
+    web_app-кнопки Telegram в группах запрещает). assign — кнопка «Поручить»
+    (только у задач группы)."""
     if done:
         status_label = t(lang, "btn_task_undone")
         status_cb = f"undone_{task_id}"
@@ -57,7 +60,6 @@ def task_kb(task_id: int, lang: str, done: bool = False):
         status_cb = f"done_{task_id}"
     edit_label = t(lang, "btn_edit")
     del_label = t(lang, "btn_delete")
-    snooze_label = t(lang, "btn_snooze")
     sub_label = t(lang, "btn_subtasks")
     photo_label = t(lang, "btn_photo")
     kb = [
@@ -66,13 +68,31 @@ def task_kb(task_id: int, lang: str, done: bool = False):
             InlineKeyboardButton(text=edit_label, callback_data=f"edit_{task_id}"),
             InlineKeyboardButton(text=del_label, callback_data=f"del_{task_id}"),
         ],
+        # Перенос одним касанием; старые сообщения с кнопкой snooze_ (только +1ч) по-прежнему работают
         [
-            InlineKeyboardButton(text=snooze_label, callback_data=f"snooze_{task_id}"),
-            InlineKeyboardButton(text=sub_label, callback_data=f"subs_{task_id}"),
+            InlineKeyboardButton(text=t(lang, "btn_snz_1h"), callback_data=f"snz_{task_id}_1h"),
+            InlineKeyboardButton(text=t(lang, "btn_snz_tom"), callback_data=f"snz_{task_id}_tom"),
+            InlineKeyboardButton(text=t(lang, "btn_snz_week"), callback_data=f"snz_{task_id}_1w"),
         ],
-        [InlineKeyboardButton(text=photo_label, callback_data=f"photo_{task_id}")],
+        [
+            InlineKeyboardButton(text=sub_label, callback_data=f"subs_{task_id}"),
+            InlineKeyboardButton(text=photo_label, callback_data=f"photo_{task_id}"),
+        ],
     ]
+    if assign:
+        kb[-1].append(InlineKeyboardButton(text=t(lang, "btn_assign"), callback_data=f"assign_{task_id}"))
+    if open_url:
+        kb.append([InlineKeyboardButton(text=t(lang, "btn_open_app"), web_app=WebAppInfo(url=open_url))])
     return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def assign_kb(task_id: int, members: list[tuple[int, str]], current: int | None, lang: str) -> InlineKeyboardMarkup:
+    """members — [(user_id, имя)]. Текущий исполнитель помечен ✓."""
+    rows = [[InlineKeyboardButton(text=("✓ " if uid == current else "") + name, callback_data=f"asg_{task_id}_{uid}")]
+            for uid, name in members]
+    rows.append([InlineKeyboardButton(text=("✓ " if current is None else "") + t(lang, "assign_nobody"),
+                                      callback_data=f"asg_{task_id}_0")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def confirm_delete_kb(task_id: int, lang: str):
     yes = t(lang, "btn_confirm_delete")

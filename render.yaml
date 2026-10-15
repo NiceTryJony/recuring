@@ -17,3 +17,5 @@ services:
         sync: false
       - key: BOT_USERNAME
         sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false

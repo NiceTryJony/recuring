@@ -146,6 +146,8 @@ async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=404)
 
     cookie = request.cookies.get(f"session_{token}", "")
+    if not request.content_type.startswith("multipart/"):
+        return aioweb.Response(status=400)  # иначе request.multipart() падает AssertionError → 500
     reader = await request.multipart()
     got_file = False
     csrf_token = ""

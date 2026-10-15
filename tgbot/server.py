@@ -3,6 +3,9 @@
 import asyncio
 import os
 import signal
+import time
+
+import aiohttp
 
 from aiogram.types import (
     BotCommand,
@@ -20,8 +23,9 @@ import dashboard
 import db
 
 from . import app
+from . import alerts, settings_apply
 from .app import bot, dp, logger
-from .constants import DASHBOARD_BASE_URL
+from .constants import ADMIN_CHAT_ID, DASHBOARD_BASE_URL
 from .handlers import register as register_handlers
 from .scheduling import _remove_task_jobs, restore_jobs, schedule_task
 
@@ -93,10 +97,38 @@ async def prepare_share_message(user_id: int, title: str, text: str, button_text
 async def health(request):
     return aioweb.Response(text="ok")
 
+_STARTED = time.monotonic()
+
+async def health_deep(request):
+    """Для внешнего мониторинга: проверяет БД и планировщик, 503 при сбое.
+    Render проверяет простой /health — глубокая проверка не должна перезапускать
+    процесс из-за недоступной БД (рестарт ей не поможет)."""
+    try:
+        await asyncio.wait_for(db.ping(), timeout=5)
+        db_ok = True
+    except Exception as e:
+        logger.warning("health/deep: БД недоступна: %r", e)
+        db_ok = False
+    running = bool(app.scheduler.running)
+    body = {"db": db_ok, "scheduler": running, "jobs": len(app.scheduler.get_jobs()) if running else 0,
+            "uptime_s": int(time.monotonic() - _STARTED)}
+    return aioweb.json_response(body, status=200 if db_ok and running else 503)
+
+async def keep_alive():
+    """Free-инстанс Render засыпает без входящих запросов — вместе с ним
+    «засыпают» и напоминания. Запрос на собственный публичный адрес считается входящим."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+            async with session.get(f"{DASHBOARD_BASE_URL.rstrip('/')}/health") as resp:
+                resp.raise_for_status()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logger.warning("keep-alive не удался: %r", e)  # warning, не error: это не повод будить админа
+
 async def run_health_server():
     app = aioweb.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    app.router.add_get("/health/deep", health_deep)
     dashboard.register_dashboard_routes(app)
     # Дашборд живёт в этом же процессе, но импортировать bot.py у себя не может
     # (цикл импорта), поэтому отдаём ему наши планировщик-функции: задача,
@@ -105,6 +137,8 @@ async def run_health_server():
     # дашборда не приходило до рестарта процесса (restore_jobs).
     dashboard.set_scheduler_hooks(schedule=schedule_task, unschedule=_remove_task_jobs)
     dashboard.set_share_hooks(prepare=prepare_share_message)
+    dashboard.set_settings_hooks(timezone=settings_apply.apply_timezone, language=settings_apply.apply_language,
+                                 quiet=settings_apply.apply_quiet, morning=settings_apply.apply_morning)
     runner = aioweb.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
@@ -132,8 +166,12 @@ async def main():
         # просто остаёмся со старым меню (или без него), не блокируем запуск.
         logger.exception("Не удалось настроить меню команд Telegram")
     app.scheduler.start()
+    alerts.install(bot, ADMIN_CHAT_ID)
     await restore_jobs()
     health_runner = await run_health_server()
+    # RENDER=true выставляет сама платформа — на других хостингах пинг не нужен
+    if os.environ.get("RENDER") and DASHBOARD_BASE_URL.startswith("https://"):
+        app.scheduler.add_job(keep_alive, "interval", minutes=10, id="keep_alive", replace_existing=True)
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

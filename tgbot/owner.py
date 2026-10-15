@@ -18,9 +18,17 @@ from .constants import DEFAULT_TZ, GROUP_CHAT_TYPES
 # дашборд) и задачи висят на владельце, а не всегда на конкретном user_id —
 # это и есть групповой режим.
 
+# Последнее записанное в БД название группы: пишем только при изменении,
+# а не на каждое сообщение.
+_chat_titles: dict[int, str | None] = {}
+
+
 async def resolve_owner(chat: Chat, from_user_id: int) -> tuple[int, str]:
     if chat.type in GROUP_CHAT_TYPES:
         await db.add_chat_member(chat.id, from_user_id)
+        if chat.id not in _chat_titles or _chat_titles[chat.id] != chat.title:
+            await db.set_chat_title(chat.id, chat.title)
+            _chat_titles[chat.id] = chat.title
         return chat.id, "chat"
     return from_user_id, "user"
 

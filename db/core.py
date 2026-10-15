@@ -88,6 +88,12 @@ async def _with_retry(coro_fn, *args, **kwargs):
     raise last_exc
 
 
+async def ping():
+    """Один SELECT 1 без ретраев — для /health/deep: ответ нужен сразу, а не после трёх попыток."""
+    async with _pool.acquire() as conn:
+        await conn.fetchval("SELECT 1")
+
+
 async def close_db():
     if _pool:
         await _pool.close()

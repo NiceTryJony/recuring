@@ -84,6 +84,7 @@ def _all_keyboards():
         keyboards.remind_kb("ru"), keyboards.remind_kb("en", selected={"1h"}), keyboards.repeat_kb("pl"),
         keyboards.repeat_kb("ru", prefix="editrep_9999999999"), keyboards.nag_kb("ru"), keyboards.quiet_kb("ru"),
         keyboards.task_kb(9999999999, "ru"), keyboards.task_kb(9999999999, "en", done=True),
+        keyboards.task_kb(9999999999, "pl", open_url="https://x.example/dashboard/app?task=9999999999"),
         keyboards.history_kb("ru", "7"),
     ]
 
@@ -92,7 +93,136 @@ def test_callback_data_within_telegram_limit():
     for kb in _all_keyboards():
         for row in kb.inline_keyboard:
             for btn in row:
-                assert len(btn.callback_data.encode()) <= 64, btn.callback_data
+                assert btn.callback_data or btn.web_app, btn   # у кнопки есть действие
+                if btn.callback_data:
+                    assert len(btn.callback_data.encode()) <= 64, btn.callback_data
+
+
+def test_task_kb_open_button_only_when_url_given():
+    def web_apps(kb):
+        return [b.web_app.url for row in kb.inline_keyboard for b in row if b.web_app]
+    assert web_apps(keyboards.task_kb(5, "ru")) == []
+    assert web_apps(keyboards.task_kb(5, "ru", open_url="https://h/dashboard/app?task=5")) == ["https://h/dashboard/app?task=5"]
+
+
+async def _run_fallback(monkeypatch, *, chat_type="private", text=None, caption=None, photo=None,
+                        forward=None, state=None):
+    """Prowadzi wiadomość przez fallback z podmienionym otoczeniem. -> (tytuły do take_title, dane stanu, odpowiedzi)."""
+    from types import SimpleNamespace
+    from tgbot.handlers import fallback
+    titles, answers = [], []
+
+    async def _resolve(chat, uid):
+        return uid, "user"
+
+    async def _tz(*a):
+        return WAW
+
+    async def _lang(*a):
+        return "pl"
+
+    async def _take_title(title_text, message, st):
+        titles.append(title_text)
+
+    class _State:
+        data: dict = {}
+
+        async def get_state(self):
+            return state
+
+        async def set_state(self, s):
+            pass
+
+        async def set_data(self, d):
+            self.data = d
+
+    async def _answer(txt, **kw):
+        answers.append(txt)
+
+    for name, impl in {"resolve_owner": _resolve, "owner_tz": _tz, "owner_lang": _lang, "take_title": _take_title}.items():
+        monkeypatch.setattr(fallback, name, impl)
+    msg = SimpleNamespace(text=text, caption=caption, photo=photo, forward_origin=forward,
+                          chat=SimpleNamespace(type=chat_type, id=1), from_user=SimpleNamespace(id=5), answer=_answer)
+    st = _State()
+    await fallback.fallback(msg, st)
+    return titles, st.data, answers
+
+
+@pytest.mark.parametrize("chat_type,text,state,expect_task", [
+    ("private", "kup mleko jutro 18:00", None, True),
+    ("private", "hej", None, False),                          # без даты — не задача
+    ("private", "Co robisz jutro?", None, False),             # вопрос — не задача
+    ("private", "kup mleko jutro 18:00", "AddTask:repeat", False),  # посреди другого диалога
+    ("group", "kup mleko jutro 18:00", None, False),          # в группе не перехватываем
+])
+async def test_quick_add_from_plain_message(monkeypatch, chat_type, text, state, expect_task):
+    titles, _, answers = await _run_fallback(monkeypatch, chat_type=chat_type, text=text, state=state)
+    assert bool(titles) is expect_task
+    assert bool(answers) is not expect_task                   # иначе — подсказка /help
+
+
+async def test_forwarded_message_becomes_task_with_description(monkeypatch):
+    from types import SimpleNamespace
+    titles, data, _ = await _run_fallback(monkeypatch, text="Zapłacić czynsz\nKonto: 123\ndo 10-go",
+                                          forward=SimpleNamespace(type="user"))
+    assert titles == ["Zapłacić czynsz"]                       # data nie jest wymagana — forward to zawsze zadanie
+    assert data["description"].startswith("Zapłacić czynsz\nKonto")
+
+
+@pytest.mark.parametrize("caption,asks_title", [("Paragon do zwrotu jutro", False), (None, True)])
+async def test_photo_becomes_task_with_photo_attached(monkeypatch, caption, asks_title):
+    from types import SimpleNamespace
+    photo = [SimpleNamespace(file_id="small"), SimpleNamespace(file_id="big")]
+    titles, data, answers = await _run_fallback(monkeypatch, caption=caption, photo=photo)
+    assert data["photo_file_id"] == "big"                      # największy rozmiar
+    assert titles == ([] if asks_title else [caption])
+    assert answers == ([t("pl", "ask_title")] if asks_title else [])
+
+
+@pytest.mark.parametrize("repeat,asked", [("daily", "ask_remind"), (None, "ask_repeat")])
+async def test_repeat_from_text_skips_repeat_question(repeat, asked):
+    from types import SimpleNamespace
+    from tgbot.handlers import add_task
+    answers = []
+
+    class _State:
+        def __init__(self):
+            self.data = {"repeat": repeat}
+
+        async def get_data(self):
+            return self.data
+
+        async def update_data(self, **kw):
+            self.data.update(kw)
+
+        async def set_state(self, s):
+            self.state = s
+
+    async def _answer(txt, **kw):
+        answers.append(txt)
+
+    st = _State()
+    await add_task._accept_date_and_ask_repeat(datetime(2026, 10, 8, 9), st, WAW, "pl", SimpleNamespace(answer=_answer))
+    assert answers == [t("pl", asked)]
+    assert "due_at" in st.data
+
+
+async def test_member_leaving_group_loses_access(monkeypatch):
+    from types import SimpleNamespace
+    from tgbot.handlers import basic
+    removed = []
+
+    async def _remove(chat_id, user_id):
+        removed.append((chat_id, user_id))
+    monkeypatch.setattr(owner.db, "remove_chat_member", _remove)
+    bot = SimpleNamespace(id=1)
+    msg = SimpleNamespace(chat=SimpleNamespace(id=-50), bot=bot, left_chat_member=SimpleNamespace(id=77))
+    await basic.group_membership_changed(msg)
+    msg.left_chat_member = SimpleNamespace(id=1)          # ушёл сам бот — не «участник»
+    await basic.group_membership_changed(msg)
+    msg.left_chat_member = None                           # кто-то пришёл — ничего не трогаем
+    await basic.group_membership_changed(msg)
+    assert removed == [(-50, 77)]
 
 
 def test_remind_done_button_matches_handler_prefix():
@@ -215,3 +345,100 @@ async def test_remove_task_jobs_removes_everything_of_that_task_only(sched):
         sched.add_job(lambda: None, "date", run_date=due, id=jid)
     scheduling._remove_task_jobs(1)
     assert {j.id for j in sched.get_jobs()} == {"due_2", "remind_2_1h"}
+
+
+async def test_apply_timezone_reschedules_tasks_and_rejects_bad_zone(monkeypatch):
+    from tgbot import settings_apply
+    calls = []
+
+    async def _set_tz(owner_id, owner_type, tz):
+        calls.append(("db", tz))
+
+    async def _tasks(owner_id, owner_type):
+        return [{"id": 7, "due_at": datetime(2026, 10, 8, 9, tzinfo=ZoneInfo("UTC")), "repeat": "daily", "remind": "0"}]
+
+    async def _morning(user_id):
+        return None
+
+    monkeypatch.setattr(settings_apply.db, "set_owner_timezone", _set_tz)
+    monkeypatch.setattr(settings_apply.db, "get_tasks", _tasks)
+    monkeypatch.setattr(settings_apply.db, "get_morning_summary_settings", _morning)
+    monkeypatch.setattr(settings_apply, "schedule_task", lambda task_id, *a, **kw: calls.append(("task", task_id, a[-1].key)))
+    monkeypatch.setattr(settings_apply, "schedule_daily_summary", lambda uid, tz: calls.append(("summary", tz.key)))
+
+    assert await settings_apply.apply_timezone(1, "user", "Mars/Olympus") is False
+    assert calls == []
+    assert await settings_apply.apply_timezone(1, "user", "Asia/Almaty") is True
+    assert calls == [("db", "Asia/Almaty"), ("summary", "Asia/Almaty"), ("task", 7, "Asia/Almaty")]
+
+
+async def test_assigned_group_task_notifies_only_assignee(monkeypatch):
+    async def _members(chat_id):
+        return [1, 2, 3]
+    monkeypatch.setattr(scheduling.db, "get_chat_members", _members)
+    assert await scheduling._recipients(-5, "chat", {"assigned_to": 2}) == [2]
+    assert await scheduling._recipients(-5, "chat", {"assigned_to": None}) == [1, 2, 3]
+    assert await scheduling._recipients(9, "user", {"assigned_to": 2}) == [9]   # osobiste — bez zmian
+
+
+async def test_assign_pick_rejects_non_member(monkeypatch):
+    from types import SimpleNamespace
+    from tgbot.handlers import task_actions
+    alerts_shown, updates = [], []
+
+    async def _authorize(call, task_id):
+        return {"id": task_id, "owner_id": -5, "owner_type": "chat", "title": "x"}
+
+    async def _lang(*a):
+        return "pl"
+
+    async def _is_member(chat_id, user_id):
+        return user_id == 2
+
+    async def _update(task_id, **kw):
+        updates.append(kw)
+
+    async def _answer(text=None, show_alert=False):
+        alerts_shown.append(text)
+
+    monkeypatch.setattr(task_actions, "_authorize_task", _authorize)
+    monkeypatch.setattr(task_actions, "owner_lang", _lang)
+    monkeypatch.setattr(task_actions.db, "is_chat_member", _is_member)
+    monkeypatch.setattr(task_actions.db, "update_task", _update)
+    call = SimpleNamespace(data="asg_10_666", answer=_answer, from_user=SimpleNamespace(id=1))
+    await task_actions.assign_pick(call)
+    assert updates == [] and alerts_shown == [t("pl", "not_authorized")]
+
+
+# ---------- przekładanie (punkt 7) ----------
+
+UTC_ = ZoneInfo("UTC")
+
+
+def test_snooze_target_keeps_local_clock_time_across_dst():
+    # 24.10.2026 w Warszawie: dzień przed zmianą czasu na zimowy (25.10)
+    now = datetime(2026, 10, 24, 10, 0, tzinfo=UTC_)
+    due = datetime(2026, 10, 24, 16, 0, tzinfo=UTC_)                 # 18:00 czasu letniego
+    assert scheduling.snooze_target("1h", now, due, WAW) == now + timedelta(hours=1)
+    tomorrow = scheduling.snooze_target("tom", now, due, WAW)
+    assert tomorrow.astimezone(WAW).strftime("%d.%m %H:%M") == "25.10 18:00"   # nadal 18:00, choć offset inny
+    week = scheduling.snooze_target("1w", now, due, WAW)
+    assert week.astimezone(WAW).strftime("%d.%m %H:%M") == "31.10 18:00"
+    assert scheduling.snooze_target("xyz", now, due, WAW) is None
+
+
+def test_overdue_before_today_ignores_today_done_and_repeating():
+    now = datetime(2026, 10, 15, 10, 0, tzinfo=UTC_)
+
+    def task(days, done=False, repeat="none"):
+        return {"due_at": now + timedelta(days=days), "done": done, "repeat": repeat}
+    tasks = [task(-2), task(-1, done=True), task(-3, repeat="daily"), task(0), task(1)]
+    assert scheduling.overdue_before_today(tasks, WAW, now) == [tasks[0]]
+
+
+def test_move_to_today_same_clock_time_or_in_an_hour():
+    now = datetime(2026, 10, 15, 10, 0, tzinfo=UTC_)                  # 12:00 w Warszawie
+    later = scheduling.move_to_today(datetime(2026, 10, 12, 16, 0, tzinfo=UTC_), WAW, now)
+    assert later.astimezone(WAW).strftime("%d.%m %H:%M") == "15.10 18:00"
+    passed = scheduling.move_to_today(datetime(2026, 10, 12, 6, 0, tzinfo=UTC_), WAW, now)
+    assert passed == now + timedelta(hours=1)

@@ -2,9 +2,11 @@
 
 import asyncio
 
+import db
 from i18n import t
 
-from .app import bot
+from .app import bot, logger
+from .constants import GROUP_CHAT_TYPES
 from .owner import owner_lang, resolve_owner
 
 # ---------- throttling: защита от спама командами ----------
@@ -42,4 +44,28 @@ class ThrottlingMiddleware:
                     pass
             return  # дропаем апдейт, хендлер не вызываем
         self._warned.discard(key)
+        return await handler(event, data)
+
+
+# ---------- имена участников групп ----------
+# Список «кому поручить» показывает имена, а Telegram отдаёт боту список
+# участников группы только админу. Поэтому имя запоминаем из сообщений в
+# группе — пишем в БД только при изменении (кэш в памяти процесса).
+
+class MemberNamesMiddleware:
+    def __init__(self):
+        self._known: dict[int, tuple[str | None, str | None]] = {}
+
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        chat = data.get("event_chat")
+        if user is not None and not user.is_bot and chat is not None and chat.type in GROUP_CHAT_TYPES:
+            name = (user.username, user.first_name)
+            if self._known.get(user.id) != name:
+                try:
+                    await db.upsert_telegram_user(user.id, user.username, user.first_name)
+                    self._known[user.id] = name
+                except Exception:
+                    # имя — только для отображения: сбой записи не должен ломать обработку сообщения
+                    logger.warning("Не удалось сохранить имя участника %s", user.id, exc_info=True)
         return await handler(event, data)
