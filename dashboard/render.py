@@ -339,7 +339,13 @@ def _render_task(
     description_html = _render_description(task, token, csrf, texts)
     subtasks_html = _render_subtasks(subtasks or [], token, task["id"], csrf, texts)
 
-    extra_actions = ""
+    delete_html = f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" data-ajax="task" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit" class="del-btn">{_icon("trash")}{escape(texts["btn_delete"])}</button>
+</form>"""
+    # Удалить можно и выполненную задачу (например, созданную по ошибке);
+    # «Поделиться» и «Отложить» имеют смысл только для активных.
+    extra_actions = f'<div class="task-actions">\n{delete_html}\n</div>'
     if not task["done"]:
         # «Отложить на день» двигает due_at в БД, но у повторяющихся задач due_at
         # не источник расписания (см. bot.py: schedule_task строит CronTrigger
@@ -362,10 +368,7 @@ def _render_task(
         extra_actions = f"""<div class="task-actions">
 {share_html}
 {postpone_html}
-<form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" data-ajax="task" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
-<input type="hidden" name="csrf" value="{csrf}">
-<button type="submit" class="del-btn">{_icon("trash")}{escape(texts["btn_delete"])}</button>
-</form>
+{delete_html}
 </div>"""
 
     expanded_html = f"""<div class="task-expanded">

@@ -30,7 +30,7 @@ def parse_ctx(raw: str) -> dict:
     """Разбор query-строки страницы, на которой стоит человек. Мусор в
     параметрах молча заменяется значениями по умолчанию (как в handle_dashboard)."""
     q = {k: v[0] for k, v in parse_qs((raw or "").lstrip("?"), keep_blank_values=False).items()}
-    view = q.get("view") if q.get("view") in VIEWS else "all"
+    view = q.get("view") if q.get("view") in VIEWS else "upcoming"
     group = q.get("group") if q.get("group") in GROUPS else "date"
     selected = None
     if q.get("date"):
@@ -65,7 +65,7 @@ async def state_payload(request: aioweb.Request, token: str, settings: dict, own
         "task_id": task_id,
         "stats": {"today": stats["today"], "overdue": stats["overdue"], "progress": state["progress"]},
         "controls": _view_controls(token, texts, ctx["view"], ctx["group"], ctx["tag"], state["tags"], ctx["nojs"]),
-        "more_done": _more_done_html(token, texts, state["hidden_done"], ctx["done_limit"], ctx["nojs"]),
+        "more_done": _more_done_html(token, texts, state["hidden_done"], ctx["done_limit"], ctx["nojs"], ctx["view"]),
         "empty": texts["empty"] if not tasks else None,
         "card": None,
     }

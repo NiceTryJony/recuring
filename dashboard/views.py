@@ -271,12 +271,14 @@ async def _page_state(owner_id: int, owner_type: str, tz, now, *, view: str, tag
     }
 
 
-def _more_done_html(token: str, texts: dict, hidden_done: int, done_limit: int, nojs: bool) -> str:
+def _more_done_html(token: str, texts: dict, hidden_done: int, done_limit: int, nojs: bool,
+                    view: str = "all") -> str:
     if not hidden_done:
         return ""
     nojs_q = "&nojs=1" if nojs else ""
+    # view в ссылке обязателен: без него страница открылась бы на вкладке по умолчанию (upcoming)
     return (
-        f'<a class="load-more" href="/dashboard/{token}?done_limit={done_limit + DONE_TASKS_PAGE_SIZE}{nojs_q}">'
+        f'<a class="load-more" href="/dashboard/{token}?view={view}&done_limit={done_limit + DONE_TASKS_PAGE_SIZE}{nojs_q}">'
         f'{escape(texts["btn_more_done"].format(n=hidden_done))}</a>'
     )
 
@@ -336,7 +338,7 @@ def _view_controls(token: str, texts: dict, view: str, group: str, tag: str | No
     def href(**over) -> str:
         q = {"view": view, "group": group, "tag": tag or "", "nojs": "1" if nojs else ""}
         q.update(over)
-        q = {k: v for k, v in q.items() if v and not (k == "view" and v == "all") and not (k == "group" and v == "date")}
+        q = {k: v for k, v in q.items() if v and not (k == "view" and v == "upcoming") and not (k == "group" and v == "date")}
         return f"/dashboard/{token}" + (f"?{urlencode(q)}" if q else "")
 
     def link(label: str, url: str, active: bool, cls: str) -> str:
@@ -433,9 +435,9 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     # без JS ленивые карточки было бы не раскрыть.
     nojs = request.query.get("nojs") == "1"
 
-    view = request.query.get("view", "all")
+    view = request.query.get("view", "upcoming")
     if view not in VIEWS:
-        view = "all"
+        view = "upcoming"
     group_mode = request.query.get("group", "date")
     if group_mode not in GROUPS:
         group_mode = "date"
@@ -499,7 +501,7 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
                 for key, items in group_tasks(tasks, local_due, group_mode)
             )
 
-    more_done_html = _more_done_html(token, texts, hidden_done, done_limit, nojs)
+    more_done_html = _more_done_html(token, texts, hidden_done, done_limit, nojs, view)
     nojs_html = "" if nojs else (
         f'<noscript><a class="load-more" href="/dashboard/{token}?nojs=1">'
         f'{escape(texts["nojs_full_version"])}</a></noscript>'
