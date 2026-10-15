@@ -120,7 +120,8 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(legacy, stored)
 
 
-def _sign_session(owner_id: int, owner_type: str, tg_user_id: int = 0, password_version: int = 0) -> str:
+def _sign_session(owner_id: int, owner_type: str, tg_user_id: int = 0, password_version: int = 0,
+                  max_age: int = SESSION_MAX_AGE) -> str:
     """Привязка cookie к конкретному дашборду обеспечивается именем cookie
     (session_<token>) и сверкой owner_id/owner_type с владельцем токена в
     _require_session — поэтому сам токен в подпись не входит (раньше он был
@@ -136,7 +137,7 @@ def _sign_session(owner_id: int, owner_type: str, tg_user_id: int = 0, password_
     в боте) реально инвалидировала уже выданные cookie: db.set_owner_dashboard_credentials
     должен инкрементить это поле при каждой смене пароля. Без этого утёкший
     токен сессии продолжал бы работать даже после смены пароля."""
-    payload = f"{owner_type}:{owner_id}:{tg_user_id}:{password_version}:{int(time.time()) + SESSION_MAX_AGE}"
+    payload = f"{owner_type}:{owner_id}:{tg_user_id}:{password_version}:{int(time.time()) + max_age}"
     sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{sig}"
 

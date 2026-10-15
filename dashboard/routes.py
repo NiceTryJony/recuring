@@ -3,7 +3,7 @@
 from aiohttp import web as aioweb
 
 from .actions import (
-    handle_share_accept, handle_subtask_create, handle_subtask_delete, handle_subtask_toggle,
+    handle_settings_save, handle_share_accept, handle_subtask_create, handle_subtask_delete, handle_subtask_toggle,
     handle_task_create, handle_task_edit, handle_task_share, handle_task_toggle, handle_telegram_auth,
     handle_template_apply, handle_template_create, handle_template_delete, handle_webapp_auth,
 )
@@ -11,7 +11,8 @@ from .assets import compression_middleware, handle_static
 from .timing import timing_middleware
 from .photos import handle_avatar, handle_task_photo_delete, handle_task_photo_get, handle_task_photo_upload
 from .views import (
-    handle_chart, handle_dashboard, handle_history, handle_share_preview, handle_templates_page, handle_webapp_entry,
+    handle_chart, handle_dashboard, handle_history, handle_settings_page, handle_share_preview, handle_templates_page,
+    handle_webapp_entry,
 )
 
 
@@ -52,6 +53,8 @@ def register_dashboard_routes(app: aioweb.Application):
     app.router.add_get("/dashboard/{token}/avatar/{user_id}", handle_avatar)
     app.router.add_get("/dashboard/{token}/chart", handle_chart)
     app.router.add_get("/dashboard/{token}/history", handle_history)
+    app.router.add_get("/dashboard/{token}/settings", handle_settings_page)
+    app.router.add_post("/dashboard/{token}/settings", handle_settings_save)
     app.router.add_get("/dashboard/{token}/templates", handle_templates_page)
     app.router.add_post("/dashboard/{token}/templates/new", handle_template_create)
     app.router.add_post("/dashboard/{token}/templates/{template_id}/apply", handle_template_apply)

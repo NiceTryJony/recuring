@@ -23,6 +23,12 @@ def fmt_remind(remind: str, lang: str) -> str:
     parts = [REMIND_OPTIONS[c][lang] for c in remind.split(",") if c in REMIND_OPTIONS]
     return ", ".join(parts) if parts else REMIND_OPTIONS["0"][lang]
 
+def display_name(user_id: int, info: dict | None) -> str:
+    """Имя участника из db.get_telegram_users; кого бот ещё не видел — «id123»."""
+    if info and (info.get("first_name") or info.get("username")):
+        return info.get("first_name") or f"@{info['username']}"
+    return f"id{user_id}"
+
 def _task_status_icon(t_row: dict) -> str:
     """✅ выполнена, ⚠️ просрочена (есть срок в прошлом и не выполнена), иначе ⏳."""
     if t_row["done"]:
@@ -50,6 +56,10 @@ async def fmt_task(t_row: dict) -> str:
         text += f"\n{t(lang, 'nag_line')}"
     if t_row.get("tag"):
         text += f"\n🏷 {html.escape(t_row['tag'])}"
+    if t_row.get("assigned_to"):
+        uid = t_row["assigned_to"]
+        info = (await db.get_telegram_users([uid])).get(uid)
+        text += "\n" + t(lang, "assigned_line", name=html.escape(display_name(uid, info)))
     text += f"\n<code>#{t_row['id']}</code>"
     return text
 

@@ -22,8 +22,8 @@ from .config import (
     BOT_USERNAME, CHART_DAYS, DONE_TASKS_PAGE_SIZE, SESSION_MAX_AGE, SHARE_CODE_RE, UTC, _tz_of, logger,
 )
 from .pages import (
-    HISTORY_PAGE, SHARE_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER, TEMPLATES_PAGE, WEBAPP_ENTRY_PAGE,
-    _login_response,
+    HISTORY_PAGE, SETTINGS_MORNING_BLOCK, SETTINGS_PAGE, SHARE_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER,
+    TEMPLATES_PAGE, WEBAPP_ENTRY_PAGE, _login_response,
 )
 from .render import _render_chart, _render_day_picker, _render_event, _render_task, _render_template_row
 from .security import (
@@ -195,6 +195,64 @@ async def handle_templates_page(request: aioweb.Request) -> aioweb.Response:
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
+
+
+# Подсказки для поля пояса; ввести можно любой пояс IANA — проверяет сервер
+_COMMON_TZ = ("Europe/Warsaw", "Europe/Moscow", "Europe/Kyiv", "Europe/Minsk", "Europe/Vilnius", "Europe/London",
+              "Europe/Berlin", "Asia/Almaty", "Asia/Tbilisi", "Asia/Yerevan", "America/New_York", "UTC")
+_LANG_NAMES = {"ru": "Русский", "en": "English", "pl": "Polski"}
+_SETTINGS_ERRORS = {"tz": "settings_error_tz", "quiet": "settings_error_quiet", "time": "settings_error_time",
+                    "unavailable": "settings_unavailable"}
+
+
+async def handle_settings_page(request: aioweb.Request) -> aioweb.Response:
+    """GET /dashboard/{token}/settings — язык, пояс, тихий час и (для личного
+    дашборда) утренняя сводка. ?tz=… подставляет пояс в поле (из подсказки
+    «на устройстве другой пояс»), но сохраняется он только кнопкой."""
+    token = request.match_info["token"]
+    settings = await db.get_owner_by_dashboard_token(token)
+    if not settings:
+        return aioweb.Response(text=_dt("ru")["not_found"], status=404)
+    owner_id, owner_type = settings["owner_id"], settings["owner_type"]
+    lang = settings.get("language", "ru")
+    texts = _dt(lang)
+
+    cookie = request.cookies.get(f"session_{token}")
+    pwd_version = settings.get("dashboard_password_version", 0)
+    session = _verify_session(cookie, current_password_version=pwd_version) if cookie else None
+    if session is None or (session[0], session[1]) != (owner_id, owner_type):
+        return _login_response(token, lang)
+
+    if request.query.get("saved") == "1":
+        status_html = f'<div class="settings-ok">{escape(texts["settings_saved"])}</div>'
+    elif request.query.get("error") in _SETTINGS_ERRORS:
+        status_html = f'<div class="new-task-error">{escape(texts[_SETTINGS_ERRORS[request.query["error"]]])}</div>'
+    else:
+        status_html = ""
+
+    qs, qe = settings.get("quiet_hours_start"), settings.get("quiet_hours_end")
+    morning_html = ""
+    if owner_type == "user":
+        morning = await db.get_morning_summary_settings(owner_id) or {}
+        on = bool(morning.get("morning_summary_enabled"))
+        hour, minute = morning.get("morning_summary_hour"), morning.get("morning_summary_minute")
+        morning_html = SETTINGS_MORNING_BLOCK.format(
+            morning_checked=" checked" if on else "",
+            morning_time=f"{hour:02d}:{minute:02d}" if hour is not None and minute is not None else "08:00",
+            **_dt_flat(lang),
+        )
+
+    page = SETTINGS_PAGE.format(
+        token=token, csrf=_csrf_token(cookie), status_html=status_html,
+        lang_options="".join(f'<option value="{code}"{" selected" if code == lang else ""}>{name}</option>'
+                             for code, name in _LANG_NAMES.items()),
+        timezone=escape(request.query.get("tz") or settings.get("timezone") or "Europe/Warsaw"),
+        tz_options="".join(f'<option value="{z}"></option>' for z in _COMMON_TZ),
+        quiet_checked=" checked" if qs and qe else "",
+        quiet_start=qs.strftime("%H:%M") if qs else "22:00", quiet_end=qe.strftime("%H:%M") if qe else "07:00",
+        morning_html=morning_html, **_dt_flat(lang),
+    )
+    return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 async def _build_chart(owner_id: int, owner_type: str, tz, texts: dict) -> tuple[str, int]:
@@ -369,12 +427,36 @@ def _summary(texts: dict, today_n: int, overdue_n: int, streak: int | None, prog
     return f'<section class="summary">{cells}</section>'
 
 
+async def _owner_switch(request: aioweb.Request, texts: dict, token: str, owner_type: str, viewer_id: int) -> str:
+    """Чипы «Мои / Группа X / …» — только группы, в которые у браузера уже
+    есть валидная сессия (её выдаёт вход из Mini App), чтобы ссылка не вела на
+    форму пароля. «Мои» со страницы группы ведёт через /dashboard/app — это
+    работает только внутри Telegram (класс tg-only прячет чип в браузере)."""
+    if not viewer_id:
+        return ""
+    chips = []
+    for g in await db.get_user_group_dashboards(viewer_id):
+        cookie = request.cookies.get(f"session_{g['token']}")
+        session = _verify_session(cookie, current_password_version=g["password_version"]) if cookie else None
+        if session and (session[0], session[1]) == (g["chat_id"], "chat"):
+            label = g["title"] or texts["group_fallback"]
+            chips.append(f'<a class="tag-chip{" active" if g["token"] == token else ""}" '
+                         f'href="/dashboard/{g["token"]}">{escape(label)}</a>')
+    if not chips:
+        return ""
+    mine = (f'<a class="tag-chip active" href="/dashboard/{token}">{escape(texts["nav_my_tasks"])}</a>'
+            if owner_type == "user" else
+            f'<a class="tag-chip tg-only" href="/dashboard/app">{escape(texts["nav_my_tasks"])}</a>')
+    return f'<nav class="tag-chips owner-switch">{mine}{"".join(chips)}</nav>'
+
+
 def _tabbar(token: str, texts: dict, owner_type: str) -> str:
     """Нижняя панель разделов (телефон / Mini App); на десктопе скрывается CSS."""
     items = [(f"/dashboard/{token}", "i-list", texts["nav_tasks"], True),
              (f"/dashboard/{token}/templates", "i-tpl", texts["nav_templates"], False)]
     if owner_type == "chat":
         items.append((f"/dashboard/{token}/history", "i-hist", texts["nav_history"], False))
+    items.append((f"/dashboard/{token}/settings", "i-gear", texts["nav_settings"], False))
     links = "".join(
         f'<a class="tab{" active" if cur else ""}" href="{href}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true">'
         f'<use href="#{icon}"/></svg><span>{escape(label)}</span></a>'
@@ -470,9 +552,11 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
             streak = await _safe_streak(owner_id, owner_type, tz)
     else:
         async def _creators() -> dict[int, dict]:
+            # Авторы и исполнители — одним запросом
             if owner_type != "chat":
                 return {}
-            return await db.get_telegram_users(list({t["created_by"] for t in tasks if t.get("created_by")}))
+            ids = {t[k] for t in tasks for k in ("created_by", "assigned_to") if t.get(k)}
+            return await db.get_telegram_users(list(ids))
 
         async def _streak() -> int | None:
             return streak if nojs else await _safe_streak(owner_id, owner_type, tz)
@@ -490,13 +574,16 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
                 t, tz, lang, token, csrf, creator=creators.get(t.get("created_by")), owner_type=owner_type,
                 photos=photos_by_task.get(t["id"]), subtasks=subtasks_by_task.get(t["id"]),
                 now=now, local_due=local_due[t["id"]], lazy=not nojs,
+                assignee=creators.get(t.get("assigned_to")), viewer_id=tg_user_id,
             )
 
         if group_mode == "none":
             tasks_html = "\n".join(_card(t) for t in tasks)
         else:
+            # data-day — по нему dashboard.js кладёт новую карточку в группу своего дня
             tasks_html = "\n".join(
-                f'<section class="task-group">{_group_heading(key, group_mode, texts, len(items))}\n'
+                f'<section class="task-group"{f" data-day={key.isoformat()!r}" if group_mode == "date" else ""}>'
+                f'{_group_heading(key, group_mode, texts, len(items))}\n'
                 + "\n".join(_card(t) for t in items) + "</section>"
                 for key, items in group_tasks(tasks, local_due, group_mode)
             )
@@ -514,8 +601,11 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     nav_links = [f'<a class="nav-link" href="/dashboard/{token}/templates">{escape(texts["nav_templates"])}</a>']
     if owner_type == "chat":
         nav_links.append(f'<a class="nav-link" href="/dashboard/{token}/history">{escape(texts["nav_history"])}</a>')
+    nav_links.append(f'<a class="nav-link" href="/dashboard/{token}/settings">{escape(texts["nav_settings"])}</a>')
     nav_html = " ".join(nav_links)
     tabbar_html = _tabbar(token, texts, owner_type)
+    switch_html = await _owner_switch(request, texts, token, owner_type,
+                                      owner_id if owner_type == "user" else tg_user_id)
 
     error_key = {"empty_title": "error_empty_title", "bad_photo": "error_bad_photo",
                  "bad_due_at": "error_bad_due_at"}.get(request.query.get("error", ""))
@@ -530,12 +620,20 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
         tg_widget_html = TELEGRAM_WIDGET_BANNER.format(
             bot_username=BOT_USERNAME, token=token, note=texts["tg_widget_note"], csrf=csrf,
         )
+    # Баннер «на устройстве другой пояс» — показывает dashboard.js, сравнив с Intl
+    tz_hint_html = (
+        f'<div class="tz-hint" hidden data-tz="{escape(tz.key)}" data-text="{escape(texts["tz_hint"])}" '
+        f'data-href="/dashboard/{token}/settings?tz="><span></span>'
+        f'<a href="/dashboard/{token}/settings">{escape(texts["tz_hint_fix"])}</a>'
+        f'<button type="button" aria-label="close">×</button></div>'
+    )
+    tg_widget_html = tz_hint_html + tg_widget_html
 
     page = TASKS_PAGE.format(
         tasks_html=tasks_html, chart_html=chart_html, heading=heading, nav_html=nav_html,
         token=token, csrf=csrf, new_task_error=new_task_error_html, tg_widget_html=tg_widget_html,
         day_picker_html=day_picker_html, view_controls_html=view_controls_html, tabbar_html=tabbar_html,
-        summary_html=_summary(texts, today_n, overdue_n, streak, state["progress"]), add_open=" open" if error_key else "", more_done_html=more_done_html, nojs_html=nojs_html,
+        summary_html=switch_html + _summary(texts, today_n, overdue_n, streak, state["progress"]), add_open=" open" if error_key else "", more_done_html=more_done_html, nojs_html=nojs_html,
         **_dt_tasks_page(lang),
     )
     return aioweb.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})

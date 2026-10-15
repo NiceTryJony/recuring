@@ -566,6 +566,57 @@ async def test_webapp_auth_logs_user_in_without_password(client, settings):
     assert 'name="csrf"' in await page.text()
 
 
+async def test_webapp_auth_cookie_works_inside_telegram_iframe(client, settings):
+    # Telegram Web/Desktop открывает Mini App во фрейме: Strict/Lax cookie там не живёт
+    settings.update(owner_id=999, owner_type="user")
+    resp = await client.post("/dashboard/webapp-auth", json={"initData": _init_data(999)},
+                             headers={"X-Forwarded-Proto": "https"})
+    assert resp.status == 200
+    cookie = resp.headers["Set-Cookie"]
+    assert cookie.startswith(f"session_{TOKEN}=")
+    for attr in ("HttpOnly", "Secure", "SameSite=None", "Partitioned"):
+        assert attr in cookie
+
+
+GROUPS = [
+    {"chat_id": OWNER_ID, "title": "Rodzina", "token": "grp-mine", "password_version": 3, "members": [999]},
+    {"chat_id": -777, "title": "Obca", "token": "grp-other", "password_version": 0, "members": [555]},
+]
+
+
+@pytest_asyncio.fixture
+async def group_client(monkeypatch, settings, task, spy):
+    settings.update(owner_id=999, owner_type="user")
+    install_db_stubs(monkeypatch, TOKEN, settings, [task], spy=spy, groups=GROUPS)
+    dashboard.set_scheduler_hooks(schedule=lambda *a, **kw: None, unschedule=lambda *a: None)
+    app = aioweb.Application()
+    dashboard.register_dashboard_routes(app)
+    test_client = TestClient(TestServer(app))
+    await test_client.start_server()
+    yield test_client
+    await test_client.close()
+    dashboard.set_scheduler_hooks(None, None)
+
+
+async def test_webapp_opens_member_groups_without_password(group_client):
+    resp = await group_client.post("/dashboard/webapp-auth", json={"initData": _init_data(999)})
+    assert resp.status == 200
+    mine = await group_client.get("/dashboard/grp-mine")
+    assert 'name="csrf"' in await mine.text()                       # своя группа — без пароля
+    other = await group_client.get("/dashboard/grp-other")
+    assert 'name="csrf"' not in await other.text()                  # чужая — форма входа
+    personal = await (await group_client.get(f"/dashboard/{TOKEN}")).text()
+    assert 'href="/dashboard/grp-mine"' in personal and "grp-other" not in personal
+
+
+async def test_webapp_task_link_opens_task_in_its_group(group_client):
+    # task (id=1) принадлежит группе OWNER_ID, где 999 — участник
+    resp = await group_client.post("/dashboard/webapp-auth", json={"initData": _init_data(999), "task": "1"})
+    assert (await resp.json())["url"] == "/dashboard/grp-mine?view=all#task-1"
+    resp = await group_client.post("/dashboard/webapp-auth", json={"initData": _init_data(555), "task": "1"})
+    assert "#task-" not in (await resp.json())["url"]               # не участник — просто свой дашборд
+
+
 @pytest.mark.parametrize("init_data", [
     _init_data(999, bad_hash=True), _init_data(999, auth_date=1), "garbage", "",
 ])
@@ -890,3 +941,129 @@ async def test_tasks_page_has_side_panel_before_list(client):
     side, lst = page.index('<aside class="side">'), page.index('<main class="list">')
     assert side < page.index('class="summary"') < page.index("chart-lazy") < page.index("</aside>") < lst
     assert page.index("общая задача") > lst
+
+
+# ---------- ustawienia (Mini App / dashboard) ----------
+
+@pytest.fixture
+def settings_spy():
+    calls = []
+
+    async def timezone(owner_id, owner_type, tz):
+        calls.append(("timezone", owner_id, tz))
+        return True
+
+    async def language(owner_id, owner_type, lang):
+        calls.append(("language", owner_id, lang))
+        return True
+
+    async def quiet(owner_id, owner_type, q):
+        calls.append(("quiet", owner_id, q))
+
+    async def morning(user_id, hm):
+        calls.append(("morning", user_id, hm))
+
+    dashboard.set_settings_hooks(timezone=timezone, language=language, quiet=quiet, morning=morning)
+    yield calls
+    dashboard.set_settings_hooks()
+
+
+def _form(csrf, **over):
+    data = {"csrf": csrf, "language": "ru", "timezone": "Europe/Warsaw"}
+    data.update(over)
+    return data
+
+
+async def test_settings_page_requires_login_and_shows_current_values(client):
+    assert 'name="password"' in await (await client.get(f"/dashboard/{TOKEN}/settings")).text()
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}/settings")).text()
+    assert 'value="Europe/Warsaw"' in body and 'name="morning_on"' not in body   # grupa: bez porannej sumy
+
+
+async def test_settings_save_applies_only_changes(client, settings_spy):
+    csrf = await _login(client)
+    resp = await client.post(f"/dashboard/{TOKEN}/settings", allow_redirects=False,
+                             data=_form(csrf, timezone="Asia/Almaty", quiet_on="1", quiet_start="23:00", quiet_end="07:30"))
+    assert resp.status == 302 and resp.headers["Location"].endswith("saved=1")
+    from datetime import time
+    assert settings_spy == [("timezone", OWNER_ID, "Asia/Almaty"), ("quiet", OWNER_ID, (time(23), time(7, 30)))]
+
+
+@pytest.mark.parametrize("over,error", [
+    ({"timezone": "Mars/Olympus"}, "tz"), ({"timezone": "../etc"}, "tz"),
+    ({"quiet_on": "1", "quiet_start": "10:00", "quiet_end": "10:00"}, "quiet"),
+])
+async def test_settings_invalid_input_changes_nothing(client, settings_spy, over, error):
+    csrf = await _login(client)
+    resp = await client.post(f"/dashboard/{TOKEN}/settings", data=_form(csrf, language="en", **over),
+                             allow_redirects=False)
+    assert resp.headers["Location"].endswith(f"error={error}")
+    assert settings_spy == []                                   # nawet język się nie zmienił
+
+
+async def test_personal_settings_include_morning_summary(client, settings, settings_spy):
+    settings.update(owner_id=999, owner_type="user")
+    csrf = await _login(client)
+    assert 'name="morning_on"' in await (await client.get(f"/dashboard/{TOKEN}/settings")).text()
+    await client.post(f"/dashboard/{TOKEN}/settings", data=_form(csrf, morning_on="1", morning_time="07:15"))
+    assert ("morning", 999, (7, 15)) in settings_spy
+
+
+async def test_settings_without_bot_hooks_reports_unavailable(client):
+    csrf = await _login(client)
+    resp = await client.post(f"/dashboard/{TOKEN}/settings", data=_form(csrf, language="en"), allow_redirects=False)
+    assert resp.headers["Location"].endswith("error=unavailable")
+
+
+async def test_tasks_page_carries_saved_timezone_for_device_hint(client):
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert 'class="tz-hint" hidden data-tz="Europe/Warsaw"' in body
+    assert f'href="/dashboard/{TOKEN}/settings"' in body
+
+
+# ---------- przypisywanie zadań grupy ----------
+
+async def test_member_can_take_and_release_group_task(group_client, settings, monkeypatch):
+    settings["_members"] = [999]
+    updates = []
+
+    async def _update(task_id, **fields):
+        updates.append(fields)
+    monkeypatch.setattr(db, "update_task", _update)
+    await group_client.post("/dashboard/webapp-auth", json={"initData": _init_data(999)})
+    body = await (await group_client.get("/dashboard/grp-mine")).text()
+    assert "/tasks/1/assign" in body                                   # przycisk «Беру» dla członka
+    csrf = re.search(r'name="csrf" value="([0-9a-f]+)"', body).group(1)
+    resp = await group_client.post("/dashboard/grp-mine/tasks/1/assign", data={"csrf": csrf}, allow_redirects=False)
+    assert resp.status == 302 and updates == [{"assigned_to": 999}]
+
+
+async def test_password_session_without_identity_cannot_assign(client):
+    csrf = await _login(client)                                         # hasło: tg_user_id nieznany
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert "/tasks/1/assign" not in body
+    resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/assign", data={"csrf": csrf}, allow_redirects=False)
+    assert resp.status == 403
+
+
+async def test_assignee_badge_is_shown(client, task, spy):
+    task["assigned_to"] = 777                                           # 777 bez imienia w bazie
+    await _login(client)
+    assert "👤 id777" in await (await client.get(f"/dashboard/{TOKEN}")).text()
+
+
+@pytest.mark.parametrize("referer,expected", [
+    ("{base}/dashboard/{token}?view=all&group=tag", "/dashboard/{token}?view=all&group=tag"),  # wracamy na ten sam widok
+    ("https://evil.example/dashboard/{token}?view=all", "/dashboard/{token}"),                 # obcy host — nie
+    ("{base}/dashboard/{token}/settings?x=1", "/dashboard/{token}"),                            # inna strona — nie
+    ("", "/dashboard/{token}"),
+])
+async def test_no_js_action_returns_to_same_view_safely(client, referer, expected):
+    csrf = await _login(client)
+    base = str(client.make_url("")).rstrip("/")
+    headers = {"Referer": referer.format(base=base, token=TOKEN)} if referer else {}
+    resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/done", data={"csrf": csrf}, headers=headers,
+                             allow_redirects=False)
+    assert resp.headers["Location"] == expected.format(token=TOKEN)

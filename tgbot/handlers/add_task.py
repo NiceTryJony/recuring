@@ -10,13 +10,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import db
-from date_parser import parse_human_date, split_title_and_date
+from date_parser import parse_human_date, split_repeat, split_title_and_date
 from i18n import t
 
 from .. import app
 from ..constants import NAG_INTERVAL_MINUTES, NAG_MAX_HOURS
 from ..keyboards import nag_kb, remind_kb, repeat_kb
 from ..owner import normalize_tag, owner_lang, owner_tz, resolve_owner, to_local, to_utc
+from ..photo_store import attach_photo
 from ..scheduling import schedule_daily_summary, schedule_task
 from ..states import AddTask
 
@@ -30,31 +31,44 @@ async def add_start(message: Message, state: FSMContext):
     owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
     await state.set_state(AddTask.title)
-    await state.update_data(owner_id=owner_id, owner_type=owner_type, actor_id=message.from_user.id)
+    # set_data, а не update_data: фото/описание от брошенного быстрого добавления не должны перейти в новую задачу
+    await state.set_data({"owner_id": owner_id, "owner_type": owner_type, "actor_id": message.from_user.id})
     await message.answer(t(lang, "ask_title"))
 
 async def _accept_date_and_ask_repeat(local_dt: datetime, state: FSMContext, tz: ZoneInfo, lang: str, target_message: Message):
     """Общий хвост для двух путей: обычного пошагового (после AddTask.date)
-    и быстрого однострочного (когда дата уже найдена прямо в названии)."""
+    и быстрого однострочного (когда дата уже найдена прямо в названии).
+    Повтор, найденный в тексте («codziennie», «каждый понедельник»), уже
+    лежит в repeat — тогда вопрос о повторе пропускаем."""
     await state.update_data(due_at=to_utc(local_dt, tz).isoformat())
+    if (await state.get_data()).get("repeat"):
+        await state.update_data(remind_selected=[])
+        await state.set_state(AddTask.remind)
+        await target_message.answer(t(lang, "ask_remind"), reply_markup=remind_kb(lang))
+        return
     await state.set_state(AddTask.repeat)
     await target_message.answer(t(lang, "ask_repeat"), reply_markup=repeat_kb(lang))
 
-@router.message(AddTask.title)
+@router.message(AddTask.title, F.text)  # стикер/фото без текста — к fallback, а не AttributeError
 async def add_title(message: Message, state: FSMContext):
+    await take_title(message.text, message, state)
+
+async def take_title(text: str, message: Message, state: FSMContext):
+    """Шаг «название»: и для /add, и для быстрого добавления (текст, пересланное
+    сообщение, подпись к фото — там text не обязательно message.text)."""
     data = await state.get_data()
     lang = await owner_lang(data["owner_id"], data["owner_type"])
     tz = await owner_tz(data["owner_id"], data["owner_type"])
     now_local = datetime.now(tz).replace(tzinfo=None)
 
-    raw = message.text.strip()
     # Быстрый путь: если в названии нашлась понятная дата ("Купить молоко
     # завтра в 18:00"), сразу принимаем её и пропускаем отдельный шаг
     # ask_date — для тех, кто не хочет проходить все шаги по отдельности.
     # Если дата не найдена — ведём себя как раньше: весь текст - заголовок,
-    # дату спрашиваем следующим шагом.
+    # дату спрашиваем следующим шагом. Повтор из текста — в repeat.
+    raw, repeat = split_repeat(text.strip())
     title, local_dt = split_title_and_date(raw, now_local)
-    await state.update_data(title=title)
+    await state.update_data(title=title[:200], repeat=repeat)
 
     if local_dt is not None:
         await _accept_date_and_ask_repeat(local_dt, state, tz, lang, message)
@@ -63,17 +77,20 @@ async def add_title(message: Message, state: FSMContext):
     await state.set_state(AddTask.date)
     await message.answer(t(lang, "ask_date"))
 
-@router.message(AddTask.date)
+@router.message(AddTask.date, F.text)
 async def add_date(message: Message, state: FSMContext):
     data = await state.get_data()
     lang = await owner_lang(data["owner_id"], data["owner_type"])
     tz = await owner_tz(data["owner_id"], data["owner_type"])
     now_local = datetime.now(tz).replace(tzinfo=None)
 
-    local_dt = parse_human_date(message.text.strip(), now_local)
+    text, repeat = split_repeat(message.text.strip())   # «каждый день в 9» на шаге даты
+    local_dt = parse_human_date(text, now_local)
     if local_dt is None:
         await message.answer(t(lang, "bad_date"))
         return
+    if repeat:
+        await state.update_data(repeat=repeat)
 
     await _accept_date_and_ask_repeat(local_dt, state, tz, lang, message)
 
@@ -133,7 +150,7 @@ async def add_nag_pick(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(t(lang, "ask_tag"))
     await call.answer()
 
-@router.message(AddTask.tag)
+@router.message(AddTask.tag, F.text)
 async def add_tag(message: Message, state: FSMContext):
     tag = normalize_tag(message.text)
     await _finalize_add_task(state, tag, message)
@@ -161,8 +178,12 @@ async def _finalize_add_task(state: FSMContext, tag: str | None, target_message:
         tag=tag,
         remind_until_done=nag,
         created_by=actor_id,
+        description=data.get("description"),
     )
     await db.log_history(task_id, actor_id, data["title"], "created")
+    # Задача из фото — само фото прикрепляем сразу после создания
+    if data.get("photo_file_id"):
+        await attach_photo(task_id, data["photo_file_id"], actor_id, data["title"])
     schedule_task(task_id, owner_id, owner_type, due_at, data["repeat"], data["remind"], tz, remind_until_done=nag)
     # Джоба вечерней сводки — одна на РЕАЛЬНОГО ЧЕЛОВЕКА (actor_id), который
     # создал задачу, а не на owner: создание задачи в группе не должно

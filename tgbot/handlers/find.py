@@ -65,7 +65,7 @@ def _get_find_view(owner_id: int, owner_type: str) -> dict:
 
 _find_view_cache: dict[tuple[str, int], dict] = {}
 
-@router.message(FindTask.query)
+@router.message(FindTask.query, F.text)
 async def find_query(message: Message, state: FSMContext):
     data = await state.get_data()
     owner_id, owner_type = data["owner_id"], data["owner_type"]

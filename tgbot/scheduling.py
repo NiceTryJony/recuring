@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -12,10 +13,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 import db
 from date_parser import is_quiet_time, next_quiet_end
 from i18n import t
+from stats import totals
 
 from . import app
 from .app import bot, logger
-from .constants import DEFAULT_TZ, NAG_INTERVAL_MINUTES, NAG_MAX_HOURS, REMIND_DELTAS
+from .constants import DASHBOARD_BASE_URL, DEFAULT_TZ, NAG_INTERVAL_MINUTES, NAG_MAX_HOURS, REMIND_DELTAS
 from .formatting import _current_streak
 from .keyboards import task_kb
 from .owner import owner_lang, owner_quiet, owner_tz, to_local, to_utc
@@ -96,11 +98,13 @@ def schedule_task(task_id: int, owner_id: int, owner_type: str, due_at_utc: date
             args=[owner_id, owner_type, task_id], id=f"due_{task_id}", replace_existing=True
         )
 
-async def _recipients(owner_id: int, owner_type: str) -> list[int]:
-    """Кому слать личное уведомление: самому пользователю, либо — для общей
-    задачи чата — всем известным участникам этого чата (рассылка, а не
-    сообщение в сам групповой чат)."""
+async def _recipients(owner_id: int, owner_type: str, task: dict | None = None) -> list[int]:
+    """Кому слать личное уведомление: самому пользователю, либо — для задачи
+    чата — исполнителю, если она поручена, иначе всем известным участникам
+    этого чата (рассылка, а не сообщение в сам групповой чат)."""
     if owner_type == "chat":
+        if task and task.get("assigned_to"):
+            return [task["assigned_to"]]
         return await db.get_chat_members(owner_id)
     return [owner_id]
 
@@ -146,7 +150,7 @@ async def send_reminder(owner_id: int, owner_type: str, task_id: int):
     if await _defer_if_quiet(owner_id, owner_type, task_id, "remind"):
         return
     lang = await owner_lang(owner_id, owner_type)
-    for recipient_id in await _recipients(owner_id, owner_type):
+    for recipient_id in await _recipients(owner_id, owner_type, task):
         try:
             await bot.send_message(recipient_id, t(lang, "reminder_text", title=task["title"]))
         except TelegramForbiddenError:
@@ -185,12 +189,15 @@ async def send_due(owner_id: int, owner_type: str, task_id: int):
 
     lang = await owner_lang(owner_id, owner_type)
     text_key = "nag_text" if is_followup else "due_text"
+    # Telegram принимает web_app-кнопки только с https (как и кнопку меню в server.py)
+    open_url = (f"{DASHBOARD_BASE_URL.rstrip('/')}/dashboard/app?task={task_id}"
+                if DASHBOARD_BASE_URL.startswith("https://") else None)
     sent_any = False
-    for recipient_id in await _recipients(owner_id, owner_type):
+    for recipient_id in await _recipients(owner_id, owner_type, task):
         try:
             await bot.send_message(
                 recipient_id, t(lang, text_key, title=task["title"]),
-                reply_markup=task_kb(task_id, lang, done=False)
+                reply_markup=task_kb(task_id, lang, done=False, open_url=open_url, assign=owner_type == "chat")
             )
             sent_any = True
         except TelegramForbiddenError:
@@ -199,6 +206,33 @@ async def send_due(owner_id: int, owner_type: str, task_id: int):
             logger.exception("Не удалось отправить уведомление user_id=%s task_id=%s", recipient_id, task_id)
     if sent_any:
         await db.set_last_notified(task_id, now)
+
+# ---------- перенос сроков (чистые функции) ----------
+
+def snooze_target(code: str, now_utc: datetime, due_utc: datetime, tz: ZoneInfo) -> datetime | None:
+    """Новый срок по кнопке: '1h' — через час от сейчас; 'tom' / '1w' — завтра /
+    через неделю в то же локальное время, что было у задачи. None — неизвестный код."""
+    if code == "1h":
+        return now_utc + timedelta(hours=1)
+    days = {"tom": 1, "1w": 7}.get(code)
+    if days is None:
+        return None
+    day = now_utc.astimezone(tz).date() + timedelta(days=days)
+    return datetime.combine(day, due_utc.astimezone(tz).time(), tzinfo=tz).astimezone(ZoneInfo("UTC"))
+
+def overdue_before_today(tasks: list[dict], tz: ZoneInfo, now_utc: datetime) -> list[dict]:
+    """Разовые невыполненные задачи со сроком в прошлые дни (сегодняшние — ещё не «хвосты»)."""
+    today = now_utc.astimezone(tz).date()
+    return [task for task in tasks
+            if not task["done"] and task["repeat"] == "none" and to_local(task["due_at"], tz).date() < today]
+
+def move_to_today(due_utc: datetime, tz: ZoneInfo, now_utc: datetime) -> datetime:
+    """Сегодня в то же локальное время; если оно уже прошло — через час от сейчас."""
+    today = now_utc.astimezone(tz).date()
+    candidate = datetime.combine(today, due_utc.astimezone(tz).time(), tzinfo=tz).astimezone(ZoneInfo("UTC"))
+    if candidate > now_utc:
+        return candidate
+    return (now_utc + timedelta(hours=1)).replace(second=0, microsecond=0)
 
 DAILY_SUMMARY_HOUR = 21
 
@@ -277,8 +311,12 @@ async def send_daily_summary(user_id: int):
         n = await _current_streak(user_id, tz)
         if n > 0:
             streak_line = t(lang, "streak_line", n=n)
+        # По воскресеньям — итог недели в той же сводке (без отдельного сообщения)
+        if datetime.now(tz).weekday() == 6:
+            done = totals(await db.get_history_stats(user_id, 7, tz.key))["done"]
+            streak_line = t(lang, "weekly_line", done=done) + streak_line
     except Exception:
-        logger.exception("Не удалось посчитать серию user_id=%s", user_id)
+        logger.exception("Не удалось посчитать серию/итог недели user_id=%s", user_id)
 
     text = (
         t(lang, "daily_summary_combined_header")
@@ -373,6 +411,16 @@ async def send_morning_summary(user_id: int):
     else:
         text = t(lang, "morning_summary_header") + "".join(sections)
 
+    # Хвосты с прошлых дней — одна кнопка «перенести всё на сегодня» вместо разбора по одной
+    markup = None
+    try:
+        overdue = overdue_before_today(await db.get_tasks(user_id, "user"), tz, datetime.now(ZoneInfo("UTC")))
+        if overdue:
+            markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                text=t(lang, "btn_overdue_today", n=len(overdue)), callback_data="ovd_today")]])
+    except Exception:
+        logger.exception("Не удалось посчитать просроченные для morning_summary user_id=%s", user_id)
+
     # Тихий час может легитимно перекрывать утреннее время (например, тихий
     # час "22:00-09:00", а сводка настроена на 8:00) — та же логика, что и у
     # вечерней: не откладываем (сводка полезна именно утром), но шлём беззвучно.
@@ -383,7 +431,7 @@ async def send_morning_summary(user_id: int):
         silent = False
 
     try:
-        await bot.send_message(user_id, text, parse_mode="HTML", disable_notification=silent)
+        await bot.send_message(user_id, text, parse_mode="HTML", disable_notification=silent, reply_markup=markup)
     except TelegramForbiddenError:
         logger.info("Юзер %s заблокировал бота, пропускаю morning_summary", user_id)
     except Exception:

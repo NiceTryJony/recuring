@@ -1,20 +1,17 @@
 """Фото к задаче."""
 
-import io
-
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-import dashboard
 import db
 from i18n import t
 
-from ..app import bot
 from ..formatting import fmt_task
 from ..keyboards import task_kb
 from ..owner import _authorize_task, owner_lang
+from ..photo_store import attach_photo
 from ..states import AddTaskPhoto
 
 router = Router()
@@ -59,16 +56,9 @@ async def task_photo_collect(message: Message, state: FSMContext):
 
     # Самое большое доступное разрешение — последний элемент message.photo
     # (Telegram кладёт их по возрастанию размера), как и у аватарок дашборда.
-    file_id = message.photo[-1].file_id
-    buf = io.BytesIO()
-    await bot.download(file_id, destination=buf)
-    compressed = dashboard.compress_task_photo(buf.getvalue())
-    if compressed is None:
+    if not await attach_photo(task_id, message.photo[-1].file_id, message.from_user.id, task["title"]):
         await message.answer(t(lang, "photo_bad_file"))
         return
-    data_bytes, mime = compressed
-    await db.add_task_photo(task_id, data_bytes, mime, uploaded_by=message.from_user.id)
-    await db.log_history(task_id, message.from_user.id, task["title"], "photo_added")
     await message.answer(t(lang, "photo_saved") + f"\n{t(lang, 'photo_prompt')}")
 
 @router.message(AddTaskPhoto.collecting, Command("done"))
@@ -81,7 +71,7 @@ async def task_photo_finish(message: Message, state: FSMContext):
         return
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     text = await fmt_task(task)
-    await message.answer(text, reply_markup=task_kb(task_id, lang, done=task["done"]), parse_mode="HTML")
+    await message.answer(text, reply_markup=task_kb(task_id, lang, done=task["done"], assign=task["owner_type"] == "chat"), parse_mode="HTML")
 
 @router.message(AddTaskPhoto.collecting)
 async def task_photo_collect_wrong_type(message: Message, state: FSMContext):

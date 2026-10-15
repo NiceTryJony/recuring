@@ -16,6 +16,23 @@ async def add_chat_member(chat_id: int, user_id: int):
     await core._with_retry(_run)
 
 
+async def remove_chat_member(chat_id: int, user_id: int):
+    """Человек вышел/удалён из группы: больше не получает её уведомления,
+    не управляет её задачами из лички и не входит в её дашборд через Mini App."""
+    async def _run():
+        async with core._pool.acquire() as conn:
+            await conn.execute("DELETE FROM chat_members WHERE chat_id = $1 AND user_id = $2", chat_id, user_id)
+    await core._with_retry(_run)
+
+
+async def forget_chat_members(chat_id: int):
+    """Бота удалили из группы — список участников больше не обновится, забываем его."""
+    async def _run():
+        async with core._pool.acquire() as conn:
+            await conn.execute("DELETE FROM chat_members WHERE chat_id = $1", chat_id)
+    await core._with_retry(_run)
+
+
 async def get_chat_members(chat_id: int) -> list[int]:
     async def _run():
         async with core._pool.acquire() as conn:

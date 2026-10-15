@@ -12,6 +12,7 @@ from .core import (
     _normalize_db_url,
     _with_retry,
     close_db,
+    ping,
 )
 from .history import (
     _history_scope,
@@ -25,11 +26,13 @@ from .history import (
 )
 from .members import (
     add_chat_member,
+    forget_chat_members,
     get_chat_members,
     get_chats_for_user,
     get_telegram_user_photo,
     get_telegram_users,
     is_chat_member,
+    remove_chat_member,
     upsert_telegram_user,
 )
 from .photos import (
@@ -52,7 +55,9 @@ from .settings import (
     get_or_create_user_dashboard_token,
     get_owner_by_dashboard_token,
     get_owner_settings,
+    get_user_group_dashboards,
     invalidate_dashboard_cache,
+    set_chat_title,
     set_owner_dashboard_credentials,
     set_owner_language,
     set_owner_quiet_hours,

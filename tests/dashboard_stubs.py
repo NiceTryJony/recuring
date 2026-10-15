@@ -27,7 +27,8 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
                      thumb: bytes | None = None,
                      avatar: bytes | None = None,
                      history: list[dict] | None = None,
-                     done_days: list | None = None) -> dict:
+                     done_days: list | None = None,
+                     groups: list[dict] | None = None) -> dict:
     """Подменяет db.* на in-memory реализацию. `tasks` — список, который
     возвращает get_tasks (порядок как у настоящего ORDER BY done, due_at — за
     это отвечает вызывающий). photos/subtasks — {task_id: [...]}. Возвращает spy."""
@@ -38,7 +39,12 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
     users = users or {}
 
     async def _owner(tok):
-        return settings if tok == token else None
+        if tok == token:
+            return settings
+        g = next((g for g in groups or [] if g["token"] == tok), None)
+        return g and {"owner_id": g["chat_id"], "owner_type": "chat", "language": "ru",
+                      "timezone": "Europe/Warsaw", "dashboard_password_hash": None,
+                      "dashboard_password_version": g["password_version"]}
 
     async def _tasks(*a, **kw):
         return tasks
@@ -142,9 +148,22 @@ def install_db_stubs(monkeypatch, token: str, settings: dict, tasks: list[dict],
     async def _user_token(user_id):
         return token, settings.get("dashboard_password_version", 0)
 
+    async def _is_member(chat_id, user_id):
+        return user_id in settings.get("_members", [])
+
+    async def _morning(user_id):
+        return settings.get("_morning")      # тесты кладут сюда {morning_summary_enabled, _hour, _minute}
+
+    async def _groups(user_id, create_missing=False):
+        """groups — [{chat_id, title, token, password_version, members: [user_id]}]."""
+        return [g for g in (groups or []) if user_id in g.get("members", [])]
+
     for name, impl in {
         "get_owner_by_dashboard_token": _owner,
         "get_or_create_user_dashboard_token": _user_token,
+        "get_user_group_dashboards": _groups,
+        "get_morning_summary_settings": _morning,
+        "is_chat_member": _is_member,
         "get_tasks": _tasks,
         "get_dashboard_tasks": _dash_tasks,
         "get_dashboard_stats": _dash_stats,

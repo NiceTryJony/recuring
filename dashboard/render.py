@@ -289,11 +289,15 @@ def _render_task(
     photos: list[dict] | None = None,
     subtasks: list[dict] | None = None,
     *, now: "dt.datetime | None" = None, local_due: "dt.datetime | None" = None,
-    lazy: bool = False,
+    lazy: bool = False, assignee: dict | None = None, viewer_id: int = 0,
 ) -> str:
     """now/local_due — посчитанные один раз на страницу (handle_dashboard и
     так переводит каждый due_at в зону владельца для фильтра по дню); без них
     функция считает сама, как раньше.
+
+    assignee — запись db.get_telegram_users исполнителя (task["assigned_to"]);
+    viewer_id — кто смотрит (известен после входа через Telegram): ему на
+    групповом дашборде доступна кнопка «Беру / Снять с себя».
 
     lazy=True кладёт раскрытую часть карточки в <template>: браузер не
     создаёт из неё живой DOM, пока карточку не раскроют (это делает
@@ -313,6 +317,10 @@ def _render_task(
 
     # Тег — как в «Напоминаниях»: «#тег» цветом акцента, без плашки-эмодзи.
     tag_html = f'<div class="tag">#{escape(task["tag"])}</div>' if task.get("tag") else ""
+    assigned_to = task.get("assigned_to") if owner_type == "chat" else None
+    if assigned_to:
+        who = (assignee or {}).get("first_name") or ((assignee or {}).get("username") and f"@{assignee['username']}")
+        tag_html += f'<div class="assignee">👤 {escape(who or f"id{assigned_to}")}</div>'
     repeat_label = texts["repeat"].get(task["repeat"], task["repeat"])
     # Короткий значок повтора — виден уже в свёрнутой шапке карточки (summary):
     # класс .rep, саму иконку рисует CSS (::after), чтобы не плодить узлы SVG
@@ -365,7 +373,15 @@ def _render_task(
             f"""<button type="button" class="share-btn" data-url="/dashboard/{token}/tasks/{task['id']}/share" data-csrf="{csrf}" data-copied="{escape(texts["share_link_copied"])}">{_icon("share")}{escape(texts["btn_share"])}</button>"""
             if BOT_USERNAME else ""
         )
+        take_html = ""
+        if owner_type == "chat" and viewer_id:
+            label = texts["btn_release"] if assigned_to == viewer_id else texts["btn_take"]
+            take_html = f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/assign" data-ajax="task">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit">{escape(label)}</button>
+</form>"""
         extra_actions = f"""<div class="task-actions">
+{take_html}
 {share_html}
 {postpone_html}
 {delete_html}
@@ -383,7 +399,7 @@ def _render_task(
     if lazy:
         expanded_html = f'<template class="task-x">{expanded_html}</template>'
 
-    return f"""<div class="{css_class}" id="task-{task['id']}" data-due="{int(local_due.timestamp())}">
+    return f"""<div class="{css_class}" id="task-{task['id']}" data-due="{int(local_due.timestamp())}" data-day="{local_due.date().isoformat()}">
 <form method="post" action="/dashboard/{token}/tasks/{task['id']}/{toggle_action}" data-ajax="task">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="check-btn" aria-label="toggle">{CHECK_SVG}</button>

@@ -8,6 +8,9 @@ API_TOKEN = os.environ["BOT_TOKEN"]
 
 DASHBOARD_BASE_URL = os.environ.get("DASHBOARD_BASE_URL", "")  # напр. https://task-reminder-bot-xxxx.onrender.com
 
+# Чат (ваш user id), куда приходят алерты о сбоях; без переменной алертов нет.
+ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"]) if os.environ.get("ADMIN_CHAT_ID", "").lstrip("-").isdigit() else None
+
 DEFAULT_TZ = ZoneInfo("Europe/Warsaw")
 
 PAGE_SIZE = 8  # до 10 — ограничено набором _NUMBER_EMOJI и шириной ряда кнопок

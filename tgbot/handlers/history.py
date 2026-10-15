@@ -2,6 +2,7 @@
 
 import csv
 import io
+import json
 from datetime import datetime
 
 from aiogram import F, Router
@@ -118,3 +119,17 @@ async def export_cmd(message: Message):
     data = buf.getvalue().encode("utf-8-sig")  # BOM для корректного открытия в Excel с кириллицей
     file = BufferedInputFile(data, filename="tasks_export.csv")
     await message.answer_document(file)
+
+    # JSON — полнее CSV (описание, подзадачи, tz-aware сроки): годится как резервная копия
+    subtasks = await db.get_subtasks_bulk([task["id"] for task in tasks])
+    backup = [
+        {
+            "title": task["title"], "description": task.get("description"), "tag": task.get("tag"),
+            "due_at": task["due_at"].isoformat(), "repeat": task["repeat"], "remind": task["remind"],
+            "done": task["done"], "done_at": task["done_at"].isoformat() if task.get("done_at") else None,
+            "subtasks": [{"title": s["title"], "done": s["done"]} for s in subtasks.get(task["id"], [])],
+        }
+        for task in tasks
+    ]
+    payload = json.dumps(backup, ensure_ascii=False, indent=2).encode("utf-8")
+    await message.answer_document(BufferedInputFile(payload, filename="tasks_backup.json"))

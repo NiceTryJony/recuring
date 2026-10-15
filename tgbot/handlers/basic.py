@@ -1,25 +1,20 @@
 """Базовые команды: /start, /help, /cancel, /timezone, /lang, /morning, /quiet."""
 
 from datetime import time as dtime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 import db
 from date_parser import parse_quiet_hours
 from i18n import t
 
+from .. import settings_apply
+from ..constants import GROUP_CHAT_TYPES
 from ..keyboards import lang_kb, quiet_kb, timezone_kb
-from ..owner import _parse_hh_mm, invalidate_settings, owner_lang, owner_quiet, owner_tz, resolve_owner
-from ..scheduling import (
-    schedule_daily_summary,
-    schedule_morning_summary,
-    schedule_task,
-    unschedule_morning_summary,
-)
+from ..owner import _parse_hh_mm, owner_lang, owner_quiet, resolve_owner
 from ..states import SetQuiet, SetTimezone
 
 router = Router()
@@ -36,6 +31,24 @@ async def start(message: Message):
     # вместо полного списка — развёрнутая версия теперь в /help.
     key = "welcome_group" if owner_type == "chat" else "welcome"
     await message.answer(t(lang, key))
+
+# ---------- служебные события группы ----------
+
+@router.message(F.left_chat_member | F.new_chat_members)
+async def group_membership_changed(message: Message):
+    """Вышедший из группы теряет доступ к её задачам (уведомления, кнопки в
+    личке, дашборд через Mini App). Пришедшего не добавляем: в участники
+    попадают по первому сообщению, как раньше. Хендлер нужен и чтобы такие
+    служебные сообщения не уходили в fallback с «не понял команду»."""
+    left = message.left_chat_member
+    if left is not None and left.id != message.bot.id:
+        await db.remove_chat_member(message.chat.id, left.id)
+
+@router.my_chat_member()
+async def bot_membership_changed(event: ChatMemberUpdated):
+    # Бота удалили из группы — список участников больше не обновится
+    if event.chat.type in GROUP_CHAT_TYPES and event.new_chat_member.status in ("left", "kicked"):
+        await db.forget_chat_members(event.chat.id)
 
 @router.message(Command("help"))
 async def help_cmd(message: Message):
@@ -87,28 +100,9 @@ async def timezone_custom(message: Message, state: FSMContext):
 
 async def _apply_timezone(owner_id: int, owner_type: str, tz_name: str, target_message: Message):
     lang = await owner_lang(owner_id, owner_type)
-    try:
-        ZoneInfo(tz_name)
-    except ZoneInfoNotFoundError:
+    if not await settings_apply.apply_timezone(owner_id, owner_type, tz_name):
         await target_message.answer(t(lang, "timezone_invalid"))
         return
-    await db.set_owner_timezone(owner_id, owner_type, tz_name)
-    invalidate_settings(owner_id, owner_type)
-    new_tz = ZoneInfo(tz_name)
-    # Джоба вечерней сводки теперь одна на user_id (объединяет личку + все
-    # группы, см. send_daily_summary) и живёт в поясе ЛИЧНЫХ настроек
-    # пользователя — смена пояса ГРУППЫ (owner_type == "chat") на неё не влияет,
-    # только /timezone в личном чате с ботом переставляет её на новый пояс.
-    if owner_type == "user":
-        schedule_daily_summary(owner_id, new_tz)
-        morning = await db.get_morning_summary_settings(owner_id)
-        if morning and morning["morning_summary_enabled"]:
-            schedule_morning_summary(owner_id, new_tz, morning["morning_summary_hour"], morning["morning_summary_minute"])
-    # cron-джобы повторяющихся задач привязаны к поясу на момент создания — без
-    # перепланирования после /timezone они продолжали бы срабатывать по старому времени.
-    for task in await db.get_tasks(owner_id, owner_type):
-        schedule_task(task["id"], owner_id, owner_type, task["due_at"], task["repeat"], task["remind"], new_tz,
-                      remind_until_done=bool(task.get("remind_until_done")))
     await target_message.answer(t(lang, "timezone_set", tz=tz_name))
 
 # ---------- /lang ----------
@@ -123,8 +117,9 @@ async def lang_start(message: Message):
 async def lang_pick(call: CallbackQuery):
     _, owner_type, owner_id_str, new_lang = call.data.split("_")
     owner_id = int(owner_id_str)
-    await db.set_owner_language(owner_id, owner_type, new_lang)
-    invalidate_settings(owner_id, owner_type)
+    if not await settings_apply.apply_language(owner_id, owner_type, new_lang):
+        await call.answer()
+        return
     await call.message.edit_text(t(new_lang, "lang_set"))
     await call.answer()
 
@@ -135,13 +130,10 @@ def _fmt_quiet(q: tuple[dtime, dtime]) -> tuple[str, str]:
 
 async def _apply_quiet(owner_id: int, owner_type: str, quiet: tuple[dtime, dtime] | None, target_message: Message):
     lang = await owner_lang(owner_id, owner_type)
+    await settings_apply.apply_quiet(owner_id, owner_type, quiet)
     if quiet is None:
-        await db.set_owner_quiet_hours(owner_id, owner_type, None, None)
-        invalidate_settings(owner_id, owner_type)
         await target_message.answer(t(lang, "quiet_off_done"))
         return
-    await db.set_owner_quiet_hours(owner_id, owner_type, quiet[0], quiet[1])
-    invalidate_settings(owner_id, owner_type)
     start, end = _fmt_quiet(quiet)
     await target_message.answer(t(lang, "quiet_set", start=start, end=end))
 
@@ -166,8 +158,7 @@ async def cmd_morning(message: Message):
         return
 
     if arg.lower() in {"off", "выкл", "выключить", "wyłącz", "wylacz"}:
-        await db.set_morning_summary(user_id, enabled=False)
-        unschedule_morning_summary(user_id)
+        await settings_apply.apply_morning(user_id, None)
         await message.answer(t(lang, "morning_off"))
         return
 
@@ -176,9 +167,7 @@ async def cmd_morning(message: Message):
         await message.answer(t(lang, "morning_time_invalid"))
         return
     hour, minute = parsed
-    await db.set_morning_summary(user_id, enabled=True, hour=hour, minute=minute)
-    tz = await owner_tz(user_id, "user")
-    schedule_morning_summary(user_id, tz, hour, minute)
+    await settings_apply.apply_morning(user_id, parsed)
     await message.answer(t(lang, "morning_on", time=f"{hour:02d}:{minute:02d}"))
 
 @router.message(Command("quiet"))
