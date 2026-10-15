@@ -438,15 +438,24 @@ def many_done(client, spy, task):
 
 async def test_done_tasks_are_limited_with_load_more(client, many_done):
     await _login(client)
-    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    body = await (await client.get(f"/dashboard/{TOKEN}?view=all")).text()
     assert body.count('class="task done"') == dashboard.config.DONE_TASKS_PAGE_SIZE
     assert "общая задача" in body                      # активные — все
     assert "готово 29" in body and "готово 0" not in body   # выполненные — самые свежие
-    assert f"done_limit={2 * dashboard.config.DONE_TASKS_PAGE_SIZE}" in body
+    assert f"view=all&done_limit={2 * dashboard.config.DONE_TASKS_PAGE_SIZE}" in body
 
-    body = await (await client.get(f"/dashboard/{TOKEN}?done_limit=40")).text()
+    body = await (await client.get(f"/dashboard/{TOKEN}?view=all&done_limit=40")).text()
     assert body.count('class="task done"') == 30
     assert "done_limit=" not in body
+
+
+async def test_default_view_is_upcoming_and_done_cards_have_delete(client, many_done):
+    await _login(client)
+    body = await (await client.get(f"/dashboard/{TOKEN}")).text()
+    assert 'class="view-tab active" href="/dashboard/' + TOKEN + '?view=upcoming"' not in body  # дефолт без параметра
+    assert 'class="task done"' not in body             # выполненных на «Ближайших» нет
+    done_body = await (await client.get(f"/dashboard/{TOKEN}?view=done")).text()
+    assert done_body.count('/delete" data-ajax="task"') == dashboard.config.DONE_TASKS_PAGE_SIZE
 
 
 async def test_day_filter_shows_whole_day_without_limit(client, many_done):

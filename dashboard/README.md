@@ -6,7 +6,7 @@
 | Файл | Зачем | Главное |
 |---|---|---|
 | `routes.py` | Таблица маршрутов | **порядок важен** (aiohttp берёт первый подошедший): статика → `/dashboard/app` → `{token}` → специфичные → общий `{action}` |
-| `views.py` | GET-страницы | `handle_dashboard` (список), `handle_chart` (график отдельно), `handle_history`, `handle_templates_page`, `handle_share_preview`; `_page_state` — единый загрузчик данных страницы; группировка по умолчанию — по дате (`?group=date`), «без группировки» (`?group=none`) выполненные не показывает |
+| `views.py` | GET-страницы | `handle_dashboard` (список), `handle_chart` (график отдельно), `handle_history`, `handle_templates_page`, `handle_share_preview`; `_page_state` — единый загрузчик данных страницы; вкладка по умолчанию — «Nadchodzące» (`upcoming`, «Все» — только явно `?view=all`); группировка по умолчанию — по дате (`?group=date`), «без группировки» (`?group=none`) выполненные не показывает |
 | `actions.py` | POST-действия | задачи, подзадачи, шаблоны, вход (Telegram Login / Mini App), «Поделиться». У каждого: сессия + CSRF + проверка владения |
 | `fragments.py` | JSON-ответы для действий без перезагрузки | `wants_json` (`Accept: application/json`), `state_payload` (карточка + сводка + вкладки), `subtasks_payload`, `description_payload` |
 | `pages.py` | HTML-каркасы страниц | `TASKS_PAGE`, `LOGIN_PAGE`, `SHARE_PAGE`, `WEBAPP_ENTRY_PAGE`, спрайт иконок, детектор мощности устройства (`.mid` / `.fx` / `.min`; ручной выбор из шторки «Производительность» в `localStorage 'perf'` главнее автоматики), разметка этой шторки |
