@@ -22,7 +22,9 @@ class AdminAlertHandler(logging.Handler):
 
     def _allowed(self, key: str, now: float) -> bool:
         self._sent = [t for t in self._sent if now - t < ALERT_BURST_WINDOW]
-        if len(self._sent) >= ALERT_BURST or now - self._seen.get(key, 0) < ALERT_REPEAT_SECONDS:
+        # Не .get(key, 0): monotonic() считает от старта системы, и на свежей машине
+        # (CI, только что перезапущенный Render) первый же сбой выглядел бы «повтором»
+        if len(self._sent) >= ALERT_BURST or (key in self._seen and now - self._seen[key] < ALERT_REPEAT_SECONDS):
             return False
         self._seen[key] = now
         self._sent.append(now)

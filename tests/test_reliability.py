@@ -32,6 +32,16 @@ async def test_error_log_reaches_admin_but_info_and_repeats_do_not():
     assert len(sent) == 1 and "awaria A" in sent[0]
 
 
+async def test_first_alert_is_sent_right_after_boot(monkeypatch):
+    # Regres: na świeżej maszynie (CI, restart Render) monotonic() jest mały i pierwszy błąd był gubiony
+    monkeypatch.setattr(alerts.time, "monotonic", lambda: 5.0)
+    sent = []
+    log = _logger_with_handler(sent)
+    log.error("awaria po starcie")
+    await asyncio.sleep(0)
+    assert len(sent) == 1
+
+
 async def test_alert_burst_is_capped():
     sent = []
     log = _logger_with_handler(sent)
