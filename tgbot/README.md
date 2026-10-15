@@ -16,7 +16,7 @@
 | `formatting.py` | Текст задач для сообщений | `fmt_task`, `fmt_task_line`, `fmt_repeat/remind`, `_current_streak` |
 | `keyboards.py` | Все inline-клавиатуры | `task_kb`, `list_nav_kb`, `subtasks_kb`, `repeat_kb`, … Префиксы `callback_data` (`done_`, `del_`, `listpage_`) должны совпадать с фильтрами в `handlers/` |
 | `templates.py` | Встроенные шаблоны (данные) | `BUILTIN_TEMPLATES`, `builtin_templates_for_lang` |
-| `scheduling.py` | Всё про время | `schedule_task` (джобы напоминаний/повторов/«мучить до выполнения»), `send_due/send_reminder`, тихий час, утренняя и вечерняя сводки, `restore_jobs()` при старте |
+| `scheduling.py` | Всё про время | `schedule_task` (джобы напоминаний/повторов/«мучить до выполнения»), `send_due/send_reminder`, тихий час, утренняя и вечерняя сводки, `purge_done_tasks` (ежедневно 04:00 UTC и при старте — чистка выполненных старше 7 дней), `restore_jobs()` при старте |
 | `middleware.py` | Защита от спама | `ThrottlingMiddleware` — не чаще 1 сообщения за 0,7 с |
 | `server.py` | Запуск | меню команд Telegram, health-сервер + дашборд (`set_scheduler_hooks`, `set_share_hooks`), `prepare_share_message`, graceful shutdown, `main()` |
 

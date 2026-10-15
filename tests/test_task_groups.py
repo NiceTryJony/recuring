@@ -30,6 +30,11 @@ def test_all_keeps_active_then_recent_done_and_counts_hidden():
     assert _sel(done_limit=1)[1] == 1
 
 
+def test_hide_done_drops_done_from_all_view():
+    assert _sel(hide_done=True) == ([TASKS[0], TASKS[1], TASKS[2], TASKS[3]], 0)
+    assert _ids(_sel(view="done", hide_done=True)) == [6, 5]  # вкладка «Выполнено» не затронута
+
+
 def test_today_includes_overdue_and_excludes_future_and_done():
     assert _ids(_sel(view="today")) == [1, 2]
 

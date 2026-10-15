@@ -19,6 +19,17 @@ async def log_history(task_id: int, user_id: int, title: str, event: str):
     await core._with_retry(_run)
 
 
+async def purge_old_history(days: int = 90) -> int:
+    """Удаляет события истории старше `days` дней. Возвращает число удалённых строк."""
+    async def _run():
+        async with core._pool.acquire() as conn:
+            status = await conn.execute(
+                "DELETE FROM task_history WHERE event_at < now() - make_interval(days => $1)", days
+            )
+            return int(status.split()[-1])  # "DELETE <n>"
+    return await core._with_retry(_run)
+
+
 async def get_history(user_id: int, limit: int = 20) -> list[dict]:
     async def _run():
         async with core._pool.acquire() as conn:

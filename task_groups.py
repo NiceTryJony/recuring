@@ -9,7 +9,7 @@ GROUPS = ("none", "tag", "date")
 
 def select_tasks(all_tasks: list[dict], local_due: dict, *, view: str, today: date,
                  selected_date: date, filter_active: bool, done_limit: int,
-                 tag: str | None = None) -> tuple[list[dict], int]:
+                 tag: str | None = None, hide_done: bool = False) -> tuple[list[dict], int]:
     """Какие задачи рисовать и сколько выполненных осталось за кадром.
 
     Панель дней (?date=) — ФИЛЬТР и главнее вкладки: показывает весь выбранный
@@ -18,7 +18,8 @@ def select_tasks(all_tasks: list[dict], local_due: dict, *, view: str, today: da
     меняет поведения), today — активные на сегодня и просроченные, upcoming —
     активные позже сегодня, done — только выполненные. Выполненные режутся до
     done_limit самых свежих: они копятся годами, и каждая карточка — цена
-    первой отрисовки на слабом телефоне. tag сужает любой вариант."""
+    первой отрисовки на слабом телефоне. tag сужает любой вариант. hide_done —
+    во вкладке all не показывать выполненные вовсе («без группировки»)."""
     if tag:
         all_tasks = [t for t in all_tasks if t.get("tag") == tag]
     if filter_active:
@@ -31,6 +32,8 @@ def select_tasks(all_tasks: list[dict], local_due: dict, *, view: str, today: da
         return [t for t in active if local_due[t["id"]].date() > today], 0
     if view == "done":
         return done[:done_limit], max(0, len(done) - done_limit)
+    if hide_done:
+        return active, 0
     return active + done[:done_limit], max(0, len(done) - done_limit)
 
 

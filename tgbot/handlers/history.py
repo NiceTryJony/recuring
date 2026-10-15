@@ -47,12 +47,15 @@ async def _render_history_text(user_id: int, owner_id: int, owner_type: str, lan
     tot = totals(rows)
     lines = [t(lang, "stats_title", days=days), "", t(lang, "stats_totals", **tot)]
 
-    try:
-        rate = await db.get_completion_rate(owner_id, owner_type, days, tz.key)
-        if rate["total"] > 0:
-            lines.append(t(lang, "stats_completion_rate", **rate))
-    except Exception:
-        logger.exception("Не удалось посчитать %% выполнения owner=%s/%s", owner_type, owner_id)
+    # Только за ≤7 дней: выполненные задачи старше недели удаляются (purge_done_tasks),
+    # за больший период процент был бы занижен.
+    if days <= 7:
+        try:
+            rate = await db.get_completion_rate(owner_id, owner_type, days, tz.key)
+            if rate["total"] > 0:
+                lines.append(t(lang, "stats_completion_rate", **rate))
+        except Exception:
+            logger.exception("Не удалось посчитать %% выполнения owner=%s/%s", owner_type, owner_id)
 
     if days <= 7:
         weekdays = t(lang, "weekdays_short").split(",")

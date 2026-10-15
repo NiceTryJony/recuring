@@ -31,7 +31,7 @@ def parse_ctx(raw: str) -> dict:
     параметрах молча заменяется значениями по умолчанию (как в handle_dashboard)."""
     q = {k: v[0] for k, v in parse_qs((raw or "").lstrip("?"), keep_blank_values=False).items()}
     view = q.get("view") if q.get("view") in VIEWS else "all"
-    group = q.get("group") if q.get("group") in GROUPS else "none"
+    group = q.get("group") if q.get("group") in GROUPS else "date"
     selected = None
     if q.get("date"):
         try:
@@ -58,7 +58,7 @@ async def state_payload(request: aioweb.Request, token: str, settings: dict, own
 
     state = await _page_state(
         owner_id, owner_type, tz, now, view=ctx["view"], tag=ctx["tag"], done_limit=ctx["done_limit"],
-        selected_date=ctx["date"], filter_active=ctx["date"] is not None,
+        selected_date=ctx["date"], filter_active=ctx["date"] is not None, group=ctx["group"],
     )
     tasks, local_due, stats = state["tasks"], state["local_due"], state["stats"]
     payload: dict = {

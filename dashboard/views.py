@@ -240,7 +240,7 @@ def _month_window(anchor: dt.date) -> tuple[dt.date, dt.date]:
 
 
 async def _page_state(owner_id: int, owner_type: str, tz, now, *, view: str, tag: str | None, done_limit: int,
-                      selected_date: dt.date | None, filter_active: bool) -> dict:
+                      selected_date: dt.date | None, filter_active: bool, group: str = "date") -> dict:
     """Всё, что нужно странице и fetch-ответам от БД, двумя лёгкими запросами
     (get_dashboard_tasks + get_dashboard_stats) вместо загрузки всех задач за
     всё время. Возвращает задачи для показа, их локальные сроки и агрегаты."""
@@ -258,9 +258,9 @@ async def _page_state(owner_id: int, owner_type: str, tz, now, *, view: str, tag
     local_due = {t["id"]: t["due_at"].astimezone(tz) for t in raw}
     tasks, _ = select_tasks(
         raw, local_due, view=view, today=today, selected_date=anchor,
-        filter_active=filter_active, done_limit=done_limit, tag=tag,
+        filter_active=filter_active, done_limit=done_limit, tag=tag, hide_done=group == "none",
     )
-    if filter_active or view in ("today", "upcoming"):
+    if filter_active or view in ("today", "upcoming") or (group == "none" and view == "all"):
         hidden_done = 0
     else:
         hidden_done = max(0, stats["done_total"] - sum(1 for t in tasks if t["done"]))
@@ -336,7 +336,7 @@ def _view_controls(token: str, texts: dict, view: str, group: str, tag: str | No
     def href(**over) -> str:
         q = {"view": view, "group": group, "tag": tag or "", "nojs": "1" if nojs else ""}
         q.update(over)
-        q = {k: v for k, v in q.items() if v and not (k == "view" and v == "all") and not (k == "group" and v == "none")}
+        q = {k: v for k, v in q.items() if v and not (k == "view" and v == "all") and not (k == "group" and v == "date")}
         return f"/dashboard/{token}" + (f"?{urlencode(q)}" if q else "")
 
     def link(label: str, url: str, active: bool, cls: str) -> str:
@@ -436,14 +436,14 @@ async def handle_dashboard(request: aioweb.Request) -> aioweb.Response:
     view = request.query.get("view", "all")
     if view not in VIEWS:
         view = "all"
-    group_mode = request.query.get("group", "none")
+    group_mode = request.query.get("group", "date")
     if group_mode not in GROUPS:
-        group_mode = "none"
+        group_mode = "date"
     tag = request.query.get("tag") or None
 
     state = await _page_state(
         owner_id, owner_type, tz, now, view=view, tag=tag, done_limit=done_limit,
-        selected_date=selected_date, filter_active=filter_active,
+        selected_date=selected_date, filter_active=filter_active, group=group_mode,
     )
     tasks, local_due, stats = state["tasks"], state["local_due"], state["stats"]
     today_n, overdue_n, hidden_done = stats["today"], stats["overdue"], state["hidden_done"]
