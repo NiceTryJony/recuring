@@ -190,6 +190,20 @@ async def mark_undone(task_id: int):
     await core._with_retry(_run)
 
 
+async def purge_done_tasks(days: int = 7) -> int:
+    """Удаляет выполненные задачи старше `days` дней (по done_at; у старых строк
+    без done_at — по due_at). Подзадачи/фото/ссылки уходят каскадом; task_history
+    не трогаем. Возвращает число удалённых строк."""
+    async def _run():
+        async with core._pool.acquire() as conn:
+            status = await conn.execute(
+                "DELETE FROM tasks WHERE done = TRUE AND COALESCE(done_at, due_at) < now() - make_interval(days => $1)",
+                days,
+            )
+            return int(status.split()[-1])  # "DELETE <n>"
+    return await core._with_retry(_run)
+
+
 async def set_last_notified(task_id: int, when: datetime):
     """Фиксирует момент последней отправки уведомления по задаче — защита от дублей
     при быстрых рестартах процесса (catch-up логика в restore_jobs не шлёт повторно

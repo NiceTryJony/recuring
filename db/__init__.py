@@ -16,6 +16,7 @@ from .core import (
 from .history import (
     _history_scope,
     get_completion_rate,
+    purge_old_history,
     get_done_days,
     get_event_feed,
     get_history,
@@ -83,6 +84,7 @@ from .tasks import (
     get_all_active_tasks,
     get_dashboard_stats,
     get_dashboard_tasks,
+    purge_done_tasks,
     get_owner_tags,
     get_task,
     get_tasks,

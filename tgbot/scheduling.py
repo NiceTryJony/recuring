@@ -401,6 +401,18 @@ def unschedule_morning_summary(user_id: int):
     except JobLookupError:
         pass  # джобы и не было (ещё не включали) — не ошибка
 
+async def purge_done_tasks():
+    """Раз в сутки чистит выполненные задачи старше недели и историю старше 90 дней
+    (экономия места в БД). 90 дней истории — предел стрика."""
+    try:
+        n = await db.purge_done_tasks(7)
+        h = await db.purge_old_history(90)
+    except Exception:
+        logger.exception("Не удалось почистить выполненные задачи/историю")
+        return
+    if n or h:
+        logger.info("Удалено: выполненных задач старше 7 дней — %s, событий истории старше 90 дней — %s", n, h)
+
 async def restore_jobs():
     """Восстанавливает джобы при старте процесса (после редеплоя/рестарта).
     Если дедлайн уже прошёл сегодня, а бот был офлайн — досылает уведомление сразу
@@ -431,6 +443,12 @@ async def restore_jobs():
         else:
             schedule_task(task["id"], owner_id, owner_type, task["due_at"], task["repeat"], task["remind"], tz,
                           remind_until_done=bool(task.get("remind_until_done")))
+
+    app.scheduler.add_job(
+        purge_done_tasks, CronTrigger(hour=4, minute=0, timezone=ZoneInfo("UTC")),
+        id="purge_done_tasks", replace_existing=True,
+    )
+    await purge_done_tasks()  # и сразу при старте: процесс на Render может не доживать до 04:00
 
     # Планируем ежедневную сводку (self-check) для всех людей, которым она
     # может быть нужна — личные пользователи бота И участники групп (человек
