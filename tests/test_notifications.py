@@ -287,3 +287,81 @@ async def test_history_recent_empty(env, monkeypatch):
         return []
     monkeypatch.setattr(db, "get_history", empty)
     assert await history._render_history_text(1, 1, "user", "ru", "recent") == t("ru", "no_history")
+
+
+async def test_repeating_closed_ahead_stays_silent(env):
+    """Раз уже закрыт («Готово»/«Пропустить» сдвинули due_at вперёд) — cron молчит."""
+    env.add_task(1, NOW() + timedelta(days=1), repeat="daily")
+    await scheduling.send_due(1, "user", 1)
+    assert env.sent == []
+
+
+async def test_repeating_due_now_notifies_with_skip_button(env):
+    env.add_task(1, NOW() - timedelta(minutes=1), repeat="daily")
+    await scheduling.send_due(1, "user", 1)
+    assert len(env.sent) == 1
+    cbs = [b.callback_data for row in env.sent[0].markup.inline_keyboard for b in row]
+    assert "skip_1" in cbs
+
+
+async def test_after_days_repeat_schedules_one_date_job(env):
+    scheduling.schedule_task(1, 1, "user", NOW() + timedelta(days=2), "after_3d", "0", WAW)
+    job = env.sched.get_job("due_1")
+    assert type(job.trigger).__name__ == "DateTrigger"
+
+
+async def test_bot_done_on_repeating_moves_due_not_marks_done(env, monkeypatch):
+    """Регрессия: кнопка «Готово» в боте завершала повторяющуюся задачу навсегда."""
+    from tgbot.handlers import task_actions
+    task = env.add_task(1, NOW() - timedelta(hours=1), repeat="daily")
+    marked, events = [], []
+
+    async def _update(task_id, **fields):
+        env.tasks[task_id].update(fields)
+
+    async def _mark(task_id):
+        marked.append(task_id)
+
+    async def _log(task_id, user_id, title, ev):
+        events.append(ev)
+
+    async def _auth(call, task_id):
+        return env.tasks.get(task_id)
+    monkeypatch.setattr(db, "update_task", _update)
+    monkeypatch.setattr(db, "mark_done", _mark)
+    monkeypatch.setattr(db, "log_history", _log)
+    monkeypatch.setattr(db, "get_telegram_users", lambda ids: _async({}))
+    monkeypatch.setattr(task_actions, "_authorize_task", _auth)
+    edits = []
+
+    async def _edit(text, **kw):
+        edits.append(text)
+
+    async def _answer(*a, **kw):
+        pass
+    call = SimpleNamespace(data="done_1", from_user=SimpleNamespace(id=1),
+                           message=SimpleNamespace(edit_text=_edit), answer=_answer)
+    old_due = task["due_at"]
+    await task_actions.mark_done(call)
+    assert not marked and events == ["done"]
+    assert not env.tasks[1]["done"] and env.tasks[1]["due_at"] > NOW() > old_due
+    assert env.sched.get_job("due_1") is not None
+
+
+async def _async(v):
+    return v
+
+
+async def test_restart_does_not_resend_due_already_sent_today(env, monkeypatch):
+    """Регрессия: рестарт процесса (Render) позже 5-минутного окна дедупа слал уведомление снова."""
+    due = NOW() - timedelta(minutes=10)
+    env.add_task(1, due)                                                   # уже ушло (ниже)
+    env.add_task(2, due)                                                   # бот был офлайн — не ушло
+    monkeypatch.setattr(db, "get_all_active_tasks", lambda: _async(list(env.tasks.values())))
+    monkeypatch.setattr(db, "purge_done_tasks", lambda days: _async(0))
+    monkeypatch.setattr(db, "purge_old_history", lambda days: _async(0))
+    monkeypatch.setattr(db, "get_all_summary_recipients", lambda: _async([]))
+    monkeypatch.setattr(db, "get_morning_summary_recipients", lambda: _async([]))
+    env.tasks[1]["last_notified_at"] = due   # ушло ровно в срок, рестарт — позже
+    await scheduling.restore_jobs()
+    assert [s.text for s in env.sent] == [t("ru", "due_text", title="Тест <b>")]

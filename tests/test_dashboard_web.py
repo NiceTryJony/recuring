@@ -546,7 +546,7 @@ def _init_data(user_id: int, auth_date: int | None = None, bad_hash: bool = Fals
     if start_param:
         fields["start_param"] = start_param
     check = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
-    secret = hmac.new(b"WebAppData", dashboard.SESSION_SECRET.encode(), hashlib.sha256).digest()
+    secret = hmac.new(b"WebAppData", dashboard.BOT_TOKEN.encode(), hashlib.sha256).digest()
     fields["hash"] = "0" * 64 if bad_hash else hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
     return urlencode(fields)
 
@@ -1067,3 +1067,87 @@ async def test_no_js_action_returns_to_same_view_safely(client, referer, expecte
     resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/done", data={"csrf": csrf}, headers=headers,
                              allow_redirects=False)
     assert resp.headers["Location"] == expected.format(token=TOKEN)
+
+
+# ---------- повторяющиеся: «Готово» / «Пропустить» закрывают один раз ----------
+
+@pytest.mark.parametrize("action, event", [("done", "done"), ("skip", "rescheduled")])
+async def test_repeating_done_or_skip_moves_to_next_time(client, monkeypatch, task, spy, action, event):
+    """Регрессия: «Готово» у повторяющейся задачи завершало её навсегда
+    (джобы снимались, через неделю purge удалял)."""
+    task["repeat"] = "daily"
+    old_due = task["due_at"]
+    updates, marked, events = [], [], []
+
+    async def _update(task_id, **fields):
+        updates.append(fields)
+
+    async def _mark(task_id):
+        marked.append(task_id)
+
+    async def _log(task_id, user_id, title, ev):
+        events.append(ev)
+    monkeypatch.setattr(db, "update_task", _update)
+    monkeypatch.setattr(db, "mark_done", _mark)
+    monkeypatch.setattr(db, "log_history", _log)
+    csrf = await _login(client)
+    resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/{action}", data={"csrf": csrf},
+                             headers={"Accept": "application/json"})
+    assert resp.status == 200
+    assert "toast" in await resp.json()
+    assert not marked
+    assert updates and updates[0]["due_at"] > old_due
+    assert events == [event]
+    assert spy["scheduled"] == [1]
+
+
+async def test_skip_one_shot_task_is_rejected(client):
+    csrf = await _login(client)
+    resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/skip", data={"csrf": csrf}, allow_redirects=False)
+    assert resp.status == 400
+
+
+async def test_photo_delete_json_returns_fresh_photos_block(client, monkeypatch):
+    """С JS удаление фото не перезагружает страницу: в ответе — новый блок фото карточки."""
+    deleted = []
+
+    async def _del(photo_id, task_id):
+        deleted.append((photo_id, task_id))
+    monkeypatch.setattr(db, "delete_task_photo", _del)
+    csrf = await _login(client)
+    resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/photo/5/delete", data={"csrf": csrf},
+                             headers={"Accept": "application/json"})
+    assert resp.status == 200
+    p = await resp.json()
+    assert deleted == [(5, 1)] and p["task_id"] == 1 and 'class="photos-block"' in p["photos"]
+    # без JS — как раньше, редирект
+    resp = await client.post(f"/dashboard/{TOKEN}/tasks/1/photo/5/delete", data={"csrf": csrf}, allow_redirects=False)
+    assert resp.status == 302
+
+
+async def test_template_apply_and_delete_answer_json_for_fetch(client, monkeypatch):
+    """С JS шаблоны не перезагружают страницу: apply — тост, delete — removed; без JS — редиректы."""
+    tpl = {"id": 9, "owner_id": OWNER_ID, "owner_type": "chat", "title": "полить цветы", "time_of_day": "09:00",
+           "day_offset": 0, "repeat": "none", "remind": "0", "tag": None}
+    deleted = []
+
+    async def _get_tpl(template_id):
+        return tpl if template_id == 9 else None
+
+    async def _add_task(*a, **kw):
+        return 42
+
+    async def _del_tpl(template_id, owner_id, owner_type):
+        deleted.append(template_id)
+    monkeypatch.setattr(db, "get_template", _get_tpl)
+    monkeypatch.setattr(db, "add_task", _add_task)
+    monkeypatch.setattr(db, "delete_template", _del_tpl)
+    csrf = await _login(client)
+    js = {"Accept": "application/json"}
+    resp = await client.post(f"/dashboard/{TOKEN}/templates/9/apply", data={"csrf": csrf}, headers=js)
+    assert resp.status == 200 and "полить цветы" in (await resp.json())["toast"]
+    resp = await client.post(f"/dashboard/{TOKEN}/templates/9/delete", data={"csrf": csrf}, headers=js)
+    assert resp.status == 200 and (await resp.json())["removed"] and deleted == [9]
+    for action in ("apply", "delete"):
+        resp = await client.post(f"/dashboard/{TOKEN}/templates/9/{action}", data={"csrf": csrf}, allow_redirects=False)
+        assert resp.status == 302

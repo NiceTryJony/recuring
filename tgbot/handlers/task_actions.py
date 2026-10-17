@@ -17,7 +17,7 @@ from ..formatting import display_name, fmt_task
 from ..keyboards import assign_kb, confirm_delete_kb, edit_field_kb, repeat_kb, task_kb
 from ..owner import _authorize_task, normalize_tag, owner_lang, owner_tz, to_local, to_utc
 from ..scheduling import (
-    _remove_task_jobs, move_to_today, overdue_before_today, schedule_task, send_due, snooze_target,
+    _remove_task_jobs, advance_repeating, move_to_today, overdue_before_today, schedule_task, send_due, snooze_target,
 )
 from ..states import EditTask
 from .listing import _get_list_view
@@ -39,8 +39,12 @@ async def mark_done(call: CallbackQuery):
     if task is None:
         return
     lang = await owner_lang(task["owner_id"], task["owner_type"])
-    await db.mark_done(task_id)
     await db.log_history(task_id, call.from_user.id, task["title"], "done")
+    if task["repeat"] != "none":
+        # Повторяющаяся: выполнен этот раз — задача переезжает на следующий и остаётся активной
+        await _close_occurrence(call, task, lang, completed=True)
+        return
+    await db.mark_done(task_id)
     _remove_task_jobs(task_id)
     updated = await db.get_task(task_id)
     text = await fmt_task(updated)
@@ -50,6 +54,34 @@ async def mark_done(call: CallbackQuery):
         parse_mode="HTML",
     )
     await call.answer()
+
+async def _close_occurrence(call: CallbackQuery, task: dict, lang: str, completed: bool):
+    tz = await owner_tz(task["owner_id"], task["owner_type"])
+    new_due = await advance_repeating(task, tz, completed=completed)
+    updated = await db.get_task(task["id"])
+    text = await fmt_task(updated)
+    note = t(lang, "task_done_next" if completed else "task_skipped_next",
+             when=to_local(new_due, tz).strftime("%d.%m.%Y %H:%M"))
+    await call.message.edit_text(
+        f"{text}\n\n{note}",
+        reply_markup=task_kb(task["id"], lang, assign=task["owner_type"] == "chat", repeating=True),
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+@router.callback_query(F.data.startswith("skip_"))
+async def skip_occurrence(call: CallbackQuery):
+    """Пропустить один раз повторяющейся задачи: срок — на следующий раз, без «выполнено»."""
+    task_id = int(call.data.split("_")[1])
+    task = await _authorize_task(call, task_id)
+    if task is None:
+        return
+    if task["repeat"] == "none" or task["done"]:
+        await call.answer()
+        return
+    lang = await owner_lang(task["owner_id"], task["owner_type"])
+    await db.log_history(task_id, call.from_user.id, task["title"], "rescheduled")
+    await _close_occurrence(call, task, lang, completed=False)
 
 @router.callback_query(F.data.startswith("undone_"))
 async def mark_undone(call: CallbackQuery):
@@ -71,7 +103,7 @@ async def mark_undone(call: CallbackQuery):
     text = await fmt_task(updated)
     await call.message.edit_text(
         text + f"\n\n{t(lang, 'task_undone')}",
-        reply_markup=task_kb(task_id, lang, done=False, assign=task["owner_type"] == "chat"),
+        reply_markup=task_kb(task_id, lang, done=False, assign=task["owner_type"] == "chat", repeating=task["repeat"] != "none"),
         parse_mode="HTML",
     )
     await call.answer()
@@ -112,7 +144,7 @@ async def delete_cancel(call: CallbackQuery):
         return
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     text = await fmt_task(task)
-    await call.message.edit_text(text, reply_markup=task_kb(task_id, lang, done=task["done"], assign=task["owner_type"] == "chat"), parse_mode="HTML")
+    await call.message.edit_text(text, reply_markup=task_kb(task_id, lang, done=task["done"], assign=task["owner_type"] == "chat", repeating=task["repeat"] != "none"), parse_mode="HTML")
     await call.answer()
 
 async def _snooze(task: dict, new_due: datetime):
@@ -226,7 +258,7 @@ async def edit_repeat_apply(call: CallbackQuery):
     schedule_task(task_id, task["owner_id"], task["owner_type"], task["due_at"], new_repeat, task["remind"], tz,
                   remind_until_done=bool(task.get("remind_until_done")))
     text = await fmt_task(task)
-    await call.message.edit_text(text + f"\n\n{t(lang, 'repeat_updated')}", reply_markup=task_kb(task_id, lang, done=task["done"], assign=task["owner_type"] == "chat"), parse_mode="HTML")
+    await call.message.edit_text(text + f"\n\n{t(lang, 'repeat_updated')}", reply_markup=task_kb(task_id, lang, done=task["done"], assign=task["owner_type"] == "chat", repeating=new_repeat != "none"), parse_mode="HTML")
     await call.answer()
 
 @router.message(EditTask.value, F.text)

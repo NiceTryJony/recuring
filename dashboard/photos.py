@@ -11,6 +11,7 @@ from PIL import Image
 import db
 
 from .config import AVATAR_CACHE_SECONDS, BOT_TOKEN, _acting_user_id, logger
+from .fragments import photos_payload, wants_json
 from .security import _require_session, _verify_csrf
 
 # ---------- аватарки профиля (Telegram Bot API) ----------
@@ -174,16 +175,15 @@ async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
 
     if not _verify_csrf(csrf_token, cookie):
         return aioweb.Response(status=403)
-    if not got_file or not file_bytes:
-        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
-
-    if await db.count_task_photos(task_id) >= db.MAX_PHOTOS_PER_TASK:
-        return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+    if not got_file or not file_bytes or await db.count_task_photos(task_id) >= db.MAX_PHOTOS_PER_TASK:
+        return await _photos_done(request, token, task_id)
 
     # Декодирование и пересжатие кадра до 1280px — сотни миллисекунд CPU;
     # в event loop это замораживало все остальные запросы процесса (включая бота).
     compressed = await asyncio.to_thread(compress_task_photo, bytes(file_bytes))
     if compressed is None:
+        if wants_json(request):
+            return aioweb.json_response(await photos_payload(request, token, task_id, error="bad_photo"), status=422)
         return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=bad_photo"})
     data, mime = compressed
     # Превью считаем здесь же, а не при первом показе: сжатие уже произошло,
@@ -191,7 +191,13 @@ async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
     thumb = await asyncio.to_thread(make_task_photo_thumb, data)
     await db.add_task_photo(task_id, data, mime, uploaded_by=acting_user_id, thumb=thumb)
     await db.log_history(task_id, acting_user_id, task["title"], "photo_added")
+    return await _photos_done(request, token, task_id)
 
+
+async def _photos_done(request: aioweb.Request, token: str, task_id: int) -> aioweb.Response:
+    """После действия с фото: с JS — свежий блок фото карточки, без JS — назад на страницу."""
+    if wants_json(request):
+        return aioweb.json_response(await photos_payload(request, token, task_id))
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
 
@@ -297,8 +303,7 @@ async def handle_task_photo_delete(request: aioweb.Request) -> aioweb.Response:
 
     await db.delete_task_photo(photo_id, task_id)
     await db.log_history(task_id, acting_user_id, task["title"], "photo_removed")
-
-    return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
+    return await _photos_done(request, token, task_id)
 
 
 async def handle_avatar(request: aioweb.Request) -> aioweb.Response:

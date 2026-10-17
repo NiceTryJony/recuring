@@ -15,7 +15,7 @@ from aiohttp import web as aioweb
 
 import db
 
-from .config import SESSION_MAX_AGE, SESSION_SECRET
+from .config import BOT_TOKEN, SESSION_MAX_AGE, SESSION_SECRET
 
 # ---------- rate-limit на попытки входа ----------
 # In-memory, т.к. процесс один (Render free-тир); при рестарте счётчики
@@ -226,7 +226,7 @@ def verify_telegram_login(data: dict) -> bool:
     if "auth_date" not in check_fields or "id" not in check_fields:
         return False
     data_check_string = "\n".join(f"{k}={check_fields[k]}" for k in sorted(check_fields))
-    secret_key = hashlib.sha256(SESSION_SECRET.encode()).digest()
+    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
     computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(computed_hash, received_hash):
         return False
@@ -251,7 +251,7 @@ def verify_webapp_init_data(init_data: str, max_age: int = _TG_AUTH_MAX_AGE) -> 
     if not received_hash or "auth_date" not in fields or "user" not in fields:
         return None
     data_check_string = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
-    secret_key = hmac.new(b"WebAppData", SESSION_SECRET.encode(), hashlib.sha256).digest()
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
     computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(computed_hash, received_hash):
         return None

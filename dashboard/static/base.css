@@ -259,6 +259,7 @@ a { color: var(--accent); }
   display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap;
 }
 .tz-hint[hidden] { display: none; }
+.task[hidden], .task-group[hidden], .subtask-row[hidden], .task-photo[hidden] { display: none; }
 .tg-widget-banner span, .tz-hint span { font-size: 0.8125rem; color: var(--label-2); }
 .tz-hint a { color: var(--accent); font-weight: 600; text-decoration: none; }
 .tz-hint button { background: none; border: 0; color: var(--label-2); font-size: 1.1rem; min-width: 44px; min-height: 44px; }
@@ -396,6 +397,11 @@ a { color: var(--accent); }
   animation: toast-in 0.35s var(--spring);
 }
 .toast.out { opacity: 0; transition: opacity 0.3s ease; }
+.toast:has(.toast-btn) { display: flex; align-items: center; gap: var(--s3); padding-right: 6px; text-align: left; }
+.toast-btn {
+  flex: none; padding: 6px 12px; border: 0; border-radius: 999px; font: inherit; font-weight: 700;
+  background: color-mix(in srgb, var(--bg) 16%, transparent); color: var(--bg); cursor: pointer;
+}
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 12px); } }
 @media (min-width: 900px) { .toast { bottom: var(--s5); } }
 

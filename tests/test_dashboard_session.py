@@ -301,3 +301,21 @@ def test_scheduler_hooks_receive_utc_and_survive_errors():
         dashboard._unschedule_task(7)
     finally:
         dashboard.set_scheduler_hooks(None, None)
+
+
+def test_separate_session_secret_keeps_telegram_checks_on_bot_token(monkeypatch):
+    # Регрессия: SESSION_SECRET отдельно от BOT_TOKEN. Cookie подписываются им,
+    # а initData Mini App по-прежнему проверяется токеном бота.
+    import json
+    from urllib.parse import urlencode
+    from dashboard import security
+    monkeypatch.setattr(security, "SESSION_SECRET", "separate-session-secret")
+    cookie = _sign_session(1, "user")
+    assert cookie.rsplit(":", 1)[1] != _forge(cookie.rsplit(":", 1)[0]).rsplit(":", 1)[1]
+    assert _verify_session(cookie) == (1, "user", 0)
+
+    fields = {"auth_date": str(int(time_module.time())), "user": json.dumps({"id": 7})}
+    check = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b"WebAppData", dashboard.BOT_TOKEN.encode(), hashlib.sha256).digest()
+    fields["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    assert security.verify_webapp_init_data(urlencode(fields))["id"] == 7

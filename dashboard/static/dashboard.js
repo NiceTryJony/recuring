@@ -73,15 +73,24 @@
     }
   }
 
-  function toast(text) {
+  // action: {label, run} — кнопка в тосте (например «Отменить»); ms — сколько показывать.
+  function toast(text, action, ms) {
     var old = document.querySelector('.toast');
     if (old) old.remove();
     var el = document.createElement('div');
     el.className = 'toast';
     el.setAttribute('role', 'status');
     el.textContent = text;
+    if (action) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'toast-btn';
+      b.textContent = action.label;
+      b.addEventListener('click', function () { el.remove(); action.run(); });
+      el.appendChild(b);
+    }
     document.body.appendChild(el);
-    setTimeout(function () { el.classList.add('out'); setTimeout(function () { el.remove(); }, 300); }, 3200);
+    setTimeout(function () { el.classList.add('out'); setTimeout(function () { el.remove(); }, 300); }, ms || 3200);
   }
 
   function toNode(markup) {
@@ -189,9 +198,11 @@
   function tidyGroups() {
     var groups = document.querySelectorAll('.list > .task-group');
     for (var i = 0; i < groups.length; i++) {
-      var n = groups[i].querySelectorAll(':scope > .task').length, cnt = groups[i].querySelector('.group-count');
-      if (!n) groups[i].remove();
-      else if (cnt) cnt.textContent = n;
+      var g = groups[i], cnt = g.querySelector('.group-count');
+      var all = g.querySelectorAll(':scope > .task').length, n = g.querySelectorAll(':scope > .task:not([hidden])').length;
+      if (!all) { g.remove(); continue; }
+      g.hidden = !n;                                 // остались только скрытые «удалённые» (ждут «Отменить»)
+      if (cnt) cnt.textContent = n;
     }
   }
 
@@ -265,7 +276,7 @@
     var card = form.closest('.task');
     var isToggle = kind === 'task' && /\/(done|undone)$/.test(form.action);
     var undo = isToggle && /undone$/.test(form.action);
-    var row = kind === 'sub' ? form.closest('.subtask-row') : null;
+    var row = kind === 'sub' ? form.closest('.subtask-row') : kind === 'photo' ? form.closest('.task-photo') : null;
     var subToggle = !!row && /\/toggle$/.test(form.action);
     var btn = submitter || form.querySelector('button[type=submit], button:not([type])');
 
@@ -274,11 +285,17 @@
     // оптимистичное состояние
     if (isToggle && card) card.classList.toggle('done', !undo);
     else if (subToggle) row.classList.toggle('done');
-    else if (card && kind === 'task') card.classList.add('pending');
+    else if (card && (kind === 'task' || kind === 'tpl')) card.classList.add('pending');
     else if (row) row.classList.add('pending');
     if (isToggle && !undo) haptic('success');
 
     function rollback(msg) {
+      var gone = row || card;                  // отложенное удаление (deferDelete) прятало карточку/пункт
+      if (gone && gone.hidden) {
+        if (gone.getAnimations) gone.getAnimations().forEach(function (a) { a.cancel(); });
+        gone.hidden = false;
+        tidyGroups();
+      }
       if (isToggle && card) card.classList.toggle('done', undo);
       else if (subToggle) row.classList.toggle('done');
       if (card) card.classList.remove('pending');
@@ -310,6 +327,7 @@
             if (nb) document.dispatchEvent(new CustomEvent('task:done', {detail: {btn: nb}}));
           }
           if (p.action === 'delete') haptic('light');
+          if (p.toast) toast(p.toast);
           applyCommon(p);
         } else if (kind === 'sub') {
           var block = document.querySelector('#task-' + p.task_id + ' .subtasks-block');
@@ -321,6 +339,13 @@
               if (inp) inp.focus({preventScroll: true});
             }
           }
+        } else if (kind === 'tpl') {
+          if (card) card.classList.remove('pending');
+          if (p.removed && card) card.remove();
+          if (p.toast) { toast(p.toast); haptic('success'); }
+        } else if (kind === 'photo') {
+          var pb = document.querySelector('#task-' + p.task_id + ' .photos-block');
+          if (pb) pb.replaceWith(toNode(p.photos));
         } else if (kind === 'desc') {
           var dsc = document.querySelector('#task-' + p.task_id + ' .desc-block');
           if (dsc) dsc.replaceWith(toNode(p.description));
@@ -342,13 +367,83 @@
       });
   }
 
+  // Удаление с «Отменить» вместо confirm(): карточка (или пункт) прячется сразу,
+  // а POST уходит через UNDO_MS. Одновременно ждёт только одно удаление —
+  // следующее сначала отправляет предыдущее. Уход со страницы / сворачивание
+  // Mini App отправляет ожидающее удаление сразу (fetch keepalive).
+  var UNDO_MS = 5000, pendingDel = null;
+  function commitDelete(viaKeepalive) {
+    var d = pendingDel;
+    if (!d) return;
+    pendingDel = null;
+    clearTimeout(d.timer);
+    if (viaKeepalive) {
+      var fd = new FormData(d.form);
+      fd.append('ctx', location.search);
+      fetch(d.form.action, {method: 'POST', body: fd, credentials: 'same-origin', keepalive: true,
+                            headers: {'Accept': 'application/json'}}).catch(function () {});
+    } else {
+      sendForm(d.form, null);
+    }
+  }
+  function deferDelete(form) {
+    commitDelete(false);
+    var el = form.closest('.task-photo') || form.closest('.subtask-row') || form.closest('.task');
+    if (!el) { sendForm(form, null); return; }
+    var d = {form: form, el: el};
+    pendingDel = d;
+    leave(el, function () {
+      if (d.undone) return;
+      flip(function () { el.hidden = true; tidyGroups(); });
+    });
+    haptic('light');
+    toast(form.dataset.undo, {label: form.dataset.undoBtn, run: function () {
+      if (pendingDel !== d) return;
+      pendingDel = null;
+      d.undone = true;
+      clearTimeout(d.timer);
+      if (el.getAnimations) el.getAnimations().forEach(function (a) { a.cancel(); });
+      flip(function () { el.hidden = false; tidyGroups(); });
+      enter(el);
+    }}, UNDO_MS);
+    d.timer = setTimeout(function () { if (pendingDel === d) commitDelete(false); }, UNDO_MS);
+  }
+  window.addEventListener('pagehide', function () { commitDelete(true); });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) commitDelete(true); });
+
   document.addEventListener('submit', function (e) {
     var f = e.target;
-    // defaultPrevented — отказ в confirm() из onsubmit формы удаления.
     if (e.defaultPrevented || !f.dataset || !f.dataset.ajax || !window.fetch || !window.FormData) return;
     e.preventDefault();
     if (f.dataset.busy) return;
+    if (f.dataset.undo) { if (!pendingDel || pendingDel.form !== f) deferDelete(f); return; }
     sendForm(f, e.submitter);
+  });
+
+  // «Показать ещё выполненные» без перезагрузки: та же страница с большим
+  // done_limit, из неё берём только список. Адрес обновляем — обновление
+  // страницы покажет то же самое. Сбой — обычный переход по ссылке.
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('.list > .load-more');
+    if (!a || !window.fetch || !window.DOMParser || e.metaKey || e.ctrlKey) return;
+    e.preventDefault();
+    if (a.getAttribute('aria-busy')) return;
+    a.setAttribute('aria-busy', 'true');
+    var href = a.href;
+    fetch(href, {credentials: 'same-origin'})
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+      .then(function (markup) {
+        var next = new DOMParser().parseFromString(markup, 'text/html').querySelector('.list');
+        var cur = document.querySelector('.list');
+        if (!next || !cur) throw new Error('no list');
+        var known = {};
+        Array.prototype.forEach.call(cur.querySelectorAll('.task'), function (c) { known[c.id] = 1; });
+        // меняем содержимое, а не сам .list: на нём висят обработчики свайпа
+        cur.replaceChildren.apply(cur, Array.prototype.slice.call(next.childNodes));
+        Array.prototype.forEach.call(cur.querySelectorAll('.task'), function (c) { if (!known[c.id]) enter(c); });
+        if (history.replaceState) history.replaceState(null, '', href);
+      })
+      .catch(function () { location.href = href; });
   });
 
   // ---------- график: подгружается, когда подъезжает к экрану ----------

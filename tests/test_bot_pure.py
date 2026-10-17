@@ -442,3 +442,37 @@ def test_move_to_today_same_clock_time_or_in_an_hour():
     assert later.astimezone(WAW).strftime("%d.%m %H:%M") == "15.10 18:00"
     passed = scheduling.move_to_today(datetime(2026, 10, 12, 6, 0, tzinfo=UTC_), WAW, now)
     assert passed == now + timedelta(hours=1)
+
+
+@pytest.mark.parametrize("status, allowed", [("member", False), ("administrator", True), ("creator", True)])
+async def test_group_dashboard_password_only_by_admin(monkeypatch, status, allowed):
+    """Регрессия: любой участник группы мог сбросить пароль группового дашборда."""
+    from types import SimpleNamespace
+    from tgbot.handlers import dashboard_cmd
+
+    async def _resolve(chat, uid):
+        return chat.id, "chat"
+
+    async def _lang(*a):
+        return "ru"
+    monkeypatch.setattr(dashboard_cmd, "resolve_owner", _resolve)
+    monkeypatch.setattr(dashboard_cmd, "owner_lang", _lang)
+    answers, states = [], []
+
+    async def _answer(txt, **kw):
+        answers.append(txt)
+
+    async def _member(chat_id, user_id):
+        return SimpleNamespace(status=status)
+
+    class _St:
+        async def set_state(self, s):
+            states.append(s)
+
+        async def update_data(self, **kw):
+            pass
+    msg = SimpleNamespace(chat=SimpleNamespace(id=-50), from_user=SimpleNamespace(id=7), sender_chat=None,
+                          bot=SimpleNamespace(get_chat_member=_member), answer=_answer)
+    await dashboard_cmd.dashboard_start(msg, _St())
+    assert bool(states) is allowed
+    assert (answers == [t("ru", "dashboard_admin_only")]) is not allowed

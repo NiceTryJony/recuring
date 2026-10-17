@@ -13,6 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 import db
 from date_parser import is_quiet_time, next_quiet_end
 from i18n import t
+from repeats import is_one_shot, next_due, nth_weekday_cron, repeat_trigger
 from stats import totals
 
 from . import app
@@ -39,14 +40,19 @@ def _remove_task_jobs(task_id: int):
         if job.id in exact or job.id.startswith(remind_prefix):
             _safe_remove_job(job.id)
 
-def _nth_weekday_cron(local_due: datetime, tz: ZoneInfo) -> CronTrigger:
-    """N-й день недели месяца, например 'второе воскресенье' — APScheduler поддерживает
-    day='2nd sun' нативно в CronTrigger."""
-    weekday_codes = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-    nth = (local_due.day - 1) // 7 + 1
-    nth = min(nth, 5)
-    day_expr = f"{nth}{['st','nd','rd','th','th'][min(nth-1,4)]} {weekday_codes[local_due.weekday()]}"
-    return CronTrigger(day=day_expr, hour=local_due.hour, minute=local_due.minute, timezone=tz)
+_nth_weekday_cron = nth_weekday_cron  # прежнее имя (тесты); логика повторов — в repeats.py
+
+async def advance_repeating(task: dict, tz: ZoneInfo, completed: bool) -> datetime:
+    """Закрыть текущий раз повторяющейся задачи («Готово» — completed=True,
+    «Пропустить» — False): due_at переезжает на следующий раз, задача остаётся
+    активной, джобы (в т.ч. напоминания) ставятся заново под новый срок.
+    История пишется вызывающей стороной. Возвращает новый срок (UTC)."""
+    new_due = next_due(task["repeat"], task["due_at"], datetime.now(ZoneInfo("UTC")), tz, completed=completed)
+    await db.update_task(task["id"], due_at=new_due)
+    _remove_task_jobs(task["id"])
+    schedule_task(task["id"], task["owner_id"], task["owner_type"], new_due, task["repeat"], task["remind"], tz,
+                  remind_until_done=bool(task.get("remind_until_done")))
+    return new_due
 
 def schedule_task(task_id: int, owner_id: int, owner_type: str, due_at_utc: datetime, repeat: str, remind: str,
                   tz: ZoneInfo, remind_until_done: bool = False):
@@ -72,29 +78,15 @@ def schedule_task(task_id: int, owner_id: int, owner_type: str, due_at_utc: date
                 send_due, IntervalTrigger(minutes=NAG_INTERVAL_MINUTES, start_date=due_at_utc, end_date=end_utc),
                 args=[owner_id, owner_type, task_id], id=f"due_{task_id}", replace_existing=True
             )
-    elif repeat == "none":
+    elif is_one_shot(repeat):  # разовая или «через N дней после выполнения»
         if due_at_utc > now_utc:
             app.scheduler.add_job(
                 send_due, "date", run_date=due_at_utc,
                 args=[owner_id, owner_type, task_id], id=f"due_{task_id}", replace_existing=True
             )
     else:
-        if repeat == "daily":
-            trigger = CronTrigger(hour=local_due.hour, minute=local_due.minute, timezone=tz)
-        elif repeat == "weekly":
-            trigger = CronTrigger(day_of_week=local_due.weekday(), hour=local_due.hour, minute=local_due.minute, timezone=tz)
-        elif repeat == "monthly":
-            trigger = CronTrigger(day=local_due.day, hour=local_due.hour, minute=local_due.minute, timezone=tz)
-        elif repeat == "yearly":
-            trigger = CronTrigger(month=local_due.month, day=local_due.day, hour=local_due.hour, minute=local_due.minute, timezone=tz)
-        elif repeat == "weekdays":
-            trigger = CronTrigger(day_of_week="mon-fri", hour=local_due.hour, minute=local_due.minute, timezone=tz)
-        elif repeat == "monthly_nth_weekday":
-            trigger = _nth_weekday_cron(local_due, tz)
-        else:
-            trigger = CronTrigger(hour=local_due.hour, minute=local_due.minute, timezone=tz)
         app.scheduler.add_job(
-            send_due, trigger,
+            send_due, repeat_trigger(repeat, local_due, tz),
             args=[owner_id, owner_type, task_id], id=f"due_{task_id}", replace_existing=True
         )
 
@@ -170,6 +162,11 @@ async def send_due(owner_id: int, owner_type: str, task_id: int):
     if nag and now > task["due_at"] + timedelta(hours=NAG_MAX_HOURS):
         return
 
+    # Повтор по календарю: этот раз уже закрыт заранее («Готово»/«Пропустить»
+    # сдвинули due_at на следующий) — cron срабатывает впустую, молчим.
+    if task["repeat"] != "none" and task["due_at"] > now + timedelta(minutes=1):
+        return
+
     if await _defer_if_quiet(owner_id, owner_type, task_id, "due"):
         return
 
@@ -197,7 +194,8 @@ async def send_due(owner_id: int, owner_type: str, task_id: int):
         try:
             await bot.send_message(
                 recipient_id, t(lang, text_key, title=task["title"]),
-                reply_markup=task_kb(task_id, lang, done=False, open_url=open_url, assign=owner_type == "chat")
+                reply_markup=task_kb(task_id, lang, done=False, open_url=open_url, assign=owner_type == "chat",
+                                     repeating=task["repeat"] != "none")
             )
             sent_any = True
         except TelegramForbiddenError:
@@ -477,10 +475,15 @@ async def restore_jobs():
         today_start_local = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
         due_local = to_local(task["due_at"], tz)
 
+        # По этому сроку уведомление уже уходило до рестарта — не дублируем
+        # (защита в send_due ловит только рестарт в пределах 5 минут).
+        last = task.get("last_notified_at")
+        already_sent = last is not None and last >= task["due_at"]
         missed_today = (
-            task["repeat"] == "none"
+            is_one_shot(task["repeat"])
             and task["due_at"] < now_utc
             and due_local >= today_start_local
+            and not already_sent
         )
         if missed_today:
             await send_due(owner_id, owner_type, task["id"])

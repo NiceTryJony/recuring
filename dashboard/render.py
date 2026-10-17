@@ -68,11 +68,11 @@ def _render_template_row(tpl: dict, lang: str, token: str, csrf: str) -> str:
 <div class="title">{escape(tpl["title"])}</div>
 <div class="meta">{meta}</div>
 <div class="task-actions">
-<form method="post" action="/dashboard/{token}/templates/{tpl['id']}/apply">
+<form method="post" action="/dashboard/{token}/templates/{tpl['id']}/apply" data-ajax="tpl">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="btn-tinted">{escape(texts["btn_apply_template"])}</button>
 </form>
-<form method="post" action="/dashboard/{token}/templates/{tpl['id']}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_template"])}')">
+<form method="post" action="/dashboard/{token}/templates/{tpl['id']}/delete" data-ajax="tpl" data-undo="{escape(texts["deleted_template"])}" data-undo-btn="{escape(texts["btn_undo"])}">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="del-btn">{escape(texts["btn_delete_template"])}</button>
 </form>
@@ -195,7 +195,7 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
         # главный поток в момент раскрытия.
         items.append(f"""<div class="{photo_class}" data-full="{src}">
 <img src="{src}?size=thumb" alt="" loading="lazy" decoding="async" fetchpriority="low">
-<form method="post" action="{src}/delete" onsubmit="return confirm('{escape(texts["confirm_delete_photo"])}')">
+<form method="post" action="{src}/delete" data-ajax="photo" data-undo="{escape(texts["deleted_photo"])}" data-undo-btn="{escape(texts["btn_undo"])}">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="photo-del-btn" aria-label="delete photo"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
 </form>
@@ -220,16 +220,24 @@ def _render_photos(photos: list[dict], token: str, task_id: int, csrf: str, text
 </div>"""
 
 
+def render_photos_block(photos: list[dict], token: str, task_id: int, csrf: str, texts: dict) -> str:
+    """Фото + форма загрузки — то же, что внутри карточки (для fetch-ответа)."""
+    return f"""<div class="photos-block">
+{_render_photos(photos, token, task_id, csrf, texts)}
+{_render_upload_form(token, task_id, csrf, texts, len(photos))}
+</div>"""
+
+
 def _render_upload_form(token: str, task_id: int, csrf: str, texts: dict, photo_count: int) -> str:
     """Форма прикрепления фото — скрыта, когда лимит на задачу уже достигнут
     (MAX_PHOTOS_PER_TASK), чтобы не провоцировать запрос, который сервер
     всё равно отклонит."""
     if photo_count >= db.MAX_PHOTOS_PER_TASK:
         return ""
-    return f"""<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo" enctype="multipart/form-data" class="photo-upload-form">
+    return f"""<form method="post" action="/dashboard/{token}/tasks/{task_id}/photo" enctype="multipart/form-data" class="photo-upload-form" data-ajax="photo">
 <input type="hidden" name="csrf" value="{csrf}">
 <label class="photo-upload-btn">{_icon("cam")}{escape(texts["btn_add_photo"])}
-<input type="file" name="photo" accept="image/*" onchange="this.form.submit()">
+<input type="file" name="photo" accept="image/*" onchange="this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()">
 </label>
 </form>"""
 
@@ -248,7 +256,7 @@ def _render_subtasks(subtasks: list[dict], token: str, task_id: int, csrf: str, 
 <button type="submit" class="subtask-check" aria-label="toggle">{CHECK_SVG}</button>
 </form>
 <span class="subtask-title">{escape(st["title"])}</span>
-<form method="post" action="/dashboard/{token}/subtasks/{st['id']}/delete" data-ajax="sub" onsubmit="return confirm('{escape(texts["confirm_delete_subtask"])}')">
+<form method="post" action="/dashboard/{token}/subtasks/{st['id']}/delete" data-ajax="sub" data-undo="{escape(texts["deleted_subtask"])}" data-undo-btn="{escape(texts["btn_undo"])}">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="subtask-del-btn" aria-label="delete">✕</button>
 </form>
@@ -347,7 +355,7 @@ def _render_task(
     description_html = _render_description(task, token, csrf, texts)
     subtasks_html = _render_subtasks(subtasks or [], token, task["id"], csrf, texts)
 
-    delete_html = f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" data-ajax="task" onsubmit="return confirm('{escape(texts["confirm_delete"])}')">
+    delete_html = f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/delete" data-ajax="task" data-undo="{escape(texts["deleted_task"])}" data-undo-btn="{escape(texts["btn_undo"])}">
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit" class="del-btn">{_icon("trash")}{escape(texts["btn_delete"])}</button>
 </form>"""
@@ -367,7 +375,11 @@ def _render_task(
 <input type="hidden" name="csrf" value="{csrf}">
 <button type="submit">{_icon("fwd")}{escape(texts["btn_postpone"])}</button>
 </form>"""
-            if task["repeat"] == "none" else ""
+            if task["repeat"] == "none" else
+            f"""<form method="post" action="/dashboard/{token}/tasks/{task['id']}/skip" data-ajax="task">
+<input type="hidden" name="csrf" value="{csrf}">
+<button type="submit">{_icon("fwd")}{escape(texts["btn_skip"])}</button>
+</form>"""
         )
         share_html = (
             f"""<button type="button" class="share-btn" data-url="/dashboard/{token}/tasks/{task['id']}/share" data-csrf="{csrf}" data-copied="{escape(texts["share_link_copied"])}">{_icon("share")}{escape(texts["btn_share"])}</button>"""
@@ -392,8 +404,10 @@ def _render_task(
 {author_html}
 {description_html}
 {subtasks_html}
+<div class="photos-block">
 {photos_html}
 {upload_html}
+</div>
 {extra_actions}
 </div>"""
     if lazy:

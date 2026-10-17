@@ -118,7 +118,7 @@ async def _render_list_page(chat_id: int, owner_id: int, owner_type: str, lang: 
         if mid is None:
             continue
         text = await fmt_task(task)
-        kb = task_kb(task["id"], lang, done=task["done"], assign=task["owner_type"] == "chat")
+        kb = task_kb(task["id"], lang, done=task["done"], assign=task["owner_type"] == "chat", repeating=task["repeat"] != "none")
         try:
             await bot.edit_message_text(text, chat_id=chat_id, message_id=mid, reply_markup=kb, parse_mode="HTML")
         except TelegramBadRequest:
@@ -132,7 +132,7 @@ async def _open_task_card(call: CallbackQuery, task: dict, view: dict):
     task_id = task["id"]
     lang = await owner_lang(task["owner_id"], task["owner_type"])
     text = await fmt_task(task)
-    kb = task_kb(task_id, lang, done=task["done"], assign=task["owner_type"] == "chat")
+    kb = task_kb(task_id, lang, done=task["done"], assign=task["owner_type"] == "chat", repeating=task["repeat"] != "none")
     chat_id = call.message.chat.id
     existing_mid = view["open_cards"].get(task_id)
     if existing_mid:

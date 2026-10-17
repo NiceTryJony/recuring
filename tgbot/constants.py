@@ -36,6 +36,10 @@ REPEAT_OPTIONS = {
     "yearly": {"ru": "Каждый год", "en": "Every year", "pl": "Co rok"},
     "weekdays": {"ru": "По будням", "en": "Weekdays", "pl": "W dni robocze"},
     "monthly_nth_weekday": {"ru": "N-й день недели месяца", "en": "Nth weekday of month", "pl": "N-ty dzień tygodnia miesiąca"},
+    # Отсчёт от выполнения (repeats.after_days): полив, уборка — «через 3 дня после того, как сделал»
+    "after_2d": {"ru": "Через 2 дня после выполнения", "en": "2 days after done", "pl": "2 dni po wykonaniu"},
+    "after_3d": {"ru": "Через 3 дня после выполнения", "en": "3 days after done", "pl": "3 dni po wykonaniu"},
+    "after_7d": {"ru": "Через неделю после выполнения", "en": "1 week after done", "pl": "Tydzień po wykonaniu"},
 }
 
 REMIND_OPTIONS = {

@@ -163,11 +163,21 @@ async def test_actions_do_not_reload_the_page(env, profile):
             assert await page.inner_text(".list .task-group:last-of-type .group-title") == "01.01 1"
             assert not await page.evaluate("document.querySelector('.add-sheet').open")
 
-            # удалить (confirm принимаем): вместе с карточкой уходит и опустевшая группа её дня
-            page.on("dialog", lambda d: d.accept())
+            # удалить: без confirm(), карточка прячется сразу, «Отменить» возвращает её без запроса
+            dialogs, deletes = [], []
+            page.on("dialog", lambda d: (dialogs.append(d), d.dismiss()))
+            page.on("request", lambda r: deletes.append(r.url) if r.url.endswith("/tasks/2/delete") else None)
             await page.click("#task-2 .task-summary")
             await page.click("#task-2 .del-btn")
-            await page.wait_for_function("!document.getElementById('task-2')")
+            await page.wait_for_selector("#task-2", state="hidden")
+            await page.click(".toast .toast-btn")
+            await page.wait_for_selector("#task-2", state="visible")
+            await page.wait_for_timeout(5500)
+            assert not deletes, "после «Отменить» запрос на удаление уходить не должен"
+            # без отмены — через несколько секунд уходит POST, а с ним и опустевшая группа дня
+            await page.click("#task-2 .del-btn")
+            await page.wait_for_function("!document.getElementById('task-2')", timeout=10000)
+            assert not dialogs
             await page.wait_for_function("document.querySelectorAll('.list .task-group').length === 3")
 
             assert len(nav) == base_nav, f"страница перезагружалась: {nav[base_nav:]}"
