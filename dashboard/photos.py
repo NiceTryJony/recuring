@@ -11,7 +11,6 @@ from PIL import Image
 import db
 
 from .config import AVATAR_CACHE_SECONDS, BOT_TOKEN, _acting_user_id, logger
-from .fragments import photos_payload, wants_json
 from .security import _require_session, _verify_csrf
 
 # ---------- аватарки профиля (Telegram Bot API) ----------
@@ -36,6 +35,22 @@ TASK_PHOTO_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # лимит на входящи
 # отдаётся только по тапу — в лайтбоксе.
 TASK_PHOTO_THUMB_MAX_SIDE = 560
 TASK_PHOTO_THUMB_QUALITY = 76
+
+
+async def fetch_chat_title(chat_id: int) -> str | None:
+    """Название группы через Bot API getChat. Нужно, когда в chat_settings его
+    ещё нет: бот сохраняет title только при командах в самой группе."""
+    if not BOT_TOKEN:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getChat",
+                                   params={"chat_id": chat_id}, timeout=3) as resp:
+                data = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        logger.warning("getChat не ответил для chat_id=%s", chat_id)
+        return None
+    return (data.get("result") or {}).get("title") if data.get("ok") else None
 
 
 async def _fetch_and_compress_photo(tg_user_id: int) -> tuple[bytes, str] | None:
@@ -182,6 +197,7 @@ async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
     # в event loop это замораживало все остальные запросы процесса (включая бота).
     compressed = await asyncio.to_thread(compress_task_photo, bytes(file_bytes))
     if compressed is None:
+        from .fragments import photos_payload, wants_json  # не на уровне модуля: views → photos → fragments → views
         if wants_json(request):
             return aioweb.json_response(await photos_payload(request, token, task_id, error="bad_photo"), status=422)
         return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}?error=bad_photo"})
@@ -196,6 +212,7 @@ async def handle_task_photo_upload(request: aioweb.Request) -> aioweb.Response:
 
 async def _photos_done(request: aioweb.Request, token: str, task_id: int) -> aioweb.Response:
     """После действия с фото: с JS — свежий блок фото карточки, без JS — назад на страницу."""
+    from .fragments import photos_payload, wants_json  # не на уровне модуля: views → photos → fragments → views
     if wants_json(request):
         return aioweb.json_response(await photos_payload(request, token, task_id))
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})

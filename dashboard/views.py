@@ -25,6 +25,7 @@ from .pages import (
     HISTORY_PAGE, SETTINGS_MORNING_BLOCK, SETTINGS_PAGE, SHARE_PAGE, TASKS_PAGE, TELEGRAM_WIDGET_BANNER,
     TEMPLATES_PAGE, WEBAPP_ENTRY_PAGE, _login_response,
 )
+from .photos import fetch_chat_title
 from .render import _render_chart, _render_day_picker, _render_event, _render_task, _render_template_row
 from .security import (
     _clear_login_attempts, _client_ip, _csrf_token, _login_rate_limited, _record_failed_login,
@@ -434,20 +435,34 @@ async def _owner_switch(request: aioweb.Request, texts: dict, token: str, owner_
     работает только внутри Telegram (класс tg-only прячет чип в браузере)."""
     if not viewer_id:
         return ""
-    chips = []
+    groups = []
     for g in await db.get_user_group_dashboards(viewer_id):
         cookie = request.cookies.get(f"session_{g['token']}")
         session = _verify_session(cookie, current_password_version=g["password_version"]) if cookie else None
         if session and (session[0], session[1]) == (g["chat_id"], "chat"):
-            label = g["title"] or texts["group_fallback"]
-            chips.append(f'<a class="tag-chip{" active" if g["token"] == token else ""}" '
-                         f'href="/dashboard/{g["token"]}">{escape(label)}</a>')
-    if not chips:
+            groups.append(g)
+    if not groups:
         return ""
-    mine = (f'<a class="tag-chip active" href="/dashboard/{token}">{escape(texts["nav_my_tasks"])}</a>'
-            if owner_type == "user" else
-            f'<a class="tag-chip tg-only" href="/dashboard/app">{escape(texts["nav_my_tasks"])}</a>')
-    return f'<nav class="tag-chips owner-switch">{mine}{"".join(chips)}</nav>'
+    # Нет названия в БД (в группе ещё не было команд) — спрашиваем Telegram один раз и запоминаем
+    missing = [g for g in groups if not g["title"]]
+    for g, title in zip(missing, await asyncio.gather(*(fetch_chat_title(g["chat_id"]) for g in missing))):
+        if title:
+            g["title"] = title
+            await db.set_chat_title(g["chat_id"], title)
+
+    def chip(href: str, label: str, active: bool, extra: str = "") -> str:
+        # data-confirm — текст подтверждения перехода (dashboard.js); у активного чипа его нет
+        confirm = "" if active else f' data-confirm="{escape(texts["switch_confirm"].format(name=label))}"'
+        return (f'<a class="tag-chip{" active" if active else ""}{extra}" href="{href}"{confirm}>'
+                f'{escape(label)}</a>')
+
+    chips = [chip(f"/dashboard/{g['token']}", g["title"] or texts["group_fallback"], g["token"] == token)
+             for g in groups]
+    mine = (chip(f"/dashboard/{token}", texts["nav_my_tasks"], True) if owner_type == "user" else
+            chip("/dashboard/app", texts["nav_my_tasks"], False, " tg-only"))
+    return (f'<nav class="tag-chips owner-switch" data-go="{escape(texts["btn_switch_go"])}" '
+            f'data-cancel="{escape(texts["btn_switch_cancel"])}" data-loading="{escape(texts["switch_loading"])}">'
+            f'{mine}{"".join(chips)}</nav>')
 
 
 def _tabbar(token: str, texts: dict, owner_type: str) -> str:

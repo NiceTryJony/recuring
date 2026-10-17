@@ -299,6 +299,56 @@ a { color: var(--accent); }
 .group-switch { flex-wrap: wrap; }
 .tag-chips { overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
 .tag-chips::-webkit-scrollbar { display: none; }
+
+/* ---------- переход в другую группу: подтверждение и загрузка ---------- */
+.owner-switch .tag-chip.loading { position: relative; padding-right: 30px; opacity: 0.75; pointer-events: none; }
+.owner-switch .tag-chip.loading::after {
+  content: ""; position: absolute; right: 10px; top: 50%; width: 12px; height: 12px; margin-top: -6px;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.nav-progress {
+  position: fixed; z-index: 4000; top: 0; left: 0; right: 0; height: 3px; background: var(--accent);
+  transform-origin: 0 50%; transform: scaleX(0);
+}
+/* «имитация» прогресса: быстро до трети, дальше всё медленнее, к 90% почти встаёт —
+   реальная страница сменит эту раньше, чем полоса «дойдёт» */
+.nav-progress.run { transform: scaleX(0.9); transition: transform 8s cubic-bezier(0.08, 0.82, 0.17, 1); }
+.list[aria-busy="true"] { display: none; }
+.list-skeleton { display: grid; gap: var(--s3); margin-top: var(--s4); }
+.sk-card {
+  height: 64px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--sep);
+  animation: sk-pulse 1.2s ease-in-out infinite alternate;
+}
+.sk-card:nth-child(2) { animation-delay: 0.15s; } .sk-card:nth-child(3) { animation-delay: 0.3s; }
+@keyframes sk-pulse { from { opacity: 1; } to { opacity: 0.45; } }
+.sk-label { margin: 0; text-align: center; color: var(--label-2); font-size: 0.875rem; }
+.confirm-back {
+  position: fixed; z-index: 3500; inset: 0; display: flex; align-items: flex-end; justify-content: center;
+  padding: var(--s4) var(--s4) calc(var(--s4) + env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, 0.35); animation: fade-in 0.2s ease;
+}
+.confirm-card {
+  width: min(100%, 420px); padding: var(--s5) var(--s4) var(--s4); border-radius: 18px;
+  background: var(--surface); color: var(--label); box-shadow: 0 12px 40px -8px rgba(0, 0, 0, 0.35);
+  animation: sheet-in 0.3s var(--spring);
+}
+.confirm-text { margin: 0 0 var(--s4); font-size: 1.0625rem; font-weight: 600; text-align: center; }
+.confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }
+.confirm-actions button {
+  min-height: 44px; border: 0; border-radius: 12px; font: inherit; font-weight: 600; cursor: pointer;
+}
+.confirm-cancel { background: var(--accent-tint); color: var(--accent); }
+.confirm-go { background: var(--accent); color: var(--on-accent); }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes sheet-in { from { opacity: 0; transform: translateY(24px); } }
+@media (min-width: 900px) { .confirm-back { align-items: center; } }
+@media (prefers-reduced-motion: reduce) {
+  .nav-progress.run { transition: none; transform: scaleX(0.6); }
+  .sk-card, .owner-switch .tag-chip.loading::after, .confirm-back, .confirm-card { animation: none; }
+}
+.min .sk-card, .min .confirm-back, .min .confirm-card, .min .nav-progress.run { animation: none; transition: none; }
 .group-opt, .tag-chip {
   flex: 0 0 auto; min-height: 40px; padding: 0 var(--s4); border-radius: 999px;
   display: inline-flex; align-items: center;
