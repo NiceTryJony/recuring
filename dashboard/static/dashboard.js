@@ -420,6 +420,71 @@
     sendForm(f, e.submitter);
   });
 
+  // Переключатель «Мои / группа»: явное подтверждение, затем индикатор
+  // загрузки — полоса сверху, спиннер на чипе и «призрачные» карточки вместо
+  // списка, пока сервер собирает чужую страницу (холодный старт Render — секунды).
+  function showSwitchLoading(chip, nav) {
+    chip.classList.add('loading');
+    chip.setAttribute('aria-busy', 'true');
+    var bar = document.createElement('div');
+    bar.className = 'nav-progress';
+    bar.setAttribute('role', 'progressbar');
+    bar.setAttribute('aria-label', nav.dataset.loading || '');
+    document.body.appendChild(bar);
+    requestAnimationFrame(function () { bar.classList.add('run'); });
+    var list = document.querySelector('.list');
+    if (list) {
+      list.setAttribute('aria-busy', 'true');
+      var sk = document.createElement('div');
+      sk.className = 'list-skeleton';
+      sk.innerHTML = '<div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div>' +
+                     '<p class="sk-label">' + (nav.dataset.loading || '') + '</p>';
+      list.parentNode.insertBefore(sk, list);
+    }
+  }
+  function confirmSwitch(chip, nav, go) {
+    var back = document.createElement('div');
+    back.className = 'confirm-back';
+    back.innerHTML = '<div class="confirm-card" role="alertdialog" aria-modal="true">' +
+      '<p class="confirm-text"></p><div class="confirm-actions">' +
+      '<button type="button" class="confirm-cancel"></button><button type="button" class="confirm-go"></button></div></div>';
+    back.querySelector('.confirm-text').textContent = chip.dataset.confirm;
+    back.querySelector('.confirm-cancel').textContent = nav.dataset.cancel;
+    back.querySelector('.confirm-go').textContent = nav.dataset.go;
+    function close() { document.removeEventListener('keydown', onKey); back.remove(); chip.focus({preventScroll: true}); }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    back.addEventListener('click', function (e) {
+      if (e.target === back || e.target.classList.contains('confirm-cancel')) close();
+      else if (e.target.classList.contains('confirm-go')) { document.removeEventListener('keydown', onKey); back.remove(); go(); }
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(back);
+    back.querySelector('.confirm-go').focus({preventScroll: true});
+    haptic('light');
+  }
+  document.addEventListener('click', function (e) {
+    var chip = e.target.closest && e.target.closest('.owner-switch a[data-confirm]');
+    if (!chip || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    e.preventDefault();
+    if (chip.classList.contains('loading')) return;
+    var nav = chip.closest('.owner-switch');
+    confirmSwitch(chip, nav, function () {
+      showSwitchLoading(chip, nav);
+      commitDelete(true);   // ожидающее «Отменить» удаление — отправить до ухода
+      location.href = chip.href;
+    });
+  });
+  // Возврат «Назад» из bfcache: страница восстанавливается с индикатором — убираем
+  window.addEventListener('pageshow', function (e) {
+    if (!e.persisted) return;
+    Array.prototype.forEach.call(document.querySelectorAll('.nav-progress, .list-skeleton'), function (n) { n.remove(); });
+    Array.prototype.forEach.call(document.querySelectorAll('.owner-switch .loading'), function (c) {
+      c.classList.remove('loading'); c.removeAttribute('aria-busy');
+    });
+    var l = document.querySelector('.list');
+    if (l) l.removeAttribute('aria-busy');
+  });
+
   // «Показать ещё выполненные» без перезагрузки: та же страница с большим
   // done_limit, из неё берём только список. Адрес обновляем — обновление
   // страницы покажет то же самое. Сбой — обычный переход по ссылке.

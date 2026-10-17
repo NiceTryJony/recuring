@@ -1151,3 +1151,24 @@ async def test_template_apply_and_delete_answer_json_for_fetch(client, monkeypat
     for action in ("apply", "delete"):
         resp = await client.post(f"/dashboard/{TOKEN}/templates/9/{action}", data={"csrf": csrf}, allow_redirects=False)
         assert resp.status == 302
+
+
+async def test_group_chip_uses_real_chat_name_and_asks_confirmation(group_client, monkeypatch):
+    """Регрессия: у группы без названия в БД чип назывался просто «Группа»."""
+    from dashboard import views
+    monkeypatch.setitem(GROUPS[0], "title", None)
+    saved, asked = [], []
+
+    async def _fetch(chat_id):
+        asked.append(chat_id)
+        return "Семья Ивановых"
+
+    async def _save(chat_id, title):
+        saved.append((chat_id, title))
+    monkeypatch.setattr(views, "fetch_chat_title", _fetch)
+    monkeypatch.setattr(db, "set_chat_title", _save)
+    await group_client.post("/dashboard/webapp-auth", json={"initData": _init_data(999)})
+    page = await (await group_client.get(f"/dashboard/{TOKEN}")).text()
+    assert asked == [OWNER_ID] and saved == [(OWNER_ID, "Семья Ивановых")]
+    assert "Семья Ивановых" in page and ">Группа<" not in page
+    assert 'data-confirm="Перейти к задачам «Семья Ивановых»?"' in page
