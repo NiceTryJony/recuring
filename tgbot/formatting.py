@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import db
 from i18n import t
+from repeats import after_days
 from stats import compute_streak
 
 from .constants import _NUMBER_EMOJI, REMIND_OPTIONS, REPEAT_OPTIONS
@@ -14,6 +15,8 @@ from .owner import owner_lang, owner_tz, to_local
 # ---------- форматирование ----------
 
 def fmt_repeat(repeat: str, lang: str) -> str:
+    if repeat not in REPEAT_OPTIONS and after_days(repeat):
+        return t(lang, "repeat_after_days", n=after_days(repeat))
     return REPEAT_OPTIONS.get(repeat, {}).get(lang, repeat)
 
 def fmt_remind(remind: str, lang: str) -> str:

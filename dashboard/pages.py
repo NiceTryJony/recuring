@@ -268,7 +268,7 @@ SETTINGS_MORNING_BLOCK = """<fieldset class="settings-group">
 </fieldset>"""
 
 
-TEMPLATES_PAGE = _head("templates_page_title", "templates.css") + """
+TEMPLATES_PAGE = _head("templates_page_title", "templates.css", with_js=True) + """
 <body>
 """ + _navbar("templates_heading", left=_back_link()) + """
 {new_template_error}

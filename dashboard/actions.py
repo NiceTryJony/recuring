@@ -12,6 +12,7 @@ from aiohttp import web as aioweb
 
 import db
 from date_parser import parse_quiet_hours
+from repeats import next_due
 
 from .config import BOT_USERNAME, SESSION_MAX_AGE, SHARE_CODE_RE, UTC, _acting_user_id, _tz_of
 from .fragments import description_payload, state_payload, subtasks_payload, wants_json
@@ -131,6 +132,9 @@ async def handle_template_apply(request: aioweb.Request) -> aioweb.Response:
     _schedule_task(task_id, owner_id, owner_type, due_at, tpl["repeat"], tpl["remind"], tz,
                    remind_until_done=remind_until_done)
 
+    if wants_json(request):  # с JS остаёмся на странице шаблонов, сообщение — тостом
+        texts = _dt(settings.get("language"))
+        return aioweb.json_response({"toast": texts["template_applied"].format(title=tpl["title"])})
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}"})
 
 
@@ -153,6 +157,8 @@ async def handle_template_delete(request: aioweb.Request) -> aioweb.Response:
         return aioweb.Response(status=403)
 
     await db.delete_template(template_id, owner_id, owner_type)
+    if wants_json(request):
+        return aioweb.json_response({"removed": True})
     return aioweb.Response(status=302, headers={"Location": f"/dashboard/{token}/templates"})
 
 
@@ -485,7 +491,9 @@ async def handle_task_create(request: aioweb.Request) -> aioweb.Response:
 
 
 async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
-    """POST /dashboard/{token}/tasks/{task_id}/{action}, action = done | undone.
+    """POST /dashboard/{token}/tasks/{task_id}/{action}, action = done | undone |
+    skip | postpone | delete | assign. У повторяющейся задачи done и skip закрывают
+    текущий раз: due_at переезжает на следующий (repeats.next_due), задача активна.
     Без JS: обычная HTML-форма с redirect обратно на страницу дашборда."""
     token = request.match_info["token"]
     action = request.match_info["action"]
@@ -493,7 +501,7 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
         task_id = int(request.match_info["task_id"])
     except ValueError:
         return aioweb.Response(status=404)
-    if action not in ("done", "undone", "postpone", "delete", "assign"):
+    if action not in ("done", "undone", "skip", "postpone", "delete", "assign"):
         return aioweb.Response(status=404)
 
     owner = await _require_session_full(request, token)
@@ -520,7 +528,19 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
     tz = _tz_of(settings)
     remind_until_done = bool(task.get("remind_until_done"))
 
-    if action == "done":
+    texts = _dt(settings.get("language"))
+    note = None
+    if action in ("done", "skip") and task["repeat"] != "none" and not task["done"]:
+        new_due = next_due(task["repeat"], task["due_at"], datetime.now(UTC), tz, completed=action == "done")
+        await db.update_task(task_id, due_at=new_due)
+        await db.log_history(task_id, acting_user_id, task["title"], "done" if action == "done" else "rescheduled")
+        _unschedule_task(task_id)
+        _schedule_task(task_id, owner_id, owner_type, new_due, task["repeat"], task["remind"], tz,
+                       remind_until_done=remind_until_done)
+        note = texts["next_time"].format(when=new_due.astimezone(tz).strftime("%d.%m %H:%M"))
+    elif action == "skip":
+        return aioweb.Response(status=400)  # пропускать можно только раз повторяющейся
+    elif action == "done":
         await db.mark_done(task_id)
         await db.log_history(task_id, acting_user_id, task["title"], "done")
         _unschedule_task(task_id)
@@ -562,6 +582,8 @@ async def handle_task_toggle(request: aioweb.Request) -> aioweb.Response:
         )
         payload["task_id"] = task_id
         payload["action"] = action
+        if note:
+            payload["toast"] = note
         return aioweb.json_response(payload)
     return aioweb.Response(status=302, headers={"Location": _back_to_list(request, token)})
 

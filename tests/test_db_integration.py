@@ -48,6 +48,21 @@ async def test_init_db_is_idempotent(clean_db):
     await db.init_db()
 
 
+async def test_init_db_skips_unchanged_schema_and_reruns_on_change(clean_db):
+    from db import schema
+    async with db._pool.acquire() as conn:
+        assert await conn.fetchval("SELECT version FROM schema_meta WHERE id = 1") == schema._schema_version()
+        # «старая» схема: колонка пропала, отпечаток другой — init_db обязан прогнать миграции
+        await conn.execute("ALTER TABLE tasks DROP COLUMN assigned_to")
+        await conn.execute("UPDATE schema_meta SET version = 'old'")
+    await db.init_db()
+    async with db._pool.acquire() as conn:
+        cols = {r["column_name"] for r in await conn.fetch(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'tasks'")}
+        assert "assigned_to" in cols
+        assert await conn.fetchval("SELECT version FROM schema_meta WHERE id = 1") == schema._schema_version()
+
+
 async def test_remind_until_done_roundtrip(clean_db):
     due = datetime.now(WAW) + timedelta(days=1)
     t1 = await db.add_task(1, "user", "a", due, "none", "0", None, True)

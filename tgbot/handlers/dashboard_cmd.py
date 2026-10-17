@@ -21,10 +21,26 @@ router = Router()
 
 # ---------- /dashboard ----------
 
+async def _is_chat_admin(message: Message) -> bool:
+    """Анонимный админ пишет от имени самого чата (sender_chat == chat)."""
+    if message.sender_chat is not None and message.sender_chat.id == message.chat.id:
+        return True
+    try:
+        member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
+    except TelegramBadRequest:
+        return False
+    return member.status in ("creator", "administrator")
+
+
 @router.message(Command("dashboard"))
 async def dashboard_start(message: Message, state: FSMContext):
     owner_id, owner_type = await resolve_owner(message.chat, message.from_user.id)
     lang = await owner_lang(owner_id, owner_type)
+    # Пароль группового дашборда меняет только админ: иначе любой участник
+    # мог сбросить его и выкинуть остальных (смена пароля гасит их сессии).
+    if owner_type == "chat" and not await _is_chat_admin(message):
+        await message.answer(t(lang, "dashboard_admin_only"))
+        return
     await state.set_state(SetDashboardPassword.value)
     await state.update_data(owner_id=owner_id, owner_type=owner_type)
     await message.answer(t(lang, "dashboard_ask_password"))

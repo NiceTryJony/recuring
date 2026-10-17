@@ -16,7 +16,7 @@ import db
 from task_groups import GROUPS, VIEWS
 
 from .config import DONE_TASKS_PAGE_SIZE, _tz_of
-from .render import _render_description, _render_subtasks, _render_task
+from .render import _render_description, _render_subtasks, _render_task, render_photos_block
 from .security import _csrf_token, _verify_session
 from .texts import _dt
 from .views import _more_done_html, _page_state, _safe_chart, _view_controls
@@ -105,3 +105,14 @@ def description_payload(request: aioweb.Request, token: str, settings: dict, tas
     texts = _dt(settings.get("language", "ru"))
     cookie = request.cookies.get(f"session_{token}", "")
     return {"task_id": task["id"], "description": _render_description(task, token, _csrf_token(cookie), texts)}
+
+
+async def photos_payload(request: aioweb.Request, token: str, task_id: int, error: str | None = None) -> dict:
+    settings = await db.get_owner_by_dashboard_token(token)
+    texts = _dt((settings or {}).get("language", "ru"))
+    cookie = request.cookies.get(f"session_{token}", "")
+    photos = await db.get_task_photos_meta(task_id)
+    payload = {"task_id": task_id, "photos": render_photos_block(photos, token, task_id, _csrf_token(cookie), texts)}
+    if error:
+        payload["error"] = texts[f"error_{error}"]
+    return payload

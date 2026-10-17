@@ -48,10 +48,11 @@ def quiet_kb(lang: str):
     kb.append([InlineKeyboardButton(text=t(lang, "btn_quiet_off"), callback_data="quiet_off")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-def task_kb(task_id: int, lang: str, done: bool = False, open_url: str | None = None, assign: bool = False):
+def task_kb(task_id: int, lang: str, done: bool = False, open_url: str | None = None, assign: bool = False,
+            repeating: bool = False):
     """open_url — кнопка Mini App сразу на эту задачу (только в личке:
     web_app-кнопки Telegram в группах запрещает). assign — кнопка «Поручить»
-    (только у задач группы)."""
+    (только у задач группы). repeating — кнопка «Пропустить раз» (повторяющиеся)."""
     if done:
         status_label = t(lang, "btn_task_undone")
         status_cb = f"undone_{task_id}"
@@ -74,6 +75,8 @@ def task_kb(task_id: int, lang: str, done: bool = False, open_url: str | None = 
             InlineKeyboardButton(text=t(lang, "btn_snz_tom"), callback_data=f"snz_{task_id}_tom"),
             InlineKeyboardButton(text=t(lang, "btn_snz_week"), callback_data=f"snz_{task_id}_1w"),
         ],
+        *([[InlineKeyboardButton(text=t(lang, "btn_skip"), callback_data=f"skip_{task_id}")]]
+          if repeating and not done else []),
         [
             InlineKeyboardButton(text=sub_label, callback_data=f"subs_{task_id}"),
             InlineKeyboardButton(text=photo_label, callback_data=f"photo_{task_id}"),

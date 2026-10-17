@@ -12,8 +12,8 @@
 | 5 | `find.py` | `/find`, `findpage_*`, `findopen_*` | текстовый поиск |
 | 6 | `tags.py` | `/tags`, `tagf_*`, `tagfpage_*`, `tagfopen_*` | фильтр по тегу |
 | 7 | `history.py` | `/history`, `hist_*`, `/export` (CSV + JSON-копия с подзадачами) | |
-| 8 | `dashboard_cmd.py` | `/dashboard` | задаёт пароль и выдаёт ссылку |
-| 9 | `task_actions.py` | `done_ undone_ del_ delok_ delno_ snooze_ edit_ ef_ editrep_ assign_ asg_ snz_ ovd_today` | действия над карточкой; пересчитывает джобы планировщика; `assign_`/`asg_` — поручить задачу группы участнику (только из `chat_members`), исполнитель получает ЛС, напоминания идут только ему; `snz_<id>_<1h|tom|1w>` — перенос одним касанием (старый `snooze_` = +1ч остался для уже отправленных сообщений); `ovd_today` — кнопка утренней сводки «просроченные → на сегодня» |
+| 8 | `dashboard_cmd.py` | `/dashboard` | задаёт пароль и выдаёт ссылку; в группе — только админ чата |
+| 9 | `task_actions.py` | `done_ undone_ skip_ del_ delok_ delno_ snooze_ edit_ ef_ editrep_ assign_ asg_ snz_ ovd_today` | действия над карточкой; у повторяющейся `done_` и `skip_` («⏭ Пропустить раз») закрывают один раз — срок переезжает на следующий (`advance_repeating`); пересчитывает джобы планировщика; `assign_`/`asg_` — поручить задачу группы участнику (только из `chat_members`), исполнитель получает ЛС, напоминания идут только ему; `snz_<id>_<1h|tom|1w>` — перенос одним касанием (старый `snooze_` = +1ч остался для уже отправленных сообщений); `ovd_today` — кнопка утренней сводки «просроченные → на сегодня» |
 | 10 | `subtasks.py` | `subs_ subtoggle_ subdel_* subadd_ subback_` | |
 | 11 | `photos.py` | `photo_*`, приём фото | FSM `AddTaskPhoto`, лимит из `db.MAX_PHOTOS_PER_TASK` |
 | 12 | `fallback.py` | любое сообщение без состояния | в личке: фото (подпись — название, фото прикрепляется), пересланное сообщение (первая строка — название, всё — описание), текст с датой («kup mleko jutro 18:00») — быстрое добавление через путь `/add` (повтор из текста — `date_parser.split_repeat`); вопрос «…?» не перехватывается; иначе подсказка |
